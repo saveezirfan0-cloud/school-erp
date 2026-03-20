@@ -26,11 +26,9 @@ export default function Login() {
     <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "linear-gradient(135deg, #1e1b4b 0%, #4f46e5 100%)" }}>
       <div style={{ background: "white", borderRadius: 16, padding: 40, width: 380, boxShadow: "0 20px 60px rgba(0,0,0,0.15)" }}>
         <div style={{ textAlign: "center", marginBottom: 32 }}>
-          <div style={{ width: 56, height: 56, background: "var(--primary)", borderRadius: 16, display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 16px" }}>
-            <span style={{ fontSize: 28 }}>🎓</span>
-          </div>
-          <h1 style={{ fontSize: 22, fontWeight: 700 }}>ZMI</h1>
-          <p style={{ color: "var(--text-muted)", fontSize: 14, marginTop: 4 }}>School Management System</p>
+          <img src="/zmi_logo.png" alt="ZMI Logo" style={{ width: 90, height: 90, objectFit: "contain", margin: "0 auto 16px", display: "block" }} />
+<h1 style={{ fontSize: 22, fontWeight: 700 }}>ZMI</h1>
+<p style={{ color: "var(--text-muted)", fontSize: 14, marginTop: 4 }}>Zohra Majeed Islamic Institute</p>
         </div>
         <form onSubmit={handleSubmit}>
           <div style={{ marginBottom: 16 }}>
