@@ -37,7 +37,7 @@ export default function Students() {
     try {
       let docUrl = form.docUrl || null;
       if (docFile) {
-        const fileRef = ref(storage, `students/${Date.now()}_${docFile.name}`);
+        const fileRef = ref(storage, `students/Rs.{Date.now()}_Rs.{docFile.name}`);
         await uploadBytes(fileRef, docFile);
         docUrl = await getDownloadURL(fileRef);
       }
@@ -91,7 +91,7 @@ export default function Students() {
                 <td style={{ padding: "12px 16px", fontSize: 14 }}>{s.grade}</td>
                 <td style={{ padding: "12px 16px", fontSize: 14 }}>{s.parentName}</td>
                 <td style={{ padding: "12px 16px", fontSize: 14 }}>{s.parentPhone}</td>
-                <td style={{ padding: "12px 16px", fontSize: 14 }}>${s.monthlyFee}</td>
+                <td style={{ padding: "12px 16px", fontSize: 14 }}>Rs.{s.monthlyFee}</td>
                 <td style={{ padding: "12px 16px", fontSize: 14 }}>{branches.find(b => b.id === s.branchId)?.name || "—"}</td>
                 <td style={{ padding: "12px 16px" }}>
                   <div style={{ display: "flex", gap: 8 }}>

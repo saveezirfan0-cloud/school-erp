@@ -37,7 +37,7 @@ export default function Fees() {
     await updateDoc(doc(db, "invoices", inv.id), { status: "paid", paidDate: serverTimestamp() });
     const student = students.find(s => s.id === inv.studentId);
     if (student?.parentPhone) {
-      await sendWhatsAppMessage(student.parentPhone, `✅ Fee payment of $${inv.amount} for ${student.name} has been received for ${inv.month}. Thank you!`);
+      await sendWhatsAppMessage(student.parentPhone, `✅ Fee payment of Rs. ${inv.amount} for Rs.{student.name} has been received for Rs.{inv.month}. Thank you!`);
     }
     toast.success("Marked as paid & WhatsApp sent");
   };
@@ -45,7 +45,7 @@ export default function Fees() {
   const sendReminder = async (inv) => {
     const student = students.find(s => s.id === inv.studentId);
     if (student?.parentPhone) {
-      await sendWhatsAppMessage(student.parentPhone, `📢 Reminder: Fee of $${inv.amount} for ${student.name} is due for ${inv.month}. Due date: ${inv.dueDate}. Please make payment at your earliest.`);
+      await sendWhatsAppMessage(student.parentPhone, `📢 Reminder: Fee of Rs. ${inv.amount} for Rs.{student.name} is due for Rs.{inv.month}. Due date: Rs.{inv.dueDate}. Please make payment at your earliest.`);
       toast.success("Reminder sent via WhatsApp");
     } else { toast.error("No parent phone number on record"); }
   };
@@ -80,7 +80,7 @@ export default function Fees() {
               <tr key={inv.id} style={{ borderTop: "1px solid var(--border)" }}>
                 <td style={{ padding: "12px 16px", fontSize: 14, fontWeight: 500 }}>{inv.studentName}</td>
                 <td style={{ padding: "12px 16px", fontSize: 14 }}>{inv.month} {inv.year}</td>
-                <td style={{ padding: "12px 16px", fontSize: 14, fontWeight: 600 }}>${inv.amount}</td>
+                <td style={{ padding: "12px 16px", fontSize: 14, fontWeight: 600 }}>Rs.{inv.amount}</td>
                 <td style={{ padding: "12px 16px", fontSize: 14 }}>{inv.dueDate}</td>
                 <td style={{ padding: "12px 16px" }}><span style={statusBadge(inv.status)}>{inv.status}</span></td>
                 <td style={{ padding: "12px 16px" }}>
@@ -121,7 +121,7 @@ export default function Fees() {
                 </div>
                 {[
                   { label: "Month", key: "month", placeholder: "e.g. January" },
-                  { label: "Amount ($)", key: "amount", type: "number" },
+                  { label: "Amount (Rs.)", key: "amount", type: "number" },
                   { label: "Due Date", key: "dueDate", type: "date" },
                   { label: "Notes", key: "notes" },
                 ].map(({ label, key, type = "text", placeholder }) => (

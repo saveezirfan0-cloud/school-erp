@@ -34,7 +34,7 @@ export default function Expenses() {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
         <div>
           <h2 style={{ fontSize: 22, fontWeight: 700 }}>Expenses</h2>
-          <p style={{ color: "var(--text-muted)", fontSize: 14, marginTop: 2 }}>Total: <strong style={{ color: "#ef4444" }}>${total.toLocaleString()}</strong></p>
+          <p style={{ color: "var(--text-muted)", fontSize: 14, marginTop: 2 }}>Total: <strong style={{ color: "#ef4444" }}>Rs.{total.toLocaleString()}</strong></p>
         </div>
         <button onClick={() => setShowModal(true)}
           style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 18px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600 }}>
@@ -60,7 +60,7 @@ export default function Expenses() {
                   <span style={{ padding: "3px 10px", borderRadius: 20, fontSize: 12, background: "#f1f5f9", color: "#475569" }}>{exp.category}</span>
                 </td>
                 <td style={{ padding: "12px 16px", fontSize: 14 }}>{branches.find(b => b.id === exp.branchId)?.name || "—"}</td>
-                <td style={{ padding: "12px 16px", fontSize: 14, fontWeight: 600, color: "#ef4444" }}>${Number(exp.amount).toLocaleString()}</td>
+                <td style={{ padding: "12px 16px", fontSize: 14, fontWeight: 600, color: "#ef4444" }}>Rs.{Number(exp.amount).toLocaleString()}</td>
                 <td style={{ padding: "12px 16px" }}>
                   <button onClick={() => deleteDoc(doc(db, "expenses", exp.id))} style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "6px 10px", borderRadius: 6, cursor: "pointer" }}><Trash2 size={14} /></button>
                 </td>
@@ -86,7 +86,7 @@ export default function Expenses() {
                     style={{ width: "100%", padding: "9px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14 }} />
                 </div>
                 <div>
-                  <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 6 }}>Amount ($)</label>
+                  <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 6 }}>Amount (Rs.)</label>
                   <input type="number" value={form.amount} onChange={e => setForm(p => ({ ...p, amount: e.target.value }))} required
                     style={{ width: "100%", padding: "9px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14 }} />
                 </div>

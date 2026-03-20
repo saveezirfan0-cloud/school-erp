@@ -49,7 +49,7 @@ export default function Employees() {
               <div style={{ color: "var(--text-muted)", fontSize: 13, marginTop: 2 }}>{emp.phone}</div>
               <div style={{ marginTop: 10, display: "flex", justifyContent: "space-between" }}>
                 <span style={{ fontSize: 13, color: "var(--text-muted)" }}>{branches.find(b => b.id === emp.branchId)?.name || "Main"}</span>
-                <span style={{ fontSize: 13, fontWeight: 600, color: "#10b981" }}>${emp.salary}/mo</span>
+                <span style={{ fontSize: 13, fontWeight: 600, color: "#10b981" }}>Rs.{emp.salary}/mo</span>
               </div>
             </div>
           </div>

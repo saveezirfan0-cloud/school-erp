@@ -32,7 +32,7 @@ export default function QuickPayment() {
     try {
       let receiptUrl = null;
       if (receipt) {
-        const fileRef = ref(storage, `receipts/${Date.now()}_${receipt.name}`);
+        const fileRef = ref(storage, `receipts/Rs.{Date.now()}_Rs.{receipt.name}`);
         await uploadBytes(fileRef, receipt);
         receiptUrl = await getDownloadURL(fileRef);
       }
@@ -42,7 +42,7 @@ export default function QuickPayment() {
         status: "paid", receiptUrl, createdAt: serverTimestamp()
       });
       if (selected.parentPhone) {
-        await sendWhatsAppMessage(selected.parentPhone, `✅ Payment of $${amount} received for ${selected.name} for ${month}. Date: ${date}. Thank you!`);
+        await sendWhatsAppMessage(selected.parentPhone, `✅ Payment of Rs. ${amount} received for Rs.{selected.name} for Rs.{month}. Date: Rs.{date}. Thank you!`);
       }
       setDone(true);
       toast.success("Payment recorded & WhatsApp sent!");
@@ -106,7 +106,7 @@ export default function QuickPayment() {
                 style={{ width: "100%", padding: "10px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14 }} />
             </div>
             <div>
-              <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 6 }}>Amount Received ($)</label>
+              <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 6 }}>Amount Received (Rs.)</label>
               <input type="number" value={amount} onChange={e => setAmount(e.target.value)} required
                 style={{ width: "100%", padding: "10px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14 }} />
             </div>

@@ -13,10 +13,14 @@ import Expenses from "./pages/Expenses";
 import QuickPayment from "./pages/QuickPayment";
 import Branches from "./pages/Branches";
 import Settings from "./pages/Settings";
+import ChartOfAccounts from "./pages/ChartOfAccounts";
+import Payments from "./pages/Payments";
+import Payslips from "./pages/Payslips";
+import Reports from "./pages/Reports";
 
 function PrivateRoute({ children }) {
   const { user, loading } = useAuth();
-  if (loading) return <div style={{display:'flex',alignItems:'center',justifyContent:'center',height:'100vh'}}>Loading...</div>;
+  if (loading) return <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh" }}>Loading...</div>;
   return user ? children : <Navigate to="/login" />;
 }
 
@@ -36,6 +40,10 @@ export default function App() {
               <Route path="fees" element={<Fees />} />
               <Route path="expenses" element={<Expenses />} />
               <Route path="branches" element={<Branches />} />
+              <Route path="chart-of-accounts" element={<ChartOfAccounts />} />
+              <Route path="payments" element={<Payments />} />
+              <Route path="payslips" element={<Payslips />} />
+              <Route path="reports" element={<Reports />} />
               <Route path="settings" element={<Settings />} />
             </Route>
           </Routes>

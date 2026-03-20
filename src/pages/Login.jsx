@@ -23,7 +23,7 @@ export default function Login() {
   };
 
   return (
-    <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "linear-gradient(135deg, #1e1b4b 0%, #4f46e5 100%)" }}>
+    <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "linear-gradient(135deg, #4a1520 0%, #7a2535 100%)" }}>
       <div style={{ background: "white", borderRadius: 16, padding: 40, width: 380, boxShadow: "0 20px 60px rgba(0,0,0,0.15)" }}>
         <div style={{ textAlign: "center", marginBottom: 32 }}>
           <img src="/zmi_logo.png" alt="ZMI Logo" style={{ width: 90, height: 90, objectFit: "contain", margin: "0 auto 16px", display: "block" }} />

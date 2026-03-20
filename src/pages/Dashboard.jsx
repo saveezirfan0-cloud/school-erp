@@ -36,9 +36,9 @@ export default function Dashboard() {
 
   const cards = [
     { label: "Total Students", value: stats.students, icon: Users, color: "#4f46e5", bg: "#eef2ff" },
-    { label: "Fees Collected", value: `$${stats.feesCollected.toLocaleString()}`, icon: TrendingUp, color: "#10b981", bg: "#ecfdf5" },
-    { label: "Total Expenses", value: `$${stats.expenses.toLocaleString()}`, icon: TrendingDown, color: "#ef4444", bg: "#fef2f2" },
-    { label: "Pending Fees", value: `$${stats.pending.toLocaleString()}`, icon: Receipt, color: "#f59e0b", bg: "#fffbeb" },
+    { label: "Fees Collected", value: `Rs. ${stats.feesCollected.toLocaleString()}`, icon: TrendingUp, color: "#10b981", bg: "#ecfdf5" },
+    { label: "Total Expenses", value: `Rs. ${stats.expenses.toLocaleString()}`, icon: TrendingDown, color: "#ef4444", bg: "#fef2f2" },
+    { label: "Pending Fees", value: `Rs. ${stats.pending.toLocaleString()}`, icon: Receipt, color: "#f59e0b", bg: "#fffbeb" },
   ];
 
   return (
