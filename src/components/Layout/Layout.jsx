@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from "react";
-import { Outlet } from "react-router-dom";
+import { Outlet, useLocation } from "react-router-dom";
 import Sidebar from "./Sidebar";
 import Navbar from "./Navbar";
 
 export default function Layout() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
+  const location = useLocation();
 
   useEffect(() => {
     const handler = () => {
@@ -17,17 +18,28 @@ export default function Layout() {
     return () => window.removeEventListener("resize", handler);
   }, []);
 
-  return (
-    <div style={{ display: "flex", height: "100vh", overflow: "hidden" }}>
+  // Auto-close sidebar when navigating on mobile
+  useEffect(() => {
+    if (isMobile) setSidebarOpen(false);
+  }, [location.pathname]);
 
-      {/* Dark overlay — mobile only */}
+  const handleClose = () => {
+    if (isMobile) setSidebarOpen(false);
+  };
+
+  return (
+    <div style={{ display: "flex", height: "100vh", overflow: "hidden", position: "relative" }}>
+
+      {/* Overlay — only when mobile sidebar is open */}
       {isMobile && sidebarOpen && (
         <div
           onClick={() => setSidebarOpen(false)}
           style={{
-            position: "fixed", inset: 0,
+            position: "fixed",
+            inset: 0,
             background: "rgba(0,0,0,0.5)",
             zIndex: 98,
+            cursor: "pointer",
           }}
         />
       )}
@@ -35,14 +47,18 @@ export default function Layout() {
       {/* Sidebar */}
       <div style={{
         position: isMobile ? "fixed" : "relative",
-        top: 0, left: 0, bottom: 0,
-        zIndex: 99,
-        transform: isMobile ? `translateX(${sidebarOpen ? "0" : "-100%"})` : "none",
-        transition: "transform 0.25s ease",
-        flexShrink: 0,
+        top: 0,
+        left: 0,
         height: "100vh",
+        zIndex: 99,
+        transform: isMobile
+          ? (sidebarOpen ? "translateX(0)" : "translateX(-260px)")
+          : "translateX(0)",
+        transition: isMobile ? "transform 0.25s ease" : "none",
+        flexShrink: 0,
       }}>
-        <Sidebar onClose={() => setSidebarOpen(false)} />
+        {/* Only pass onClose on mobile so X button only shows on mobile */}
+        <Sidebar onClose={isMobile ? handleClose : null} />
       </div>
 
       {/* Main content */}
@@ -53,7 +69,7 @@ export default function Layout() {
         overflow: "hidden",
         minWidth: 0,
       }}>
-        <Navbar onMenuClick={() => setSidebarOpen(true)} />
+        <Navbar onMenuClick={() => setSidebarOpen(prev => !prev)} />
         <main style={{
           flex: 1,
           overflow: "auto",
