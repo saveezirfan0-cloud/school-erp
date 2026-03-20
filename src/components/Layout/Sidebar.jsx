@@ -3,7 +3,7 @@ import { NavLink } from "react-router-dom";
 import {
   LayoutDashboard, Users, UserCheck, Receipt, TrendingDown,
   Building2, Settings, BookOpen, CreditCard, FileText,
-  BarChart2, ChevronDown, ChevronRight
+  BarChart2, ChevronDown, ChevronRight, Landmark, BookMarked
 } from "lucide-react";
 
 const nav = [
@@ -13,6 +13,8 @@ const nav = [
   {
     label: "Accounting", icon: BookOpen, children: [
       { to: "/chart-of-accounts", icon: BookOpen, label: "Chart of Accounts" },
+      { to: "/bank-cash", icon: Landmark, label: "Bank & Cash" },
+      { to: "/journals", icon: BookMarked, label: "Journals" },
       { to: "/fees", icon: Receipt, label: "Fees & Invoices" },
       { to: "/expenses", icon: TrendingDown, label: "Expenses" },
       { to: "/payments", icon: CreditCard, label: "Payments" },

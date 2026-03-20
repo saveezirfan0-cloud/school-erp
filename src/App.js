@@ -17,6 +17,9 @@ import ChartOfAccounts from "./pages/ChartOfAccounts";
 import Payments from "./pages/Payments";
 import Payslips from "./pages/Payslips";
 import Reports from "./pages/Reports";
+import BankCash from "./pages/BankCash";
+import AccountDetail from "./pages/AccountDetail";
+import Journals from "./pages/Journals";
 
 function PrivateRoute({ children }) {
   const { user, loading } = useAuth();
@@ -41,6 +44,9 @@ export default function App() {
               <Route path="expenses" element={<Expenses />} />
               <Route path="branches" element={<Branches />} />
               <Route path="chart-of-accounts" element={<ChartOfAccounts />} />
+              <Route path="bank-cash" element={<BankCash />} />
+              <Route path="bank-cash/:accountId" element={<AccountDetail />} />
+              <Route path="journals" element={<Journals />} />
               <Route path="payments" element={<Payments />} />
               <Route path="payslips" element={<Payslips />} />
               <Route path="reports" element={<Reports />} />
