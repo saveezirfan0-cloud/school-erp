@@ -1,16 +1,15 @@
-* { margin: 0; padding: 0; box-sizing: border-box; }
+* { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 
 html, body, #root {
-  margin: 0;
-  padding: 0;
-  width: 100%;
-  min-height: 100vh;
+  margin: 0; padding: 0; width: 100%; min-height: 100vh;
+  overscroll-behavior: none;
 }
 
 body {
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
   background: #f8fafc;
   color: #1e293b;
+  -webkit-font-smoothing: antialiased;
 }
 
 :root {
@@ -23,4 +22,42 @@ body {
   --text-muted: #64748b;
   --border: #e2e8f0;
   --accent: #2a8c7a;
+  --sidebar-width: 240px;
+  --header-height: 56px;
 }
+
+/* Mobile sidebar overlay */
+.sidebar-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.5);
+  z-index: 99;
+}
+.sidebar-overlay.open { display: block; }
+
+/* Responsive table wrapper */
+.table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+/* Mobile card stacking */
+@media (max-width: 768px) {
+  .hide-mobile { display: none !important; }
+  .full-mobile { width: 100% !important; }
+  .stack-mobile { flex-direction: column !important; }
+  .grid-1-mobile { grid-template-columns: 1fr !important; }
+  .grid-2-mobile { grid-template-columns: 1fr 1fr !important; }
+}
+
+/* PWA safe area */
+@supports (padding: max(0px)) {
+  body { padding-bottom: env(safe-area-inset-bottom); }
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+
+/* Touch-friendly buttons */
+button { cursor: pointer; }
+input, select, textarea { font-size: 16px !important; }

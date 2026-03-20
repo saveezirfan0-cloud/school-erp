@@ -3,7 +3,7 @@ import { NavLink } from "react-router-dom";
 import {
   LayoutDashboard, Users, UserCheck, Receipt, TrendingDown,
   Building2, Settings, BookOpen, CreditCard, FileText,
-  BarChart2, ChevronDown, ChevronRight, Landmark, BookMarked
+  BarChart2, ChevronDown, ChevronRight, Landmark, BookMarked, X
 } from "lucide-react";
 
 const nav = [
@@ -26,22 +26,34 @@ const nav = [
   { to: "/settings", icon: Settings, label: "Settings" },
 ];
 
-export default function Sidebar() {
+export default function Sidebar({ onClose }) {
   const [openGroup, setOpenGroup] = useState("Accounting");
 
   return (
-    <aside style={{ width: 240, background: "var(--sidebar-bg)", display: "flex", flexDirection: "column", flexShrink: 0, overflowY: "auto" }}>
-      <div style={{ padding: "20px 16px", borderBottom: "1px solid rgba(255,255,255,0.1)" }}>
+    <aside style={{
+      width: 240, background: "var(--sidebar-bg)",
+      display: "flex", flexDirection: "column",
+      flexShrink: 0, overflowY: "auto", height: "100vh"
+    }}>
+      {/* Header */}
+      <div style={{ padding: "16px", borderBottom: "1px solid rgba(255,255,255,0.1)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <img src="/zmi_logo.png" alt="ZMI Logo" style={{ width: 42, height: 42, objectFit: "contain", borderRadius: 8, background: "white", padding: 3 }} />
+          <img src="/zmi_logo.png" alt="ZMI" style={{ width: 38, height: 38, objectFit: "contain", borderRadius: 8, background: "white", padding: 3 }} />
           <div>
-            <div style={{ color: "white", fontWeight: 700, fontSize: 15, letterSpacing: 0.5 }}>ZMI</div>
-            <div style={{ color: "rgba(255,255,255,0.45)", fontSize: 10, letterSpacing: 0.3 }}>Zohra Majeed Institute</div>
+            <div style={{ color: "white", fontWeight: 700, fontSize: 14 }}>ZMI</div>
+            <div style={{ color: "rgba(255,255,255,0.4)", fontSize: 10 }}>Zohra Majeed Institute</div>
           </div>
         </div>
+        {/* Close button — mobile only */}
+        {onClose && (
+          <button onClick={onClose} style={{ border: "none", background: "rgba(255,255,255,0.1)", borderRadius: 6, padding: 6, cursor: "pointer", color: "white", display: "flex" }}>
+            <X size={16} />
+          </button>
+        )}
       </div>
 
-      <nav style={{ flex: 1, padding: "12px 10px" }}>
+      {/* Nav */}
+      <nav style={{ flex: 1, padding: "10px 8px" }}>
         {nav.map((item) => {
           if (item.children) {
             const isOpen = openGroup === item.label;
@@ -50,26 +62,25 @@ export default function Sidebar() {
                 <button onClick={() => setOpenGroup(isOpen ? null : item.label)}
                   style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", padding: "10px 12px", borderRadius: 8, marginBottom: 2, color: "rgba(255,255,255,0.7)", background: "transparent", border: "none", cursor: "pointer", fontSize: 14, fontWeight: 500 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <item.icon size={16} />
-                    {item.label}
+                    <item.icon size={16} />{item.label}
                   </div>
                   {isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                 </button>
                 {isOpen && (
-                  <div style={{ paddingLeft: 12, marginBottom: 4 }}>
+                  <div style={{ paddingLeft: 10, marginBottom: 4 }}>
                     {item.children.map(({ to, icon: Icon, label }) => (
-                      <NavLink key={to} to={to}
+                      <NavLink key={to} to={to} onClick={onClose}
                         style={({ isActive }) => ({
                           display: "flex", alignItems: "center", gap: 10,
                           padding: "8px 12px", borderRadius: 8, marginBottom: 2,
                           color: isActive ? "white" : "rgba(255,255,255,0.5)",
                           background: isActive ? "rgba(255,255,255,0.1)" : "transparent",
-                          textDecoration: "none", fontSize: 13, fontWeight: isActive ? 600 : 400,
+                          textDecoration: "none", fontSize: 13,
+                          fontWeight: isActive ? 600 : 400,
                           borderLeft: isActive ? "3px solid #2a8c7a" : "3px solid transparent",
                           transition: "all 0.15s"
                         })}>
-                        <Icon size={14} />
-                        {label}
+                        <Icon size={14} />{label}
                       </NavLink>
                     ))}
                   </div>
@@ -79,24 +90,24 @@ export default function Sidebar() {
           }
           const Icon = item.icon;
           return (
-            <NavLink key={item.to} to={item.to} end={item.to === "/"}
+            <NavLink key={item.to} to={item.to} end={item.to === "/"} onClick={onClose}
               style={({ isActive }) => ({
                 display: "flex", alignItems: "center", gap: 10,
                 padding: "10px 12px", borderRadius: 8, marginBottom: 2,
                 color: isActive ? "white" : "rgba(255,255,255,0.55)",
                 background: isActive ? "rgba(255,255,255,0.1)" : "transparent",
-                textDecoration: "none", fontSize: 14, fontWeight: isActive ? 600 : 400,
+                textDecoration: "none", fontSize: 14,
+                fontWeight: isActive ? 600 : 400,
                 borderLeft: isActive ? "3px solid #2a8c7a" : "3px solid transparent",
                 transition: "all 0.15s"
               })}>
-              <Icon size={16} />
-              {item.label}
+              <Icon size={16} />{item.label}
             </NavLink>
           );
         })}
       </nav>
 
-      <div style={{ padding: "16px", borderTop: "1px solid rgba(255,255,255,0.08)", fontSize: 11, color: "rgba(255,255,255,0.3)", textAlign: "center" }}>
+      <div style={{ padding: "12px 16px", borderTop: "1px solid rgba(255,255,255,0.08)", fontSize: 10, color: "rgba(255,255,255,0.25)", textAlign: "center" }}>
         ZMI School Management © 2026
       </div>
     </aside>

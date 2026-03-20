@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { db } from "../firebase";
-import { collection, addDoc, updateDoc, doc, onSnapshot, serverTimestamp, getDocs } from "firebase/firestore";
+import { collection, addDoc, updateDoc, doc, onSnapshot, serverTimestamp } from "firebase/firestore";
 import { useBranch } from "../context/BranchContext";
 import { sendWhatsAppMessage } from "../utils/whatsapp";
 import { exportToCSV, exportToPDF } from "../utils/exportUtils";
@@ -11,8 +11,19 @@ const DEFAULT_LINE_ITEMS = [{ description: "Tuition Fee", amount: "" }];
 const LINE_ITEM_PRESETS = ["Tuition Fee", "Registration Fee", "Exam Fee", "Transport Fee", "Custom"];
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 
+function useIsMobile() {
+  const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
+  useEffect(() => {
+    const handler = () => setIsMobile(window.innerWidth <= 768);
+    window.addEventListener("resize", handler);
+    return () => window.removeEventListener("resize", handler);
+  }, []);
+  return isMobile;
+}
+
 export default function Fees() {
   const { branches, activeBranch } = useBranch();
+  const isMobile = useIsMobile();
   const [invoices, setInvoices] = useState([]);
   const [students, setStudents] = useState([]);
   const [showModal, setShowModal] = useState(false);
@@ -33,7 +44,9 @@ export default function Fees() {
   const [recurringYear, setRecurringYear] = useState(new Date().getFullYear());
 
   useEffect(() => {
-    const u1 = onSnapshot(collection(db, "invoices"), snap => setInvoices(snap.docs.map(d => ({ id: d.id, ...d.data() }))));
+    const u1 = onSnapshot(collection(db, "invoices"), snap =>
+      setInvoices(snap.docs.map(d => ({ id: d.id, ...d.data() })))
+    );
     const u2 = onSnapshot(collection(db, "students"), snap => {
       const s = snap.docs.map(d => ({ id: d.id, ...d.data() }));
       setStudents(s);
@@ -48,9 +61,12 @@ export default function Fees() {
     const matchMonth = !filterMonth || inv.month === filterMonth;
     const matchStudent = !filterStudent || inv.studentName?.toLowerCase().includes(filterStudent.toLowerCase());
     return matchBranch && matchStatus && matchMonth && matchStudent;
-  });
+  }).sort((a, b) => (b.createdAt?.toDate?.() || 0) - (a.createdAt?.toDate?.() || 0));
 
   const totalAmount = lineItems.reduce((s, i) => s + Number(i.amount || 0), 0);
+  const totalCollected = filtered.filter(i => i.status === "paid").reduce((s, i) => s + Number(i.amount), 0);
+  const totalPending = filtered.filter(i => i.status === "pending").reduce((s, i) => s + Number(i.amount), 0);
+
   const addLineItem = () => setLineItems(p => [...p, { description: "", amount: "" }]);
   const removeLineItem = (idx) => setLineItems(p => p.filter((_, i) => i !== idx));
   const updateLineItem = (idx, field, value) => setLineItems(p => p.map((item, i) => i === idx ? { ...item, [field]: value } : item));
@@ -70,7 +86,7 @@ export default function Fees() {
     if (form.directPayment && student.parentPhone) {
       await sendWhatsAppMessage(student.parentPhone, `✅ Fee payment of Rs. ${amount} received for ${student.name} for ${form.month}. Thank you!`);
     }
-    toast.success(form.directPayment ? "Payment received & invoice created" : "Invoice created");
+    toast.success(form.directPayment ? "Payment received!" : "Invoice created");
     setShowModal(false);
     setForm({ studentId: "", month: "", year: new Date().getFullYear(), dueDate: "", notes: "", directPayment: false });
     setLineItems(DEFAULT_LINE_ITEMS);
@@ -86,8 +102,10 @@ export default function Fees() {
         studentId: s.id, studentName: s.name, parentPhone: s.parentPhone,
         branchId: s.branchId, status: s.paid ? "paid" : "pending",
         amount: Number(s.amount), month: bulkMonth, year: bulkYear,
-        dueDate: bulkDueDate, lineItems: [{ description: "Tuition Fee", amount: s.amount }],
-        paidDate: s.paid ? serverTimestamp() : null, createdAt: serverTimestamp()
+        dueDate: bulkDueDate,
+        lineItems: [{ description: "Tuition Fee", amount: s.amount }],
+        paidDate: s.paid ? serverTimestamp() : null,
+        createdAt: serverTimestamp()
       });
       if (s.paid && s.parentPhone) {
         await sendWhatsAppMessage(s.parentPhone, `✅ Fee of Rs. ${s.amount} received for ${s.name} — ${bulkMonth} ${bulkYear}. Thank you!`);
@@ -115,14 +133,16 @@ export default function Fees() {
       });
       count++;
     }
-    toast.success(count > 0 ? `Generated ${count} invoices for ${recurringMonth} ${recurringYear}` : "All recurring invoices already exist for this month");
+    toast.success(count > 0 ? `Generated ${count} invoices` : "All invoices already exist for this month");
     setShowRecurring(false);
   };
 
   const markPaid = async (inv) => {
     await updateDoc(doc(db, "invoices", inv.id), { status: "paid", paidDate: serverTimestamp() });
     const student = students.find(s => s.id === inv.studentId);
-    if (student?.parentPhone) await sendWhatsAppMessage(student.parentPhone, `✅ Fee of Rs. ${inv.amount} for ${student.name} received for ${inv.month}. Thank you!`);
+    if (student?.parentPhone) {
+      await sendWhatsAppMessage(student.parentPhone, `✅ Fee of Rs. ${inv.amount} for ${student.name} received for ${inv.month}. Thank you!`);
+    }
     toast.success("Marked paid");
   };
 
@@ -131,183 +151,267 @@ export default function Fees() {
     if (student?.parentPhone) {
       await sendWhatsAppMessage(student.parentPhone, `📢 Fee of Rs. ${inv.amount} for ${student.name} is due for ${inv.month}. Due: ${inv.dueDate}.`);
       toast.success("Reminder sent");
-    } else toast.error("No phone number");
+    } else toast.error("No phone number on record");
   };
 
-  const handleCSV = () => exportToCSV("fees", ["Student", "Month", "Year", "Amount", "Status", "Due Date", "Branch"],
-    filtered.map(i => [i.studentName, i.month, i.year, i.amount, i.status, i.dueDate, branches.find(b => b.id === i.branchId)?.name || "Main"]));
+  const handleCSV = () => exportToCSV("fees",
+    ["Student", "Month", "Year", "Amount", "Status", "Due Date"],
+    filtered.map(i => [i.studentName, i.month, i.year, i.amount, i.status, i.dueDate])
+  );
 
-  const handlePDF = () => exportToPDF("Fees & Invoices Report", ["Student", "Month", "Amount", "Status", "Due Date"],
-    filtered.map(i => [i.studentName, `${i.month} ${i.year}`, `Rs. ${Number(i.amount).toLocaleString()}`, i.status, i.dueDate]));
+  const handlePDF = () => exportToPDF("Fees & Invoices",
+    ["Student", "Month", "Amount", "Status", "Due Date"],
+    filtered.map(i => [i.studentName, `${i.month} ${i.year}`, `Rs. ${Number(i.amount).toLocaleString()}`, i.status, i.dueDate])
+  );
 
-  const totalCollected = filtered.filter(i => i.status === "paid").reduce((s, i) => s + Number(i.amount), 0);
-  const totalPending = filtered.filter(i => i.status === "pending").reduce((s, i) => s + Number(i.amount), 0);
+  const modalStyle = {
+    position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)",
+    display: "flex", alignItems: isMobile ? "flex-end" : "center",
+    justifyContent: "center", zIndex: 1000
+  };
+  const sheetStyle = {
+    background: "white",
+    borderRadius: isMobile ? "20px 20px 0 0" : 16,
+    padding: isMobile ? "24px 20px" : 32,
+    width: "100%", maxHeight: "92vh", overflow: "auto"
+  };
 
   return (
     <div>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
-        <h2 style={{ fontSize: 22, fontWeight: 700 }}>Fees & Invoices</h2>
-        <div style={{ display: "flex", gap: 8 }}>
-          <button onClick={handleCSV} style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13 }}><Download size={14} /> CSV</button>
-          <button onClick={handlePDF} style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13 }}><FileText size={14} /> PDF</button>
-          <button onClick={() => setShowRecurring(true)} style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13 }}><RefreshCw size={14} /> Recurring</button>
-          <button onClick={() => setShowBulk(true)} style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 16px", background: "#2a8c7a", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600, fontSize: 13 }}><Users size={14} /> Bulk Receive</button>
+      {/* Header */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 10 }}>
+        <h2 style={{ fontSize: 20, fontWeight: 700 }}>Fees & Invoices</h2>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          {!isMobile && (
+            <>
+              <button onClick={handleCSV} style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13 }}><Download size={14} /> CSV</button>
+              <button onClick={handlePDF} style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13 }}><FileText size={14} /> PDF</button>
+            </>
+          )}
+          <button onClick={() => setShowRecurring(true)} style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13 }}><RefreshCw size={14} />{!isMobile && " Recurring"}</button>
+          <button onClick={() => setShowBulk(true)} style={{ display: "flex", alignItems: "center", gap: 5, padding: "9px 14px", background: "#2a8c7a", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600, fontSize: 13 }}><Users size={14} />{!isMobile && " Bulk"}</button>
           <button onClick={() => { setForm({ studentId: "", month: "", year: new Date().getFullYear(), dueDate: "", notes: "", directPayment: false }); setLineItems(DEFAULT_LINE_ITEMS); setShowModal(true); }}
-            style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 16px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600, fontSize: 13 }}><Plus size={14} /> New Invoice</button>
+            style={{ display: "flex", alignItems: "center", gap: 5, padding: "9px 14px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600, fontSize: 13 }}>
+            <Plus size={14} />{!isMobile && " New Invoice"}
+          </button>
         </div>
       </div>
 
-      {/* Summary */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16, marginBottom: 20 }}>
+      {/* Summary cards */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10, marginBottom: 16 }}>
         {[
           { label: "Collected", value: totalCollected, color: "#10b981", bg: "#ecfdf5" },
           { label: "Pending", value: totalPending, color: "#f59e0b", bg: "#fffbeb" },
-          { label: "Total Invoices", value: filtered.length, color: "#4f46e5", bg: "#eef2ff", isCount: true },
+          { label: "Invoices", value: filtered.length, color: "#4f46e5", bg: "#eef2ff", isCount: true },
         ].map(({ label, value, color, bg, isCount }) => (
-          <div key={label} style={{ background: "white", borderRadius: 12, padding: 16, border: "1px solid var(--border)" }}>
-            <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 4 }}>{label}</div>
-            <div style={{ fontSize: 20, fontWeight: 700, color }}>{isCount ? value : `Rs. ${value.toLocaleString()}`}</div>
+          <div key={label} style={{ background: "white", borderRadius: 10, padding: "12px 14px", border: "1px solid var(--border)" }}>
+            <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 3 }}>{label}</div>
+            <div style={{ fontSize: isMobile ? 16 : 18, fontWeight: 700, color }}>
+              {isCount ? value : `Rs. ${value.toLocaleString()}`}
+            </div>
           </div>
         ))}
       </div>
 
       {/* Filters */}
-      <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
+      <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
         <input value={filterStudent} onChange={e => setFilterStudent(e.target.value)} placeholder="Search student..."
-          style={{ padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14, minWidth: 160 }} />
+          style={{ padding: "8px 10px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14, flex: 1, minWidth: 120 }} />
         <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)}
-          style={{ padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14, background: "white" }}>
-          <option value="">All Status</option>
+          style={{ padding: "8px 10px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 13, background: "white" }}>
+          <option value="">All</option>
           <option value="paid">Paid</option>
           <option value="pending">Pending</option>
         </select>
-        <select value={filterMonth} onChange={e => setFilterMonth(e.target.value)}
-          style={{ padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14, background: "white" }}>
-          <option value="">All Months</option>
-          {MONTHS.map(m => <option key={m}>{m}</option>)}
-        </select>
-        <select value={filterBranch} onChange={e => setFilterBranch(e.target.value)}
-          style={{ padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14, background: "white" }}>
-          <option value="">All Branches</option>
-          {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
-        </select>
-        {(filterStatus || filterMonth || filterBranch || filterStudent) && (
-          <button onClick={() => { setFilterStatus(""); setFilterMonth(""); setFilterBranch(""); setFilterStudent(""); }}
-            style={{ padding: "8px 14px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13, color: "var(--text-muted)" }}>Clear</button>
+        {!isMobile && (
+          <select value={filterMonth} onChange={e => setFilterMonth(e.target.value)}
+            style={{ padding: "8px 10px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 13, background: "white" }}>
+            <option value="">All Months</option>
+            {MONTHS.map(m => <option key={m}>{m}</option>)}
+          </select>
+        )}
+        {(filterStatus || filterMonth || filterStudent || filterBranch) && (
+          <button onClick={() => { setFilterStatus(""); setFilterMonth(""); setFilterStudent(""); setFilterBranch(""); }}
+            style={{ padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13, color: "var(--text-muted)" }}>Clear</button>
         )}
       </div>
 
-      {/* Table */}
-      <div style={{ background: "white", borderRadius: 12, border: "1px solid var(--border)", overflow: "hidden" }}>
-        <table style={{ width: "100%", borderCollapse: "collapse" }}>
-          <thead>
-            <tr style={{ background: "#f8fafc" }}>
-              {["Student", "Month", "Line Items", "Total", "Due Date", "Status", "Actions"].map(h => (
-                <th key={h} style={{ padding: "11px 14px", textAlign: "left", fontSize: 11, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase" }}>{h}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {filtered.map(inv => (
-              <tr key={inv.id} style={{ borderTop: "1px solid var(--border)" }}>
-                <td style={{ padding: "11px 14px", fontSize: 14, fontWeight: 500 }}>{inv.studentName}</td>
-                <td style={{ padding: "11px 14px", fontSize: 13 }}>{inv.month} {inv.year}</td>
-                <td style={{ padding: "11px 14px", fontSize: 12, color: "var(--text-muted)" }}>{inv.lineItems?.map(li => li.description).join(", ") || "—"}</td>
-                <td style={{ padding: "11px 14px", fontSize: 14, fontWeight: 600 }}>Rs. {Number(inv.amount).toLocaleString()}</td>
-                <td style={{ padding: "11px 14px", fontSize: 13 }}>{inv.dueDate || "—"}</td>
-                <td style={{ padding: "11px 14px" }}>
-                  <span style={{ padding: "3px 10px", borderRadius: 20, fontSize: 11, fontWeight: 600, background: inv.status === "paid" ? "#ecfdf5" : "#fffbeb", color: inv.status === "paid" ? "#10b981" : "#f59e0b" }}>{inv.status}</span>
-                </td>
-                <td style={{ padding: "11px 14px" }}>
-                  <div style={{ display: "flex", gap: 5 }}>
-                    {inv.status === "pending" && <button onClick={() => markPaid(inv)} style={{ border: "none", background: "#ecfdf5", color: "#10b981", padding: "5px 9px", borderRadius: 6, cursor: "pointer", fontSize: 11, display: "flex", alignItems: "center", gap: 3 }}><CheckCircle size={13} /> Paid</button>}
-                    <button onClick={() => sendReminder(inv)} style={{ border: "none", background: "#f0fdf4", color: "#16a34a", padding: "5px 9px", borderRadius: 6, cursor: "pointer", fontSize: 11, display: "flex", alignItems: "center", gap: 3 }}><MessageCircle size={13} /> Remind</button>
-                    <button onClick={() => setSelectedInvoice(inv)} style={{ border: "none", background: "var(--primary-light)", color: "var(--primary)", padding: "5px 9px", borderRadius: 6, cursor: "pointer", fontSize: 11 }}>View</button>
-                  </div>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        {filtered.length === 0 && <div style={{ padding: 40, textAlign: "center", color: "var(--text-muted)" }}>No invoices found</div>}
-      </div>
+      {/* Mobile card view */}
+      {isMobile ? (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {filtered.map(inv => (
+            <div key={inv.id} style={{ background: "white", borderRadius: 12, padding: 16, border: "1px solid var(--border)" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
+                <div>
+                  <div style={{ fontWeight: 600, fontSize: 15 }}>{inv.studentName}</div>
+                  <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>{inv.month} {inv.year}</div>
+                </div>
+                <span style={{ padding: "4px 12px", borderRadius: 20, fontSize: 12, fontWeight: 600, background: inv.status === "paid" ? "#ecfdf5" : "#fffbeb", color: inv.status === "paid" ? "#10b981" : "#f59e0b" }}>
+                  {inv.status}
+                </span>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                <div style={{ fontSize: 22, fontWeight: 700, color: "var(--primary)" }}>
+                  Rs. {Number(inv.amount).toLocaleString()}
+                </div>
+                <div style={{ fontSize: 12, color: "var(--text-muted)" }}>Due: {inv.dueDate || "—"}</div>
+              </div>
+              {inv.lineItems && inv.lineItems.length > 0 && (
+                <div style={{ marginBottom: 10, padding: "6px 10px", background: "#f8fafc", borderRadius: 8, fontSize: 12, color: "var(--text-muted)" }}>
+                  {inv.lineItems.map(li => li.description).join(" • ")}
+                </div>
+              )}
+              <div style={{ display: "flex", gap: 8 }}>
+                {inv.status === "pending" && (
+                  <button onClick={() => markPaid(inv)}
+                    style={{ flex: 1, border: "none", background: "#ecfdf5", color: "#10b981", padding: "10px", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "center", gap: 4 }}>
+                    <CheckCircle size={14} /> Mark Paid
+                  </button>
+                )}
+                <button onClick={() => sendReminder(inv)}
+                  style={{ flex: 1, border: "none", background: "#f0fdf4", color: "#16a34a", padding: "10px", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "center", gap: 4 }}>
+                  <MessageCircle size={14} /> Remind
+                </button>
+                <button onClick={() => setSelectedInvoice(inv)}
+                  style={{ flex: 1, border: "none", background: "var(--primary-light)", color: "var(--primary)", padding: "10px", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 600 }}>
+                  View
+                </button>
+              </div>
+            </div>
+          ))}
+          {filtered.length === 0 && (
+            <div style={{ padding: 40, textAlign: "center", color: "var(--text-muted)", background: "white", borderRadius: 12, border: "1px solid var(--border)" }}>
+              No invoices found
+            </div>
+          )}
+        </div>
+      ) : (
+        /* Desktop table */
+        <div style={{ background: "white", borderRadius: 12, border: "1px solid var(--border)", overflow: "hidden" }}>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 650 }}>
+              <thead>
+                <tr style={{ background: "#f8fafc" }}>
+                  {["Student", "Month", "Line Items", "Total", "Due Date", "Status", "Actions"].map(h => (
+                    <th key={h} style={{ padding: "11px 14px", textAlign: "left", fontSize: 11, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", whiteSpace: "nowrap" }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map(inv => (
+                  <tr key={inv.id} style={{ borderTop: "1px solid var(--border)" }}>
+                    <td style={{ padding: "11px 14px", fontSize: 14, fontWeight: 500, whiteSpace: "nowrap" }}>{inv.studentName}</td>
+                    <td style={{ padding: "11px 14px", fontSize: 13, whiteSpace: "nowrap" }}>{inv.month} {inv.year}</td>
+                    <td style={{ padding: "11px 14px", fontSize: 12, color: "var(--text-muted)", maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {inv.lineItems?.map(li => li.description).join(", ") || "—"}
+                    </td>
+                    <td style={{ padding: "11px 14px", fontSize: 14, fontWeight: 600, whiteSpace: "nowrap" }}>Rs. {Number(inv.amount).toLocaleString()}</td>
+                    <td style={{ padding: "11px 14px", fontSize: 13 }}>{inv.dueDate || "—"}</td>
+                    <td style={{ padding: "11px 14px" }}>
+                      <span style={{ padding: "3px 10px", borderRadius: 20, fontSize: 11, fontWeight: 600, background: inv.status === "paid" ? "#ecfdf5" : "#fffbeb", color: inv.status === "paid" ? "#10b981" : "#f59e0b", whiteSpace: "nowrap" }}>
+                        {inv.status}
+                      </span>
+                    </td>
+                    <td style={{ padding: "11px 14px" }}>
+                      <div style={{ display: "flex", gap: 5 }}>
+                        {inv.status === "pending" && (
+                          <button onClick={() => markPaid(inv)} style={{ border: "none", background: "#ecfdf5", color: "#10b981", padding: "5px 9px", borderRadius: 6, cursor: "pointer", fontSize: 11, display: "flex", alignItems: "center", gap: 3 }}>
+                            <CheckCircle size={12} /> Paid
+                          </button>
+                        )}
+                        <button onClick={() => sendReminder(inv)} style={{ border: "none", background: "#f0fdf4", color: "#16a34a", padding: "5px 9px", borderRadius: 6, cursor: "pointer", fontSize: 11 }}>Remind</button>
+                        <button onClick={() => setSelectedInvoice(inv)} style={{ border: "none", background: "var(--primary-light)", color: "var(--primary)", padding: "5px 9px", borderRadius: 6, cursor: "pointer", fontSize: 11 }}>View</button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {filtered.length === 0 && <div style={{ padding: 40, textAlign: "center", color: "var(--text-muted)" }}>No invoices found</div>}
+        </div>
+      )}
 
-      {/* Single Invoice Modal */}
+      {/* Create Invoice Modal */}
       {showModal && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 }}>
-          <div style={{ background: "white", borderRadius: 16, padding: 32, width: 600, maxHeight: "90vh", overflow: "auto" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 24 }}>
-              <h3 style={{ fontSize: 18, fontWeight: 700 }}>Create Invoice</h3>
+        <div style={modalStyle}>
+          <div style={{ ...sheetStyle, maxWidth: isMobile ? "100%" : 600 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 20 }}>
+              <h3 style={{ fontSize: 17, fontWeight: 700 }}>New Invoice</h3>
               <button onClick={() => setShowModal(false)} style={{ border: "none", background: "none", cursor: "pointer" }}><X size={20} /></button>
             </div>
             <form onSubmit={handleCreate}>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 20 }}>
-                <div style={{ gridColumn: "span 2" }}>
-                  <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 6 }}>Student</label>
+              <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 14, marginBottom: 16 }}>
+                <div style={{ gridColumn: isMobile ? "1" : "span 2" }}>
+                  <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 5 }}>Student</label>
                   <select value={form.studentId} onChange={e => {
                     const s = students.find(st => st.id === e.target.value);
                     setForm(p => ({ ...p, studentId: e.target.value }));
                     if (s?.monthlyFee) setLineItems([{ description: "Tuition Fee", amount: s.monthlyFee }]);
-                  }} required style={{ width: "100%", padding: "9px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14 }}>
+                  }} required style={{ width: "100%", padding: "10px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14 }}>
                     <option value="">Select student</option>
                     {students.map(s => <option key={s.id} value={s.id}>{s.name} ({s.studentId})</option>)}
                   </select>
                 </div>
                 <div>
-                  <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 6 }}>Month</label>
+                  <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 5 }}>Month</label>
                   <select value={form.month} onChange={e => setForm(p => ({ ...p, month: e.target.value }))} required
-                    style={{ width: "100%", padding: "9px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14 }}>
+                    style={{ width: "100%", padding: "10px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14 }}>
                     <option value="">Select month</option>
                     {MONTHS.map(m => <option key={m}>{m}</option>)}
                   </select>
                 </div>
                 <div>
-                  <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 6 }}>Due Date</label>
+                  <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 5 }}>Due Date</label>
                   <input type="date" value={form.dueDate} onChange={e => setForm(p => ({ ...p, dueDate: e.target.value }))}
-                    style={{ width: "100%", padding: "9px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14 }} />
+                    style={{ width: "100%", padding: "10px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14, boxSizing: "border-box" }} />
                 </div>
               </div>
 
               {/* Direct payment toggle */}
-              <div style={{ display: "flex", alignItems: "center", gap: 10, padding: 14, background: form.directPayment ? "#ecfdf5" : "#f8fafc", borderRadius: 10, marginBottom: 20, border: `1px solid ${form.directPayment ? "#bbf7d0" : "var(--border)"}` }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, padding: 12, background: form.directPayment ? "#ecfdf5" : "#f8fafc", borderRadius: 10, marginBottom: 16, border: `1px solid ${form.directPayment ? "#bbf7d0" : "var(--border)"}` }}>
                 <input type="checkbox" id="directPay" checked={form.directPayment} onChange={e => setForm(p => ({ ...p, directPayment: e.target.checked }))} style={{ width: 18, height: 18 }} />
                 <div>
-                  <label htmlFor="directPay" style={{ fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Directly receive payment (mark as paid immediately)</label>
-                  <div style={{ fontSize: 11, color: "var(--text-muted)" }}>Creates invoice and marks it paid — WhatsApp receipt sent to parent</div>
+                  <label htmlFor="directPay" style={{ fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Receive payment now (mark as paid immediately)</label>
+                  <div style={{ fontSize: 11, color: "var(--text-muted)" }}>WhatsApp receipt sent to parent automatically</div>
                 </div>
               </div>
 
               {/* Line Items */}
-              <div style={{ marginBottom: 20 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
                   <label style={{ fontSize: 13, fontWeight: 600 }}>Fee Line Items</label>
-                  <button type="button" onClick={addLineItem} style={{ display: "flex", alignItems: "center", gap: 4, padding: "5px 12px", background: "var(--primary-light)", color: "var(--primary)", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 600 }}><Plus size={12} /> Add Item</button>
+                  <button type="button" onClick={addLineItem}
+                    style={{ display: "flex", alignItems: "center", gap: 4, padding: "5px 12px", background: "var(--primary-light)", color: "var(--primary)", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 600 }}>
+                    <Plus size={12} /> Add Item
+                  </button>
                 </div>
                 <div style={{ border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden" }}>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr auto auto", background: "#f8fafc", padding: "8px 12px", fontSize: 12, fontWeight: 600, color: "var(--text-muted)", gap: 8 }}>
-                    <span>Description</span><span>Amount (Rs.)</span><span></span>
-                  </div>
                   {lineItems.map((item, idx) => (
-                    <div key={idx} style={{ display: "grid", gridTemplateColumns: "1fr auto auto", padding: "8px 12px", borderTop: "1px solid var(--border)", gap: 8, alignItems: "center" }}>
+                    <div key={idx} style={{ display: "grid", gridTemplateColumns: "1fr auto auto", padding: "10px 12px", borderBottom: idx < lineItems.length - 1 ? "1px solid var(--border)" : "none", gap: 8, alignItems: "center" }}>
                       <select value={item.description} onChange={e => updateLineItem(idx, "description", e.target.value)}
-                        style={{ padding: "7px 10px", border: "1px solid var(--border)", borderRadius: 6, fontSize: 13 }}>
-                        <option value="">Select</option>
+                        style={{ padding: "8px 10px", border: "1px solid var(--border)", borderRadius: 6, fontSize: 14 }}>
+                        <option value="">Select type</option>
                         {LINE_ITEM_PRESETS.map(p => <option key={p}>{p}</option>)}
                       </select>
                       <input type="number" value={item.amount} onChange={e => updateLineItem(idx, "amount", e.target.value)} placeholder="0"
-                        style={{ padding: "7px 10px", border: "1px solid var(--border)", borderRadius: 6, fontSize: 13, width: 110 }} />
-                      {lineItems.length > 1 && <button type="button" onClick={() => removeLineItem(idx)} style={{ border: "none", background: "none", cursor: "pointer", color: "#ef4444" }}><Trash2 size={14} /></button>}
+                        style={{ padding: "8px 10px", border: "1px solid var(--border)", borderRadius: 6, fontSize: 14, width: 100 }} />
+                      {lineItems.length > 1 && (
+                        <button type="button" onClick={() => removeLineItem(idx)} style={{ border: "none", background: "none", cursor: "pointer", color: "#ef4444" }}><Trash2 size={14} /></button>
+                      )}
                     </div>
                   ))}
-                  <div style={{ display: "flex", justifyContent: "flex-end", padding: "10px 12px", borderTop: "1px solid var(--border)", background: "#f8fafc" }}>
-                    <strong>Total: Rs. {totalAmount.toLocaleString()}</strong>
+                  <div style={{ display: "flex", justifyContent: "flex-end", padding: "10px 12px", background: "#f8fafc" }}>
+                    <strong style={{ fontSize: 15 }}>Total: Rs. {totalAmount.toLocaleString()}</strong>
                   </div>
                 </div>
               </div>
 
-              <div style={{ display: "flex", gap: 12, justifyContent: "flex-end" }}>
-                <button type="button" onClick={() => setShowModal(false)} style={{ padding: "10px 20px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer" }}>Cancel</button>
-                <button type="submit" style={{ padding: "10px 20px", background: form.directPayment ? "#10b981" : "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600 }}>
+              <div style={{ display: "flex", gap: 10 }}>
+                <button type="button" onClick={() => setShowModal(false)}
+                  style={{ flex: 1, padding: "11px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", fontSize: 14 }}>Cancel</button>
+                <button type="submit"
+                  style={{ flex: 2, padding: "11px", background: form.directPayment ? "#10b981" : "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600, fontSize: 14 }}>
                   {form.directPayment ? "Receive Payment" : "Create Invoice"}
                 </button>
               </div>
@@ -318,63 +422,71 @@ export default function Fees() {
 
       {/* Bulk Receive Modal */}
       {showBulk && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 }}>
-          <div style={{ background: "white", borderRadius: 16, padding: 32, width: 700, maxHeight: "90vh", overflow: "auto" }}>
+        <div style={modalStyle}>
+          <div style={{ ...sheetStyle, maxWidth: isMobile ? "100%" : 700 }}>
             <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 20 }}>
-              <h3 style={{ fontSize: 18, fontWeight: 700 }}>Bulk Fee Receive</h3>
+              <h3 style={{ fontSize: 17, fontWeight: 700 }}>Bulk Fee Receive</h3>
               <button onClick={() => setShowBulk(false)} style={{ border: "none", background: "none", cursor: "pointer" }}><X size={20} /></button>
             </div>
             <form onSubmit={handleBulkReceive}>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16, marginBottom: 20 }}>
+              <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr 1fr", gap: 12, marginBottom: 16 }}>
                 <div>
-                  <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 6 }}>Month</label>
+                  <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 5 }}>Month</label>
                   <select value={bulkMonth} onChange={e => setBulkMonth(e.target.value)} required
-                    style={{ width: "100%", padding: "9px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14 }}>
+                    style={{ width: "100%", padding: "10px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14 }}>
                     <option value="">Select</option>
                     {MONTHS.map(m => <option key={m}>{m}</option>)}
                   </select>
                 </div>
                 <div>
-                  <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 6 }}>Year</label>
+                  <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 5 }}>Year</label>
                   <input type="number" value={bulkYear} onChange={e => setBulkYear(e.target.value)}
-                    style={{ width: "100%", padding: "9px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14 }} />
+                    style={{ width: "100%", padding: "10px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14, boxSizing: "border-box" }} />
                 </div>
                 <div>
-                  <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 6 }}>Due Date</label>
+                  <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 5 }}>Due Date</label>
                   <input type="date" value={bulkDueDate} onChange={e => setBulkDueDate(e.target.value)}
-                    style={{ width: "100%", padding: "9px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14 }} />
+                    style={{ width: "100%", padding: "10px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14, boxSizing: "border-box" }} />
                 </div>
               </div>
 
-              <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+              <div style={{ display: "flex", gap: 8, marginBottom: 10, alignItems: "center" }}>
                 <button type="button" onClick={() => setBulkStudents(p => p.map(s => ({ ...s, selected: true })))}
-                  style={{ padding: "5px 12px", border: "1px solid var(--border)", borderRadius: 6, cursor: "pointer", fontSize: 12 }}>Select All</button>
+                  style={{ padding: "6px 12px", border: "1px solid var(--border)", borderRadius: 6, cursor: "pointer", fontSize: 12, background: "white" }}>Select All</button>
                 <button type="button" onClick={() => setBulkStudents(p => p.map(s => ({ ...s, selected: false })))}
-                  style={{ padding: "5px 12px", border: "1px solid var(--border)", borderRadius: 6, cursor: "pointer", fontSize: 12 }}>Deselect All</button>
-                <span style={{ fontSize: 13, color: "var(--text-muted)", alignSelf: "center" }}>
-                  {bulkStudents.filter(s => s.selected).length} selected
-                </span>
+                  style={{ padding: "6px 12px", border: "1px solid var(--border)", borderRadius: 6, cursor: "pointer", fontSize: 12, background: "white" }}>Deselect All</button>
+                <span style={{ fontSize: 13, color: "var(--text-muted)" }}>{bulkStudents.filter(s => s.selected).length} selected</span>
               </div>
 
-              <div style={{ border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden", marginBottom: 20 }}>
-                <div style={{ display: "grid", gridTemplateColumns: "36px 1fr 100px 120px 100px", background: "#f8fafc", padding: "8px 12px", fontSize: 12, fontWeight: 600, color: "var(--text-muted)", gap: 8 }}>
-                  <span></span><span>Student</span><span>Grade</span><span>Amount (Rs.)</span><span>Mark Paid</span>
-                </div>
+              <div style={{ border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden", marginBottom: 16, maxHeight: 320, overflowY: "auto" }}>
                 {bulkStudents.map((s, idx) => (
-                  <div key={s.id} style={{ display: "grid", gridTemplateColumns: "36px 1fr 100px 120px 100px", padding: "8px 12px", borderTop: "1px solid var(--border)", gap: 8, alignItems: "center", background: s.selected ? "#fef9f9" : "white" }}>
-                    <input type="checkbox" checked={s.selected} onChange={e => setBulkStudents(p => p.map((st, i) => i === idx ? { ...st, selected: e.target.checked } : st))} style={{ width: 16, height: 16 }} />
-                    <span style={{ fontSize: 13, fontWeight: 500 }}>{s.name}</span>
-                    <span style={{ fontSize: 12, color: "var(--text-muted)" }}>{s.grade}</span>
-                    <input type="number" value={s.amount} onChange={e => setBulkStudents(p => p.map((st, i) => i === idx ? { ...st, amount: e.target.value } : st))}
-                      style={{ padding: "5px 8px", border: "1px solid var(--border)", borderRadius: 6, fontSize: 13 }} />
-                    <input type="checkbox" checked={s.paid} onChange={e => setBulkStudents(p => p.map((st, i) => i === idx ? { ...st, paid: e.target.checked } : st))} style={{ width: 16, height: 16 }} />
+                  <div key={s.id} style={{ display: "grid", gridTemplateColumns: "36px 1fr auto auto", padding: "10px 12px", borderBottom: "1px solid var(--border)", gap: 10, alignItems: "center", background: s.selected ? "#fef9f9" : "white" }}>
+                    <input type="checkbox" checked={s.selected}
+                      onChange={e => setBulkStudents(p => p.map((st, i) => i === idx ? { ...st, selected: e.target.checked } : st))}
+                      style={{ width: 16, height: 16 }} />
+                    <div>
+                      <div style={{ fontSize: 14, fontWeight: 500 }}>{s.name}</div>
+                      <div style={{ fontSize: 11, color: "var(--text-muted)" }}>{s.grade}</div>
+                    </div>
+                    <input type="number" value={s.amount}
+                      onChange={e => setBulkStudents(p => p.map((st, i) => i === idx ? { ...st, amount: e.target.value } : st))}
+                      style={{ padding: "6px 8px", border: "1px solid var(--border)", borderRadius: 6, fontSize: 13, width: 90 }}
+                      placeholder="Amount" />
+                    <div style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: "var(--text-muted)" }}>
+                      <input type="checkbox" checked={s.paid}
+                        onChange={e => setBulkStudents(p => p.map((st, i) => i === idx ? { ...st, paid: e.target.checked } : st))}
+                        style={{ width: 15, height: 15 }} />
+                      Paid
+                    </div>
                   </div>
                 ))}
               </div>
 
-              <div style={{ display: "flex", gap: 12, justifyContent: "flex-end" }}>
-                <button type="button" onClick={() => setShowBulk(false)} style={{ padding: "10px 20px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer" }}>Cancel</button>
-                <button type="submit" style={{ padding: "10px 20px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600 }}>
+              <div style={{ display: "flex", gap: 10 }}>
+                <button type="button" onClick={() => setShowBulk(false)}
+                  style={{ flex: 1, padding: "11px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", fontSize: 14 }}>Cancel</button>
+                <button type="submit"
+                  style={{ flex: 2, padding: "11px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600, fontSize: 14 }}>
                   Create {bulkStudents.filter(s => s.selected).length} Invoices
                 </button>
               </div>
@@ -385,64 +497,80 @@ export default function Fees() {
 
       {/* Recurring Modal */}
       {showRecurring && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 }}>
-          <div style={{ background: "white", borderRadius: 16, padding: 32, width: 460 }}>
+        <div style={modalStyle}>
+          <div style={{ ...sheetStyle, maxWidth: isMobile ? "100%" : 460 }}>
             <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 20 }}>
-              <h3 style={{ fontSize: 18, fontWeight: 700 }}>Generate Recurring Fees</h3>
+              <h3 style={{ fontSize: 17, fontWeight: 700 }}>Generate Recurring Fees</h3>
               <button onClick={() => setShowRecurring(false)} style={{ border: "none", background: "none", cursor: "pointer" }}><X size={20} /></button>
             </div>
-            <div style={{ padding: 16, background: "#f8fafc", borderRadius: 10, marginBottom: 20, fontSize: 13, color: "var(--text-muted)" }}>
-              This will auto-generate invoices for all <strong style={{ color: "#10b981" }}>{students.filter(s => s.recurringFee).length} students</strong> with recurring fees enabled. Already existing invoices for this month will be skipped.
+            <div style={{ padding: 14, background: "#f8fafc", borderRadius: 10, marginBottom: 16, fontSize: 13, color: "var(--text-muted)" }}>
+              Will generate invoices for <strong style={{ color: "#10b981" }}>{students.filter(s => s.recurringFee).length} students</strong> with auto-recurring fees enabled. Existing invoices for this month are skipped.
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 24 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 20 }}>
               <div>
-                <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 6 }}>Month</label>
+                <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 5 }}>Month</label>
                 <select value={recurringMonth} onChange={e => setRecurringMonth(e.target.value)}
-                  style={{ width: "100%", padding: "9px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14 }}>
+                  style={{ width: "100%", padding: "10px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14 }}>
                   {MONTHS.map(m => <option key={m}>{m}</option>)}
                 </select>
               </div>
               <div>
-                <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 6 }}>Year</label>
+                <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 5 }}>Year</label>
                 <input type="number" value={recurringYear} onChange={e => setRecurringYear(e.target.value)}
-                  style={{ width: "100%", padding: "9px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14 }} />
+                  style={{ width: "100%", padding: "10px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14, boxSizing: "border-box" }} />
               </div>
             </div>
-            <div style={{ display: "flex", gap: 12, justifyContent: "flex-end" }}>
-              <button onClick={() => setShowRecurring(false)} style={{ padding: "10px 20px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer" }}>Cancel</button>
-              <button onClick={handleGenerateRecurring} style={{ padding: "10px 20px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600 }}>Generate Now</button>
+            <div style={{ display: "flex", gap: 10 }}>
+              <button onClick={() => setShowRecurring(false)}
+                style={{ flex: 1, padding: "11px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", fontSize: 14 }}>Cancel</button>
+              <button onClick={handleGenerateRecurring}
+                style={{ flex: 2, padding: "11px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600, fontSize: 14 }}>
+                Generate Now
+              </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* Invoice Detail */}
+      {/* Invoice Detail Modal */}
       {selectedInvoice && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 }}>
-          <div style={{ background: "white", borderRadius: 16, padding: 32, width: 480 }}>
+        <div style={modalStyle}>
+          <div style={{ ...sheetStyle, maxWidth: isMobile ? "100%" : 480 }}>
             <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 20 }}>
-              <h3 style={{ fontSize: 18, fontWeight: 700 }}>Invoice Detail</h3>
+              <h3 style={{ fontSize: 17, fontWeight: 700 }}>Invoice Detail</h3>
               <button onClick={() => setSelectedInvoice(null)} style={{ border: "none", background: "none", cursor: "pointer" }}><X size={20} /></button>
             </div>
-            <div style={{ marginBottom: 12 }}><div style={{ fontSize: 12, color: "var(--text-muted)" }}>Student</div><div style={{ fontWeight: 600 }}>{selectedInvoice.studentName}</div></div>
-            <div style={{ marginBottom: 12 }}><div style={{ fontSize: 12, color: "var(--text-muted)" }}>Period</div><div style={{ fontWeight: 600 }}>{selectedInvoice.month} {selectedInvoice.year}</div></div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
+              {[
+                { label: "Student", value: selectedInvoice.studentName },
+                { label: "Period", value: `${selectedInvoice.month} ${selectedInvoice.year}` },
+                { label: "Due Date", value: selectedInvoice.dueDate || "—" },
+                { label: "Status", value: selectedInvoice.status },
+              ].map(({ label, value }) => (
+                <div key={label} style={{ padding: "10px 14px", background: "#f8fafc", borderRadius: 8 }}>
+                  <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 3 }}>{label}</div>
+                  <div style={{ fontSize: 14, fontWeight: 600 }}>{value}</div>
+                </div>
+              ))}
+            </div>
             {selectedInvoice.lineItems && (
-              <div style={{ border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden", marginBottom: 12 }}>
+              <div style={{ border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden", marginBottom: 16 }}>
                 {selectedInvoice.lineItems.map((li, i) => (
-                  <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "10px 14px", borderBottom: "1px solid var(--border)", fontSize: 14 }}>
+                  <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "11px 14px", borderBottom: "1px solid var(--border)", fontSize: 14 }}>
                     <span>{li.customDescription || li.description}</span>
                     <span style={{ fontWeight: 600 }}>Rs. {Number(li.amount).toLocaleString()}</span>
                   </div>
                 ))}
-                <div style={{ display: "flex", justifyContent: "space-between", padding: "12px 14px", background: "#f8fafc", fontWeight: 700 }}>
-                  <span>Total</span><span style={{ color: "var(--primary)" }}>Rs. {Number(selectedInvoice.amount).toLocaleString()}</span>
+                <div style={{ display: "flex", justifyContent: "space-between", padding: "12px 14px", background: "#f8fafc", fontWeight: 700, fontSize: 15 }}>
+                  <span>Total</span>
+                  <span style={{ color: "var(--primary)" }}>Rs. {Number(selectedInvoice.amount).toLocaleString()}</span>
                 </div>
               </div>
             )}
-            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13 }}>
-              <span style={{ color: "var(--text-muted)" }}>Status</span>
-              <span style={{ fontWeight: 600, color: selectedInvoice.status === "paid" ? "#10b981" : "#f59e0b" }}>{selectedInvoice.status}</span>
-            </div>
+            <button onClick={() => setSelectedInvoice(null)}
+              style={{ width: "100%", padding: "11px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600, fontSize: 14 }}>
+              Close
+            </button>
           </div>
         </div>
       )}
