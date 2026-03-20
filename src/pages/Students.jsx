@@ -2,9 +2,10 @@ import React, { useEffect, useState } from "react";
 import { db } from "../firebase";
 import { collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot, serverTimestamp } from "firebase/firestore";
 import { useBranch } from "../context/BranchContext";
+import { matchesBranch } from "../utils/branchFilter";
 import { exportToCSV, exportToPDF } from "../utils/exportUtils";
 import toast from "react-hot-toast";
-import { Plus, Search, Edit2, Trash2, X, Download, FileText, Phone, User } from "lucide-react";
+import { Plus, Search, Edit2, Trash2, X, Download, FileText } from "lucide-react";
 
 const emptyStudent = { name: "", studentId: "", grade: "", parentName: "", parentPhone: "", email: "", branchId: "", monthlyFee: "", address: "", dob: "", recurringFee: false };
 
@@ -24,8 +25,6 @@ export default function Students() {
   const [students, setStudents] = useState([]);
   const [search, setSearch] = useState("");
   const [filterGrade, setFilterGrade] = useState("");
-  const [filterBranch, setFilterBranch] = useState("");
-  const [filterRecurring, setFilterRecurring] = useState("");
   const [showModal, setShowModal] = useState(false);
   const [form, setForm] = useState(emptyStudent);
   const [editing, setEditing] = useState(null);
@@ -40,11 +39,9 @@ export default function Students() {
   const grades = [...new Set(students.map(s => s.grade).filter(Boolean))].sort();
 
   const filtered = students.filter(s => {
-    const matchBranch = (activeBranch === "all" || s.branchId === activeBranch) && (!filterBranch || s.branchId === filterBranch);
     const matchSearch = !search || s.name?.toLowerCase().includes(search.toLowerCase()) || s.studentId?.toLowerCase().includes(search.toLowerCase());
     const matchGrade = !filterGrade || s.grade === filterGrade;
-    const matchRecurring = !filterRecurring || (filterRecurring === "yes" ? s.recurringFee : !s.recurringFee);
-    return matchBranch && matchSearch && matchGrade && matchRecurring;
+    return matchesBranch(s, activeBranch) && matchSearch && matchGrade;
   });
 
   const handleSubmit = async (e) => {
@@ -63,19 +60,18 @@ export default function Students() {
 
   const handleCSV = () => exportToCSV("students",
     ["ID", "Name", "Grade", "Parent", "Phone", "Fee", "Branch"],
-    filtered.map(s => [s.studentId, s.name, s.grade, s.parentName, s.parentPhone, s.monthlyFee, branches.find(b => b.id === s.branchId)?.name || "Main"]));
+    filtered.map(s => [s.studentId, s.name, s.grade, s.parentName, s.parentPhone, s.monthlyFee, branches.find(b => b.id === s.branchId)?.name || "Main"])
+  );
 
   const handlePDF = () => exportToPDF("Students Report",
     ["ID", "Name", "Grade", "Parent", "Phone", "Fee"],
-    filtered.map(s => [s.studentId, s.name, s.grade, s.parentName, s.parentPhone, `Rs. ${s.monthlyFee}`]));
+    filtered.map(s => [s.studentId, s.name, s.grade, s.parentName, s.parentPhone, `Rs. ${s.monthlyFee}`])
+  );
 
   return (
     <div>
-      {/* Header */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 10 }}>
-        <h2 style={{ fontSize: 20, fontWeight: 700 }}>
-          Students <span style={{ fontSize: 13, fontWeight: 400, color: "var(--text-muted)" }}>({filtered.length})</span>
-        </h2>
+        <h2 style={{ fontSize: 20, fontWeight: 700 }}>Students <span style={{ fontSize: 13, fontWeight: 400, color: "var(--text-muted)" }}>({filtered.length})</span></h2>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           {!isMobile && <>
             <button onClick={handleCSV} style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13 }}><Download size={14} /> CSV</button>
@@ -88,7 +84,6 @@ export default function Students() {
         </div>
       </div>
 
-      {/* Filters */}
       <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
         <div style={{ position: "relative", flex: 1, minWidth: 160 }}>
           <Search size={14} style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: "var(--text-muted)" }} />
@@ -100,20 +95,12 @@ export default function Students() {
           <option value="">All Grades</option>
           {grades.map(g => <option key={g}>{g}</option>)}
         </select>
-        {!isMobile && (
-          <select value={filterBranch} onChange={e => setFilterBranch(e.target.value)}
-            style={{ padding: "8px 10px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 13, background: "white" }}>
-            <option value="">All Branches</option>
-            {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
-          </select>
-        )}
-        {(search || filterGrade || filterBranch) && (
-          <button onClick={() => { setSearch(""); setFilterGrade(""); setFilterBranch(""); }}
+        {(search || filterGrade) && (
+          <button onClick={() => { setSearch(""); setFilterGrade(""); }}
             style={{ padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13, color: "var(--text-muted)" }}>Clear</button>
         )}
       </div>
 
-      {/* Mobile card view */}
       {isMobile ? (
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           {filtered.map(s => (
@@ -134,25 +121,13 @@ export default function Students() {
                 </div>
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                <div style={{ fontSize: 12 }}>
-                  <div style={{ color: "var(--text-muted)", marginBottom: 2 }}>Grade</div>
-                  <div style={{ fontWeight: 500 }}>{s.grade || "—"}</div>
-                </div>
-                <div style={{ fontSize: 12 }}>
-                  <div style={{ color: "var(--text-muted)", marginBottom: 2 }}>Monthly Fee</div>
-                  <div style={{ fontWeight: 600, color: "var(--primary)" }}>Rs. {s.monthlyFee || 0}</div>
-                </div>
-                <div style={{ fontSize: 12 }}>
-                  <div style={{ color: "var(--text-muted)", marginBottom: 2 }}>Parent</div>
-                  <div style={{ fontWeight: 500 }}>{s.parentName || "—"}</div>
-                </div>
-                <div style={{ fontSize: 12 }}>
-                  <div style={{ color: "var(--text-muted)", marginBottom: 2 }}>Phone</div>
-                  <a href={`tel:${s.parentPhone}`} style={{ color: "#2a8c7a", fontWeight: 500, textDecoration: "none" }}>{s.parentPhone || "—"}</a>
-                </div>
+                <div style={{ fontSize: 12 }}><div style={{ color: "var(--text-muted)", marginBottom: 2 }}>Grade</div><div style={{ fontWeight: 500 }}>{s.grade || "—"}</div></div>
+                <div style={{ fontSize: 12 }}><div style={{ color: "var(--text-muted)", marginBottom: 2 }}>Monthly Fee</div><div style={{ fontWeight: 600, color: "var(--primary)" }}>Rs. {s.monthlyFee || 0}</div></div>
+                <div style={{ fontSize: 12 }}><div style={{ color: "var(--text-muted)", marginBottom: 2 }}>Parent</div><div style={{ fontWeight: 500 }}>{s.parentName || "—"}</div></div>
+                <div style={{ fontSize: 12 }}><div style={{ color: "var(--text-muted)", marginBottom: 2 }}>Phone</div><a href={`tel:${s.parentPhone}`} style={{ color: "#2a8c7a", fontWeight: 500, textDecoration: "none" }}>{s.parentPhone || "—"}</a></div>
               </div>
               <div style={{ marginTop: 10, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <span style={{ fontSize: 12, color: "var(--text-muted)" }}>{branches.find(b => b.id === s.branchId)?.name || "Main"}</span>
+                <span style={{ fontSize: 12, color: "var(--text-muted)" }}>{branches.find(b => b.id === s.branchId)?.name || "Main Office"}</span>
                 {s.recurringFee && <span style={{ padding: "2px 8px", borderRadius: 20, fontSize: 11, background: "#ecfdf5", color: "#10b981", fontWeight: 600 }}>Auto fees</span>}
               </div>
             </div>
@@ -160,7 +135,6 @@ export default function Students() {
           {filtered.length === 0 && <div style={{ padding: 40, textAlign: "center", color: "var(--text-muted)", background: "white", borderRadius: 12 }}>No students found</div>}
         </div>
       ) : (
-        /* Desktop table view */
         <div style={{ background: "white", borderRadius: 12, border: "1px solid var(--border)", overflow: "hidden" }}>
           <div style={{ overflowX: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 700 }}>
@@ -180,7 +154,7 @@ export default function Students() {
                     <td style={{ padding: "11px 14px", fontSize: 13, whiteSpace: "nowrap" }}>{s.parentName}</td>
                     <td style={{ padding: "11px 14px", fontSize: 13 }}>{s.parentPhone}</td>
                     <td style={{ padding: "11px 14px", fontSize: 13, fontWeight: 600 }}>Rs. {s.monthlyFee}</td>
-                    <td style={{ padding: "11px 14px", fontSize: 13 }}>{branches.find(b => b.id === s.branchId)?.name || "Main"}</td>
+                    <td style={{ padding: "11px 14px", fontSize: 13 }}>{branches.find(b => b.id === s.branchId)?.name || "Main Office"}</td>
                     <td style={{ padding: "11px 14px" }}>
                       <span style={{ padding: "2px 8px", borderRadius: 20, fontSize: 11, fontWeight: 600, background: s.recurringFee ? "#ecfdf5" : "#f8fafc", color: s.recurringFee ? "#10b981" : "var(--text-muted)" }}>
                         {s.recurringFee ? "Auto" : "Manual"}
@@ -201,9 +175,8 @@ export default function Students() {
         </div>
       )}
 
-      {/* Modal */}
       {showModal && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 1000, padding: isMobile ? 0 : 16 }}>
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: isMobile ? "flex-end" : "center", justifyContent: "center", zIndex: 1000, padding: isMobile ? 0 : 16 }}>
           <div style={{ background: "white", borderRadius: isMobile ? "20px 20px 0 0" : 16, padding: isMobile ? "24px 20px" : 32, width: "100%", maxWidth: isMobile ? "100%" : 560, maxHeight: "90vh", overflow: "auto" }}>
             <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 20 }}>
               <h3 style={{ fontSize: 17, fontWeight: 700 }}>{editing ? "Edit Student" : "Add Student"}</h3>
@@ -217,7 +190,7 @@ export default function Students() {
                   { label: "Grade / Class", key: "grade" },
                   { label: "Date of Birth", key: "dob", type: "date" },
                   { label: "Parent Name", key: "parentName" },
-                  { label: "Parent Phone", key: "parentPhone" },
+                  { label: "Parent Phone (+92...)", key: "parentPhone" },
                   { label: "Email", key: "email", type: "email" },
                   { label: "Monthly Fee (Rs.)", key: "monthlyFee", type: "number" },
                 ].map(({ label, key, type = "text", required }) => (
@@ -231,7 +204,7 @@ export default function Students() {
                   <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 5 }}>Branch</label>
                   <select value={form.branchId || ""} onChange={e => setForm(p => ({ ...p, branchId: e.target.value }))}
                     style={{ width: "100%", padding: "10px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14 }}>
-                    <option value="">Main</option>
+                    <option value="">Main Office</option>
                     {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
                   </select>
                 </div>

@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { db } from "../firebase";
 import { collection, getDocs } from "firebase/firestore";
 import { useBranch } from "../context/BranchContext";
+import { matchesBranch } from "../utils/branchFilter";
 import { Users, Receipt, TrendingDown, TrendingUp, UserCheck, Building2 } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line } from "recharts";
 
@@ -27,47 +28,30 @@ export default function Dashboard() {
         let students = studentsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
         let fees = feesSnap.docs.map(d => ({ id: d.id, ...d.data() }));
         let expenses = expSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+        let employees = employeesSnap.docs.map(d => ({ id: d.id, ...d.data() }));
 
-        if (activeBranch !== "all") {
-          students = students.filter(s => s.branchId === activeBranch);
-          fees = fees.filter(f => f.branchId === activeBranch);
-          expenses = expenses.filter(e => e.branchId === activeBranch);
-        }
+        students = students.filter(s => matchesBranch(s, activeBranch));
+        fees = fees.filter(f => matchesBranch(f, activeBranch));
+        expenses = expenses.filter(e => matchesBranch(e, activeBranch));
+        employees = employees.filter(e => matchesBranch(e, activeBranch));
 
         const collected = fees.filter(f => f.status === "paid").reduce((s, f) => s + Number(f.amount || 0), 0);
         const pending = fees.filter(f => f.status === "pending").reduce((s, f) => s + Number(f.amount || 0), 0);
         const totalExp = expenses.reduce((s, e) => s + Number(e.amount || 0), 0);
 
-        setStats({
-          students: students.length,
-          employees: employeesSnap.size,
-          feesCollected: collected,
-          expenses: totalExp,
-          pending,
-          branches: branchSnap.size,
-        });
+        setStats({ students: students.length, employees: employees.length, feesCollected: collected, expenses: totalExp, pending, branches: branchSnap.size });
 
-        // Recent invoices
-        const recent = fees
-          .sort((a, b) => (b.createdAt?.toDate?.() || 0) - (a.createdAt?.toDate?.() || 0))
-          .slice(0, 6);
+        const recent = fees.sort((a, b) => (b.createdAt?.toDate?.() || 0) - (a.createdAt?.toDate?.() || 0)).slice(0, 6);
         setRecentInvoices(recent);
 
-        // Monthly chart data
         const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
         const monthly = months.map((month, i) => ({
           month,
-          fees: fees
-            .filter(f => f.status === "paid" && new Date(f.paidDate?.toDate?.() || f.createdAt?.toDate?.() || Date.now()).getMonth() === i)
-            .reduce((s, f) => s + Number(f.amount || 0), 0),
-          expenses: expenses
-            .filter(e => new Date(e.date || Date.now()).getMonth() === i)
-            .reduce((s, e) => s + Number(e.amount || 0), 0),
+          fees: fees.filter(f => f.status === "paid" && new Date(f.paidDate?.toDate?.() || f.createdAt?.toDate?.() || Date.now()).getMonth() === i).reduce((s, f) => s + Number(f.amount || 0), 0),
+          expenses: expenses.filter(e => new Date(e.date || Date.now()).getMonth() === i).reduce((s, e) => s + Number(e.amount || 0), 0),
         }));
         setChartData(monthly);
-      } catch (err) {
-        console.error("Dashboard error:", err);
-      }
+      } catch (err) { console.error("Dashboard error:", err); }
       setLoading(false);
     };
     fetchStats();
@@ -94,21 +78,14 @@ export default function Dashboard() {
 
   return (
     <div style={{ maxWidth: 1200 }}>
-
-      {/* Header */}
       <div style={{ marginBottom: 20 }}>
         <h2 style={{ fontSize: 20, fontWeight: 700 }}>Dashboard</h2>
         <p style={{ color: "var(--text-muted)", fontSize: 13, marginTop: 2 }}>
-          {activeBranch === "all" ? "All branches overview" : `${branches.find(b => b.id === activeBranch)?.name || ""} branch`}
+          {activeBranch === "all" ? "All branches overview" : activeBranch === "main" ? "Main Office" : branches.find(b => b.id === activeBranch)?.name || ""}
         </p>
       </div>
 
-      {/* Surplus banner */}
-      <div style={{
-        background: netSurplus >= 0 ? "linear-gradient(135deg, #4a1520, #7a2535)" : "linear-gradient(135deg, #7f1d1d, #ef4444)",
-        borderRadius: 14, padding: "20px 24px", marginBottom: 20, color: "white",
-        display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12
-      }}>
+      <div style={{ background: "var(--sidebar-bg)", borderRadius: 14, padding: "20px 24px", marginBottom: 20, color: "white", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12 }}>
         <div>
           <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 4, textTransform: "uppercase", letterSpacing: 1 }}>Net {netSurplus >= 0 ? "Surplus" : "Deficit"}</div>
           <div style={{ fontSize: 28, fontWeight: 700 }}>Rs. {Math.abs(netSurplus).toLocaleString()}</div>
@@ -117,34 +94,26 @@ export default function Dashboard() {
         <div style={{ textAlign: "right" }}>
           <div style={{ fontSize: 12, opacity: 0.65, marginBottom: 4 }}>Collection rate</div>
           <div style={{ fontSize: 22, fontWeight: 700 }}>
-            {stats.feesCollected + stats.pending > 0
-              ? `${Math.round((stats.feesCollected / (stats.feesCollected + stats.pending)) * 100)}%`
-              : "0%"}
+            {stats.feesCollected + stats.pending > 0 ? `${Math.round((stats.feesCollected / (stats.feesCollected + stats.pending)) * 100)}%` : "0%"}
           </div>
         </div>
       </div>
 
-      {/* Stat cards */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12, marginBottom: 20 }}>
         {cards.map(({ label, value, icon: Icon, color, bg }) => (
           <div key={label} style={{ background: "white", borderRadius: 12, padding: "16px", border: "1px solid var(--border)" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
-              <div style={{ width: 36, height: 36, borderRadius: 9, background: bg, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                <Icon size={18} color={color} />
-              </div>
+            <div style={{ width: 36, height: 36, borderRadius: 9, background: bg, display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 10 }}>
+              <Icon size={18} color={color} />
             </div>
             <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 4 }}>{label}</div>
-            <div style={{ fontSize: 18, fontWeight: 700, color, lineHeight: 1.2 }}>{value}</div>
+            <div style={{ fontSize: 18, fontWeight: 700, color }}>{value}</div>
           </div>
         ))}
       </div>
 
-      {/* Charts row */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: 16, marginBottom: 20 }}>
-
-        {/* Bar chart */}
         <div style={{ background: "white", borderRadius: 12, padding: "20px 16px", border: "1px solid var(--border)" }}>
-          <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 16, paddingLeft: 4 }}>Monthly Fees vs Expenses</h3>
+          <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 16 }}>Monthly Fees vs Expenses</h3>
           <div style={{ overflowX: "auto" }}>
             <div style={{ minWidth: 300 }}>
               <ResponsiveContainer width="100%" height={220}>
@@ -158,21 +127,9 @@ export default function Dashboard() {
               </ResponsiveContainer>
             </div>
           </div>
-          <div style={{ display: "flex", gap: 16, justifyContent: "center", marginTop: 8 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 12 }}>
-              <div style={{ width: 10, height: 10, borderRadius: 2, background: "#7a2535" }} />
-              <span style={{ color: "var(--text-muted)" }}>Fees</span>
-            </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 12 }}>
-              <div style={{ width: 10, height: 10, borderRadius: 2, background: "#ef4444" }} />
-              <span style={{ color: "var(--text-muted)" }}>Expenses</span>
-            </div>
-          </div>
         </div>
-
-        {/* Line chart */}
         <div style={{ background: "white", borderRadius: 12, padding: "20px 16px", border: "1px solid var(--border)" }}>
-          <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 16, paddingLeft: 4 }}>Cash Flow Trend</h3>
+          <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 16 }}>Cash Flow Trend</h3>
           <div style={{ overflowX: "auto" }}>
             <div style={{ minWidth: 300 }}>
               <ResponsiveContainer width="100%" height={220}>
@@ -189,7 +146,6 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Recent invoices */}
       <div style={{ background: "white", borderRadius: 12, border: "1px solid var(--border)", overflow: "hidden" }}>
         <div style={{ padding: "16px 20px", borderBottom: "1px solid var(--border)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <h3 style={{ fontSize: 14, fontWeight: 600 }}>Recent Invoices</h3>
@@ -214,11 +170,7 @@ export default function Dashboard() {
                   <td style={{ padding: "11px 16px", fontSize: 13 }}>{inv.month} {inv.year}</td>
                   <td style={{ padding: "11px 16px", fontSize: 14, fontWeight: 600 }}>Rs. {Number(inv.amount).toLocaleString()}</td>
                   <td style={{ padding: "11px 16px" }}>
-                    <span style={{
-                      padding: "3px 10px", borderRadius: 20, fontSize: 11, fontWeight: 600,
-                      background: inv.status === "paid" ? "#ecfdf5" : "#fffbeb",
-                      color: inv.status === "paid" ? "#10b981" : "#f59e0b"
-                    }}>{inv.status}</span>
+                    <span style={{ padding: "3px 10px", borderRadius: 20, fontSize: 11, fontWeight: 600, background: inv.status === "paid" ? "#ecfdf5" : "#fffbeb", color: inv.status === "paid" ? "#10b981" : "#f59e0b" }}>{inv.status}</span>
                   </td>
                   <td style={{ padding: "11px 16px", fontSize: 13, color: "var(--text-muted)" }}>{inv.dueDate || "—"}</td>
                 </tr>
@@ -227,7 +179,6 @@ export default function Dashboard() {
           </table>
         </div>
       </div>
-
     </div>
   );
 }

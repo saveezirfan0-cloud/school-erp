@@ -37,11 +37,16 @@ export default function Branches() {
           <h3 style={{ fontWeight: 600, marginBottom: 16 }}>New Branch</h3>
           <form onSubmit={handleSubmit}>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-              {[{ label: "Branch Name", key: "name" }, { label: "Manager", key: "manager" }, { label: "Phone", key: "phone" }, { label: "Address", key: "address" }].map(({ label, key }) => (
+              {[
+                { label: "Branch Name", key: "name", required: true },
+                { label: "Manager", key: "manager" },
+                { label: "Phone", key: "phone" },
+                { label: "Address", key: "address" }
+              ].map(({ label, key, required }) => (
                 <div key={key}>
                   <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 6 }}>{label}</label>
-                  <input value={form[key]} onChange={e => setForm(p => ({ ...p, [key]: e.target.value }))} required={key === "name"}
-                    style={{ width: "100%", padding: "9px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14 }} />
+                  <input value={form[key]} onChange={e => setForm(p => ({ ...p, [key]: e.target.value }))} required={required}
+                    style={{ width: "100%", padding: "9px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14, boxSizing: "border-box" }} />
                 </div>
               ))}
             </div>
@@ -53,11 +58,12 @@ export default function Branches() {
         </div>
       )}
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 16 }}>
-        <div style={{ background: "linear-gradient(135deg, #1e1b4b, #4f46e5)", borderRadius: 12, padding: 24, color: "white" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 16 }}>
+        <div style={{ background: "var(--sidebar-bg)", borderRadius: 12, padding: 24, color: "white" }}>
           <Building2 size={28} style={{ marginBottom: 12, opacity: 0.8 }} />
           <div style={{ fontSize: 18, fontWeight: 700 }}>Main Organization</div>
-          <div style={{ opacity: 0.7, fontSize: 14, marginTop: 4 }}>Headquarters</div>
+          <div style={{ opacity: 0.6, fontSize: 14, marginTop: 4 }}>Headquarters</div>
+          <div style={{ marginTop: 12, fontSize: 12, opacity: 0.5 }}>Branch ID: main</div>
         </div>
         {branches.map(b => (
           <div key={b.id} style={{ background: "white", borderRadius: 12, padding: 24, border: "1px solid var(--border)" }}>
@@ -67,8 +73,9 @@ export default function Branches() {
             </div>
             <div style={{ fontSize: 16, fontWeight: 700, marginTop: 12 }}>{b.name}</div>
             <div style={{ color: "var(--text-muted)", fontSize: 13, marginTop: 4 }}>{b.address}</div>
-            <div style={{ color: "var(--text-muted)", fontSize: 13, marginTop: 2 }}>Manager: {b.manager}</div>
+            <div style={{ color: "var(--text-muted)", fontSize: 13 }}>Manager: {b.manager}</div>
             <div style={{ color: "var(--text-muted)", fontSize: 13 }}>{b.phone}</div>
+            <div style={{ marginTop: 8, fontSize: 12, color: "var(--text-muted)" }}>Branch ID: {b.id}</div>
           </div>
         ))}
       </div>
