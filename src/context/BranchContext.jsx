@@ -20,9 +20,7 @@ export function BranchProvider({ children }) {
       setLoading(false);
       return;
     }
-
     setLoading(true);
-
     const unsub = onSnapshot(
       collection(db, "branches"),
       (snap) => {
@@ -34,7 +32,6 @@ export function BranchProvider({ children }) {
         setLoading(false);
       }
     );
-
     return unsub;
   }, [user]);
 

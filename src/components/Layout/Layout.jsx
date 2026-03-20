@@ -4,7 +4,7 @@ import Sidebar from "./Sidebar";
 import Navbar from "./Navbar";
 
 export default function Layout() {
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
   const location = useLocation();
 
@@ -12,53 +12,56 @@ export default function Layout() {
     const handler = () => {
       const mobile = window.innerWidth <= 768;
       setIsMobile(mobile);
-      if (!mobile) setSidebarOpen(false);
+      if (mobile) setSidebarOpen(false);
+      else setSidebarOpen(true);
     };
+    // Set correct initial state
+    const mobile = window.innerWidth <= 768;
+    setIsMobile(mobile);
+    setSidebarOpen(!mobile);
+
     window.addEventListener("resize", handler);
     return () => window.removeEventListener("resize", handler);
   }, []);
 
-  // Auto-close sidebar when navigating on mobile
+  // Auto-close on mobile when navigating
   useEffect(() => {
     if (isMobile) setSidebarOpen(false);
   }, [location.pathname]);
 
-  const handleClose = () => {
-    if (isMobile) setSidebarOpen(false);
-  };
-
   return (
     <div style={{ display: "flex", height: "100vh", overflow: "hidden", position: "relative" }}>
 
-      {/* Overlay — only when mobile sidebar is open */}
+      {/* Dark overlay — mobile only when sidebar open */}
       {isMobile && sidebarOpen && (
         <div
           onClick={() => setSidebarOpen(false)}
           style={{
-            position: "fixed",
-            inset: 0,
+            position: "fixed", inset: 0,
             background: "rgba(0,0,0,0.5)",
-            zIndex: 98,
-            cursor: "pointer",
+            zIndex: 98, cursor: "pointer",
           }}
         />
       )}
 
-      {/* Sidebar */}
+      {/* Sidebar wrapper */}
       <div style={{
         position: isMobile ? "fixed" : "relative",
-        top: 0,
-        left: 0,
+        top: 0, left: 0,
         height: "100vh",
-        zIndex: 99,
+        zIndex: isMobile ? 99 : "auto",
+        flexShrink: 0,
+        // Mobile: slide in/out. Desktop: collapse width.
         transform: isMobile
           ? (sidebarOpen ? "translateX(0)" : "translateX(-260px)")
-          : "translateX(0)",
-        transition: isMobile ? "transform 0.25s ease" : "none",
-        flexShrink: 0,
+          : "none",
+        width: isMobile ? 240 : (sidebarOpen ? 240 : 0),
+        overflow: "hidden",
+        transition: isMobile
+          ? "transform 0.25s ease"
+          : "width 0.25s ease",
       }}>
-        {/* Only pass onClose on mobile so X button only shows on mobile */}
-        <Sidebar onClose={isMobile ? handleClose : null} />
+        <Sidebar onClose={isMobile ? () => setSidebarOpen(false) : null} />
       </div>
 
       {/* Main content */}

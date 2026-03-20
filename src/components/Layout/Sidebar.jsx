@@ -3,31 +3,36 @@ import { NavLink } from "react-router-dom";
 import {
   LayoutDashboard, Users, UserCheck, Receipt, TrendingDown,
   Building2, Settings, BookOpen, CreditCard, FileText,
-  BarChart2, ChevronDown, ChevronRight, Landmark, BookMarked, X
+  BarChart2, ChevronDown, ChevronRight, Landmark, BookMarked,
+  X, ShieldCheck
 } from "lucide-react";
-
-const nav = [
-  { to: "/", icon: LayoutDashboard, label: "Dashboard" },
-  { to: "/students", icon: Users, label: "Students" },
-  { to: "/employees", icon: UserCheck, label: "Employees" },
-  {
-    label: "Accounting", icon: BookOpen, children: [
-      { to: "/chart-of-accounts", icon: BookOpen, label: "Chart of Accounts" },
-      { to: "/bank-cash", icon: Landmark, label: "Bank & Cash" },
-      { to: "/journals", icon: BookMarked, label: "Journals" },
-      { to: "/fees", icon: Receipt, label: "Fees & Invoices" },
-      { to: "/expenses", icon: TrendingDown, label: "Expenses" },
-      { to: "/payments", icon: CreditCard, label: "Payments" },
-      { to: "/payslips", icon: FileText, label: "Payslips" },
-    ]
-  },
-  { to: "/reports", icon: BarChart2, label: "Reports" },
-  { to: "/branches", icon: Building2, label: "Branches" },
-  { to: "/settings", icon: Settings, label: "Settings" },
-];
+import { useUser } from "../../context/UserContext";
 
 export default function Sidebar({ onClose }) {
   const [openGroup, setOpenGroup] = useState("Accounting");
+  const { can } = useUser();
+
+  const nav = [
+    { to: "/", icon: LayoutDashboard, label: "Dashboard", show: can("canViewDashboard") },
+    { to: "/students", icon: Users, label: "Students", show: can("canViewStudents") },
+    { to: "/employees", icon: UserCheck, label: "Employees", show: can("canViewEmployees") },
+    {
+      label: "Accounting", icon: BookOpen, show: can("canViewAccounting") || can("canViewFees") || can("canViewExpenses") || can("canViewPayments") || can("canViewPayslips"),
+      children: [
+        { to: "/chart-of-accounts", icon: BookOpen, label: "Chart of Accounts", show: can("canViewAccounting") },
+        { to: "/bank-cash", icon: Landmark, label: "Bank & Cash", show: can("canViewAccounting") },
+        { to: "/journals", icon: BookMarked, label: "Journals", show: can("canViewAccounting") },
+        { to: "/fees", icon: Receipt, label: "Fees & Invoices", show: can("canViewFees") },
+        { to: "/expenses", icon: TrendingDown, label: "Expenses", show: can("canViewExpenses") },
+        { to: "/payments", icon: CreditCard, label: "Payments", show: can("canViewPayments") },
+        { to: "/payslips", icon: FileText, label: "Payslips", show: can("canViewPayslips") },
+      ].filter(i => i.show)
+    },
+    { to: "/reports", icon: BarChart2, label: "Reports", show: can("canViewReports") },
+    { to: "/branches", icon: Building2, label: "Branches", show: can("canManageBranches") },
+    { to: "/users", icon: ShieldCheck, label: "Users", show: can("canManageUsers") },
+    { to: "/settings", icon: Settings, label: "Settings", show: true },
+  ].filter(i => i.show);
 
   return (
     <aside style={{ width: 240, background: "var(--sidebar-bg)", display: "flex", flexDirection: "column", flexShrink: 0, overflowY: "auto", height: "100vh" }}>
@@ -45,10 +50,12 @@ export default function Sidebar({ onClose }) {
           </button>
         )}
       </div>
+
       <nav style={{ flex: 1, padding: "10px 8px" }}>
         {nav.map((item) => {
           if (item.children) {
             const isOpen = openGroup === item.label;
+            if (item.children.length === 0) return null;
             return (
               <div key={item.label}>
                 <button onClick={() => setOpenGroup(isOpen ? null : item.label)}
@@ -96,9 +103,30 @@ export default function Sidebar({ onClose }) {
           );
         })}
       </nav>
+
       <div style={{ padding: "12px 16px", borderTop: "1px solid rgba(255,255,255,0.08)", fontSize: 10, color: "rgba(255,255,255,0.25)", textAlign: "center" }}>
         ZMI School Management © 2026
       </div>
     </aside>
   );
+}
+```
+
+---
+
+### Step 8 — Update Firestore rules
+
+Go to Firebase Console → Firestore → Rules and update:
+```
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /users/{userId} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null;
+    }
+    match /{document=**} {
+      allow read, write: if request.auth != null;
+    }
+  }
 }
