@@ -232,42 +232,115 @@ export async function getDoc(ref) {
 //   onSnapshot(docRef, cb)            (UserContext: doc(db,"users",uid))
 //   onSnapshot(ref, cb, errCb)
 // Returns an unsubscribe function.
+//
+// For collections we keep a local cache and apply each realtime
+// event (INSERT/UPDATE/DELETE) to it directly, then emit immediately.
+// This makes changes — especially deletes — appear instantly in the
+// session that made them and in every other open session, without
+// waiting for a full network refetch. A debounced refetch still runs
+// as a safety reconciliation in case an event is ever missed.
 export function onSnapshot(ref, onNext, onError) {
   let active = true;
-
   const isDoc = ref instanceof DocRef;
 
-  const fetchAll = async () => {
-    try {
-      if (isDoc) {
+  // Document subscription: just refetch the single doc on any change.
+  if (isDoc) {
+    const fetchDoc = async () => {
+      try {
         const snap = await getDoc(ref);
         if (active) onNext(snap);
-      } else {
-        const snap = await getDocs(ref);
-        if (active) onNext(snap);
+      } catch (e) {
+        if (active && onError) onError(e);
+        else if (active) console.error("onSnapshot error:", e);
       }
+    };
+    fetchDoc();
+    const ch = supabase
+      .channel(`rt_${ref.table}_${ref.id}_${Math.random().toString(36).slice(2)}`)
+      .on("postgres_changes", { event: "*", schema: "public", table: ref.table, filter: `id=eq.${ref.id}` }, fetchDoc)
+      .subscribe();
+    return () => { active = false; supabase.removeChannel(ch); };
+  }
+
+  // Collection subscription: cache + incremental apply.
+  let cache = [];            // raw DB rows (snake_case), as returned by Supabase
+  const emit = () => {
+    if (!active) return;
+    // Re-sort/limit through the ref so ordering stays correct, then
+    // wrap in the Firestore-shaped snapshot the app expects.
+    let rows = cache.slice();
+    if (ref._order) {
+      const { col, ascending } = ref._order;
+      rows.sort((a, b) => {
+        const av = a[col], bv = b[col];
+        if (av === bv) return 0;
+        const cmp = av > bv ? 1 : -1;
+        return ascending ? cmp : -cmp;
+      });
+    }
+    if (ref._limit != null) rows = rows.slice(0, ref._limit);
+    onNext(querySnap(rows));
+  };
+
+  const fullFetch = async () => {
+    try {
+      let builder = supabase.from(ref.table).select("*");
+      builder = applyQuery(builder, ref);
+      const { data, error } = await builder;
+      if (error) throw error;
+      cache = data || [];
+      emit();
     } catch (e) {
       if (active && onError) onError(e);
       else if (active) console.error("onSnapshot error:", e);
     }
   };
 
-  // Initial load.
-  fetchAll();
+  // Debounced reconciliation refetch (safety net).
+  let reconcileTimer = null;
+  const scheduleReconcile = () => {
+    if (reconcileTimer) clearTimeout(reconcileTimer);
+    reconcileTimer = setTimeout(fullFetch, 1500);
+  };
 
-  // Live updates: subscribe to Postgres changes on the table and
-  // refetch (keeps ordering/limit/jsonb decoding consistent and simple).
+  // Initial load.
+  fullFetch();
+
+  // Live updates applied directly to the cache.
   const channel = supabase
     .channel(`rt_${ref.table}_${Math.random().toString(36).slice(2)}`)
     .on(
       "postgres_changes",
       { event: "*", schema: "public", table: ref.table },
-      () => fetchAll()
+      (payload) => {
+        if (!active) return;
+        const { eventType, new: newRow, old: oldRow } = payload;
+        const idOf = (r) => (r ? r.id : undefined);
+
+        if (eventType === "INSERT" && newRow) {
+          if (!cache.some((r) => r.id === newRow.id)) cache.push(newRow);
+          else cache = cache.map((r) => (r.id === newRow.id ? newRow : r));
+          emit();
+        } else if (eventType === "UPDATE" && newRow) {
+          cache = cache.map((r) => (r.id === newRow.id ? newRow : r));
+          emit();
+        } else if (eventType === "DELETE") {
+          const delId = idOf(oldRow);
+          if (delId !== undefined) {
+            cache = cache.filter((r) => r.id !== delId);
+            emit();
+          } else {
+            // oldRow had no id (replica identity not FULL) — refetch.
+            scheduleReconcile();
+          }
+        }
+      }
     )
     .subscribe();
 
   return () => {
     active = false;
+    if (reconcileTimer) clearTimeout(reconcileTimer);
     supabase.removeChannel(channel);
   };
 }
