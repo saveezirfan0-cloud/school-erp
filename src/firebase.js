@@ -97,6 +97,12 @@ function decode(row) {
   return out;
 }
 
+// Tables that support soft-delete (Trash). Mirrors trash.sql.
+const SOFT_DELETE_TABLES = new Set([
+  "students", "employees", "invoices", "expenses", "payments",
+  "payslips", "accounts", "journals", "branches", "reminder_logs",
+]);
+
 // ---- Reference objects (mirror Firestore's CollectionReference / DocumentReference) ----
 class CollectionRef {
   constructor(name) {
@@ -104,6 +110,7 @@ class CollectionRef {
     this.table = TABLE_MAP[name] || name;
     this._order = null;               // { col, ascending }
     this._limit = null;
+    this._trashed = false;            // when true, read only soft-deleted rows
   }
 }
 class DocRef {
@@ -119,6 +126,14 @@ export const db = { __supabase: true };
 
 export function collection(_db, name) {
   return new CollectionRef(name);
+}
+
+// Like collection(), but reads only the soft-deleted (trashed) rows.
+// Used by the Trash view.
+export function trashCollection(name) {
+  const ref = new CollectionRef(name);
+  ref._trashed = true;
+  return ref;
 }
 
 export function doc(_db, name, id) {
@@ -169,6 +184,12 @@ function querySnap(rows) {
 }
 
 function applyQuery(builder, ref) {
+  // Soft-delete filtering: by default show only live rows
+  // (deleted_at IS NULL); a trash view shows only deleted rows.
+  if (SOFT_DELETE_TABLES.has(ref.table)) {
+    if (ref._trashed) builder = builder.not("deleted_at", "is", null);
+    else builder = builder.is("deleted_at", null);
+  }
   if (ref._order) builder = builder.order(ref._order.col, { ascending: ref._order.ascending });
   if (ref._limit != null) builder = builder.limit(ref._limit);
   return builder;
@@ -203,7 +224,39 @@ export async function updateDoc(ref, data) {
 }
 
 export async function deleteDoc(ref) {
+  // Soft-delete tables: move to Trash by stamping deleted_at.
+  // Other tables (users, etc.): hard delete as before.
+  if (SOFT_DELETE_TABLES.has(ref.table)) {
+    const { error } = await supabase
+      .from(ref.table)
+      .update({ deleted_at: new Date().toISOString() })
+      .eq("id", ref.id);
+    if (error) throw error;
+    return;
+  }
   const { error } = await supabase.from(ref.table).delete().eq("id", ref.id);
+  if (error) throw error;
+}
+
+// Restore a soft-deleted row from Trash.
+export async function restoreDoc(ref) {
+  const { error } = await supabase
+    .from(ref.table)
+    .update({ deleted_at: null })
+    .eq("id", ref.id);
+  if (error) throw error;
+}
+
+// Permanently delete a single row (used by "delete forever" in Trash).
+export async function hardDeleteDoc(ref) {
+  const { error } = await supabase.from(ref.table).delete().eq("id", ref.id);
+  if (error) throw error;
+}
+
+// Permanently delete ALL trashed rows in a collection ("empty trash").
+export async function emptyTrash(name) {
+  const table = TABLE_MAP[name] || name;
+  const { error } = await supabase.from(table).delete().not("deleted_at", "is", null);
   if (error) throw error;
 }
 
@@ -317,13 +370,33 @@ export function onSnapshot(ref, onNext, onError) {
         const { eventType, new: newRow, old: oldRow } = payload;
         const idOf = (r) => (r ? r.id : undefined);
 
+        // For soft-delete tables, a row "belongs" in this view based on
+        // whether deleted_at matches what the view wants (live vs trash).
+        const soft = SOFT_DELETE_TABLES.has(ref.table);
+        const belongs = (row) => {
+          if (!soft) return true;
+          const isTrashed = row && row.deleted_at != null;
+          return ref._trashed ? isTrashed : !isTrashed;
+        };
+
         if (eventType === "INSERT" && newRow) {
-          if (!cache.some((r) => r.id === newRow.id)) cache.push(newRow);
-          else cache = cache.map((r) => (r.id === newRow.id ? newRow : r));
-          emit();
+          if (belongs(newRow)) {
+            if (!cache.some((r) => r.id === newRow.id)) cache.push(newRow);
+            else cache = cache.map((r) => (r.id === newRow.id ? newRow : r));
+            emit();
+          }
         } else if (eventType === "UPDATE" && newRow) {
-          cache = cache.map((r) => (r.id === newRow.id ? newRow : r));
-          emit();
+          // A soft-delete or restore shows up as an UPDATE. Add/remove
+          // from this view depending on whether it now belongs.
+          if (belongs(newRow)) {
+            if (cache.some((r) => r.id === newRow.id))
+              cache = cache.map((r) => (r.id === newRow.id ? newRow : r));
+            else cache.push(newRow);
+            emit();
+          } else if (cache.some((r) => r.id === newRow.id)) {
+            cache = cache.filter((r) => r.id !== newRow.id);
+            emit();
+          }
         } else if (eventType === "DELETE") {
           const delId = idOf(oldRow);
           if (delId !== undefined) {

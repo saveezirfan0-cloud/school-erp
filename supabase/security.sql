@@ -138,86 +138,112 @@ end $$;
 -- STUDENTS  (view: canViewStudents, write: canEditStudents,
 --            delete: canDeleteStudents, scoped by branch)
 -- ============================================================
+drop policy if exists students_select on public.students;
 create policy students_select on public.students for select to authenticated
   using (public.has_perm('canViewStudents') and public.branch_visible(branch_id));
+drop policy if exists students_insert on public.students;
 create policy students_insert on public.students for insert to authenticated
   with check (public.has_perm('canEditStudents') and public.branch_visible(branch_id));
+drop policy if exists students_update on public.students;
 create policy students_update on public.students for update to authenticated
   using (public.has_perm('canEditStudents') and public.branch_visible(branch_id))
   with check (public.has_perm('canEditStudents') and public.branch_visible(branch_id));
+drop policy if exists students_delete on public.students;
 create policy students_delete on public.students for delete to authenticated
   using (public.has_perm('canDeleteStudents') and public.branch_visible(branch_id));
 
 -- ============================================================
 -- EMPLOYEES
 -- ============================================================
+drop policy if exists employees_select on public.employees;
 create policy employees_select on public.employees for select to authenticated
   using (public.has_perm('canViewEmployees') and public.branch_visible(branch_id));
+drop policy if exists employees_insert on public.employees;
 create policy employees_insert on public.employees for insert to authenticated
   with check (public.has_perm('canEditEmployees') and public.branch_visible(branch_id));
+drop policy if exists employees_update on public.employees;
 create policy employees_update on public.employees for update to authenticated
   using (public.has_perm('canEditEmployees') and public.branch_visible(branch_id))
   with check (public.has_perm('canEditEmployees') and public.branch_visible(branch_id));
+drop policy if exists employees_delete on public.employees;
 create policy employees_delete on public.employees for delete to authenticated
   using (public.has_perm('canDeleteEmployees') and public.branch_visible(branch_id));
 
 -- ============================================================
 -- INVOICES / FEES  (view+edit: canViewFees/canEditFees)
 -- ============================================================
+drop policy if exists invoices_select on public.invoices;
 create policy invoices_select on public.invoices for select to authenticated
   using (public.has_perm('canViewFees') and public.branch_visible(branch_id));
+drop policy if exists invoices_insert on public.invoices;
 create policy invoices_insert on public.invoices for insert to authenticated
   with check (public.has_perm('canEditFees') and public.branch_visible(branch_id));
+drop policy if exists invoices_update on public.invoices;
 create policy invoices_update on public.invoices for update to authenticated
   using (public.has_perm('canEditFees') and public.branch_visible(branch_id))
   with check (public.has_perm('canEditFees') and public.branch_visible(branch_id));
+drop policy if exists invoices_delete on public.invoices;
 create policy invoices_delete on public.invoices for delete to authenticated
   using (public.has_perm('canEditFees') and public.branch_visible(branch_id));
 
 -- ============================================================
 -- EXPENSES
 -- ============================================================
+drop policy if exists expenses_select on public.expenses;
 create policy expenses_select on public.expenses for select to authenticated
   using (public.has_perm('canViewExpenses') and public.branch_visible(branch_id));
+drop policy if exists expenses_insert on public.expenses;
 create policy expenses_insert on public.expenses for insert to authenticated
   with check (public.has_perm('canEditExpenses') and public.branch_visible(branch_id));
+drop policy if exists expenses_update on public.expenses;
 create policy expenses_update on public.expenses for update to authenticated
   using (public.has_perm('canEditExpenses') and public.branch_visible(branch_id))
   with check (public.has_perm('canEditExpenses') and public.branch_visible(branch_id));
+drop policy if exists expenses_delete on public.expenses;
 create policy expenses_delete on public.expenses for delete to authenticated
   using (public.has_perm('canDeleteExpenses') and public.branch_visible(branch_id));
 
 -- ============================================================
 -- PAYMENTS
 -- ============================================================
+drop policy if exists payments_select on public.payments;
 create policy payments_select on public.payments for select to authenticated
   using (public.has_perm('canViewPayments') and public.branch_visible(branch_id));
+drop policy if exists payments_insert on public.payments;
 create policy payments_insert on public.payments for insert to authenticated
   with check (public.has_perm('canEditPayments') and public.branch_visible(branch_id));
+drop policy if exists payments_update on public.payments;
 create policy payments_update on public.payments for update to authenticated
   using (public.has_perm('canEditPayments') and public.branch_visible(branch_id))
   with check (public.has_perm('canEditPayments') and public.branch_visible(branch_id));
+drop policy if exists payments_delete on public.payments;
 create policy payments_delete on public.payments for delete to authenticated
   using (public.has_perm('canEditPayments') and public.branch_visible(branch_id));
 
 -- ============================================================
 -- PAYSLIPS
 -- ============================================================
+drop policy if exists payslips_select on public.payslips;
 create policy payslips_select on public.payslips for select to authenticated
   using (public.has_perm('canViewPayslips') and public.branch_visible(branch_id));
+drop policy if exists payslips_insert on public.payslips;
 create policy payslips_insert on public.payslips for insert to authenticated
   with check (public.has_perm('canEditPayslips') and public.branch_visible(branch_id));
+drop policy if exists payslips_update on public.payslips;
 create policy payslips_update on public.payslips for update to authenticated
   using (public.has_perm('canEditPayslips') and public.branch_visible(branch_id))
   with check (public.has_perm('canEditPayslips') and public.branch_visible(branch_id));
+drop policy if exists payslips_delete on public.payslips;
 create policy payslips_delete on public.payslips for delete to authenticated
   using (public.has_perm('canEditPayslips') and public.branch_visible(branch_id));
 
 -- ============================================================
 -- ACCOUNTS (chart of accounts) — accounting perms, not branch-scoped
 -- ============================================================
+drop policy if exists accounts_select on public.accounts;
 create policy accounts_select on public.accounts for select to authenticated
   using (public.has_perm('canViewAccounting'));
+drop policy if exists accounts_write on public.accounts;
 create policy accounts_write on public.accounts for all to authenticated
   using (public.has_perm('canEditAccounting'))
   with check (public.has_perm('canEditAccounting'));
@@ -225,8 +251,10 @@ create policy accounts_write on public.accounts for all to authenticated
 -- ============================================================
 -- JOURNALS — accounting perms
 -- ============================================================
+drop policy if exists journals_select on public.journals;
 create policy journals_select on public.journals for select to authenticated
   using (public.has_perm('canViewAccounting'));
+drop policy if exists journals_write on public.journals;
 create policy journals_write on public.journals for all to authenticated
   using (public.has_perm('canEditAccounting'))
   with check (public.has_perm('canEditAccounting'));
@@ -235,8 +263,10 @@ create policy journals_write on public.journals for all to authenticated
 -- BRANCHES — everyone signed in can read (needed for dropdowns);
 -- only admins (canManageBranches) can modify.
 -- ============================================================
+drop policy if exists branches_select on public.branches;
 create policy branches_select on public.branches for select to authenticated
   using (true);
+drop policy if exists branches_write on public.branches;
 create policy branches_write on public.branches for all to authenticated
   using (public.has_perm('canManageBranches'))
   with check (public.has_perm('canManageBranches'));
@@ -244,8 +274,10 @@ create policy branches_write on public.branches for all to authenticated
 -- ============================================================
 -- REMINDER LOGS — tied to reports/fees visibility
 -- ============================================================
+drop policy if exists reminder_select on public.reminder_logs;
 create policy reminder_select on public.reminder_logs for select to authenticated
   using (public.has_perm('canViewReports') or public.has_perm('canViewFees'));
+drop policy if exists reminder_write on public.reminder_logs;
 create policy reminder_write on public.reminder_logs for all to authenticated
   using (public.has_perm('canEditFees'))
   with check (public.has_perm('canEditFees'));
@@ -253,8 +285,10 @@ create policy reminder_write on public.reminder_logs for all to authenticated
 -- ============================================================
 -- CUSTOM ROLES — admin only
 -- ============================================================
+drop policy if exists customroles_select on public.custom_roles;
 create policy customroles_select on public.custom_roles for select to authenticated
   using (true);  -- UserContext needs to read these to resolve perms
+drop policy if exists customroles_write on public.custom_roles;
 create policy customroles_write on public.custom_roles for all to authenticated
   using (public.is_admin()) with check (public.is_admin());
 
@@ -265,13 +299,17 @@ create policy customroles_write on public.custom_roles for all to authenticated
 --  - nobody can change their own role/branch to escalate (guarded
 --    by a trigger below, since column-level checks in RLS are clumsy)
 -- ============================================================
+drop policy if exists users_select_self on public.users;
 create policy users_select_self on public.users for select to authenticated
   using (id = auth.uid() or public.has_perm('canManageUsers'));
+drop policy if exists users_insert_admin on public.users;
 create policy users_insert_admin on public.users for insert to authenticated
   with check (public.has_perm('canManageUsers'));
+drop policy if exists users_update on public.users;
 create policy users_update on public.users for update to authenticated
   using (id = auth.uid() or public.has_perm('canManageUsers'))
   with check (id = auth.uid() or public.has_perm('canManageUsers'));
+drop policy if exists users_delete_admin on public.users;
 create policy users_delete_admin on public.users for delete to authenticated
   using (public.has_perm('canManageUsers'));
 
@@ -300,8 +338,10 @@ create trigger trg_users_guard before update on public.users
 --  - only admins may READ
 --  - nobody may UPDATE or DELETE (immutable trail)
 -- ============================================================
+drop policy if exists audit_insert on public.audit_log;
 create policy audit_insert on public.audit_log for insert to authenticated
   with check (true);
+drop policy if exists audit_select_admin on public.audit_log;
 create policy audit_select_admin on public.audit_log for select to authenticated
   using (public.is_admin());
 -- no update/delete policies => those operations are denied for all.

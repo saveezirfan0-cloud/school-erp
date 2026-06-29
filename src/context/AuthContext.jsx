@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState } from "react";
+import React, { createContext, useContext, useEffect, useState, useMemo, useCallback } from "react";
 import { supabase } from "../lib/supabaseClient";
 
 const AuthContext = createContext();
@@ -16,30 +16,54 @@ export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    let mounted = true;
+
     // Initial session.
     supabase.auth.getSession().then(({ data }) => {
+      if (!mounted) return;
       setUser(shapeUser(data?.session?.user || null));
       setLoading(false);
     });
 
     // Live auth state (replaces onAuthStateChanged).
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
-      setUser(shapeUser(session?.user || null));
+    // IMPORTANT: Supabase fires TOKEN_REFRESHED / SIGNED_IN events when
+    // you return to a backgrounded tab. If we blindly call setUser on
+    // every event we create a NEW user object, which remounts the whole
+    // app and wipes any in-progress form state. So we only update state
+    // when the actual user id changes (login / logout / switch), and
+    // ignore pure token refreshes for the same user.
+    const { data: sub } = supabase.auth.onAuthStateChange((event, session) => {
+      if (!mounted) return;
+      const nextId = session?.user?.id || null;
+
+      setUser((prev) => {
+        const prevId = prev?.uid || null;
+        if (prevId === nextId) {
+          // Same user (or still logged out) — keep the existing object
+          // reference so nothing downstream remounts.
+          return prev;
+        }
+        return shapeUser(session?.user || null);
+      });
       setLoading(false);
     });
 
-    return () => sub.subscription.unsubscribe();
+    return () => { mounted = false; sub.subscription.unsubscribe(); };
   }, []);
 
-  const login = async (email, password) => {
+  const login = useCallback(async (email, password) => {
     const { error } = await supabase.auth.signInWithPassword({ email, password });
     if (error) throw error;
-  };
+  }, []);
 
-  const logout = () => supabase.auth.signOut();
+  const logout = useCallback(() => supabase.auth.signOut(), []);
+
+  // Memoize so the context value is stable across renders that don't
+  // change user/loading.
+  const value = useMemo(() => ({ user, loading, login, logout }), [user, loading, login, logout]);
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, logout }}>
+    <AuthContext.Provider value={value}>
       {children}
     </AuthContext.Provider>
   );

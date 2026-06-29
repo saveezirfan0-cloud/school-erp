@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from "react";
+import React, { createContext, useContext, useState, useEffect, useMemo, useCallback } from "react";
 import { db } from "../firebase";
 import { collection, onSnapshot } from "../firebase";
 import { useAuth } from "./AuthContext";
@@ -35,13 +35,18 @@ export function BranchProvider({ children }) {
     return unsub;
   }, [user]);
 
-  const setActiveBranch = (branchId) => {
+  const setActiveBranch = useCallback((branchId) => {
     setActiveBranchState(branchId);
     localStorage.setItem("activeBranch", branchId);
-  };
+  }, []);
+
+  const value = useMemo(
+    () => ({ branches, activeBranch, setActiveBranch, loading }),
+    [branches, activeBranch, setActiveBranch, loading]
+  );
 
   return (
-    <BranchContext.Provider value={{ branches, activeBranch, setActiveBranch, loading }}>
+    <BranchContext.Provider value={value}>
       {loading && user ? null : children}
     </BranchContext.Provider>
   );

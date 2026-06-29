@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState } from "react";
+import React, { createContext, useContext, useEffect, useState, useMemo, useCallback } from "react";
 import { db } from "../firebase";
 import { doc, onSnapshot, collection } from "../firebase";
 import { useAuth } from "./AuthContext";
@@ -188,27 +188,29 @@ export function UserProvider({ children }) {
   const permissions = PERMISSIONS[role] || customRolePerms[role] || PERMISSIONS.admin;
 
   // Helper — check a single permission
-  const can = (permission) => {
+  const can = useCallback((permission) => {
     if (!permission) return true;
     return permissions[permission] === true;
-  };
+  }, [permissions]);
 
   const isAdmin = role === "admin";
 
   // If branch_manager, restrict to their assigned branch
   const assignedBranchId = role === "branch_manager" ? userProfile?.branchId : null;
 
+  const value = useMemo(() => ({
+    userProfile,
+    loadingProfile,
+    role,
+    permissions,
+    customRolePerms,
+    can,
+    isAdmin,
+    assignedBranchId,
+  }), [userProfile, loadingProfile, role, permissions, customRolePerms, can, isAdmin, assignedBranchId]);
+
   return (
-    <UserContext.Provider value={{
-      userProfile,
-      loadingProfile,
-      role,
-      permissions,
-      customRolePerms,
-      can,
-      isAdmin,
-      assignedBranchId,
-    }}>
+    <UserContext.Provider value={value}>
       {children}
     </UserContext.Provider>
   );

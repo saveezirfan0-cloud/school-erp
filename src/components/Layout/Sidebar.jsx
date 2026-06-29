@@ -4,7 +4,7 @@ import {
   LayoutDashboard, Users, UserCheck, Receipt, TrendingDown,
   Building2, Settings, BookOpen, CreditCard, FileText,
   BarChart2, ChevronDown, ChevronRight, Landmark, BookMarked,
-  X, ShieldCheck, MessageCircle, Upload
+  X, ShieldCheck, MessageCircle, Upload, Trash2
 } from "lucide-react";
 import { useUser } from "../../context/UserContext";
 
@@ -114,6 +114,12 @@ export default function Sidebar({ onClose }) {
       icon: Upload,
       label: "Import Data",
       show: can("canManageUsers"),
+    },
+    {
+      to: "/trash",
+      icon: Trash2,
+      label: "Trash",
+      show: true,
     },
     {
       to: "/settings",

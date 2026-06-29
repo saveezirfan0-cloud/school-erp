@@ -1,11 +1,11 @@
 import React, { useEffect, useState, useRef } from "react";
 import { db } from "../firebase";
-import { collection, addDoc, onSnapshot, serverTimestamp } from "../firebase";
+import { collection, addDoc, deleteDoc, doc, onSnapshot, serverTimestamp } from "../firebase";
 import { useBranch } from "../context/BranchContext";
 import { matchesBranch } from "../utils/branchFilter";
 import { exportToCSV, exportToPDF } from "../utils/exportUtils";
 import toast from "react-hot-toast";
-import { Plus, Printer, X, RefreshCw, Download, FileText } from "lucide-react";
+import { Plus, Printer, X, RefreshCw, Download, FileText, Trash2 } from "lucide-react";
 
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 const empty = { employeeId: "", month: "", year: new Date().getFullYear(), basicSalary: "", allowances: "", deductions: "", notes: "" };
@@ -90,6 +90,12 @@ export default function Payslips() {
     setShowRecurring(false);
   };
 
+  const handleDelete = async (id) => {
+    if (!window.confirm("Delete this payslip? You can restore it from Trash.")) return;
+    try { await deleteDoc(doc(db, "payslips", id)); toast.success("Payslip moved to Trash"); }
+    catch (err) { toast.error(err?.message || "Error deleting"); }
+  };
+
   const handlePrint = () => {
     const content = printRef.current.innerHTML;
     const w = window.open("", "_blank");
@@ -162,10 +168,16 @@ export default function Payslips() {
                   <div style={{ fontWeight: 600, fontSize: 15 }}>{p.employeeName}</div>
                   <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>{p.role} · {p.month} {p.year}</div>
                 </div>
-                <button onClick={() => setShowPrint(p)}
-                  style={{ border: "none", background: "var(--primary-light)", color: "var(--primary)", padding: "7px 10px", borderRadius: 8, cursor: "pointer", display: "flex", alignItems: "center", gap: 4, fontSize: 12 }}>
-                  <Printer size={13} /> Print
-                </button>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <button onClick={() => setShowPrint(p)}
+                    style={{ border: "none", background: "var(--primary-light)", color: "var(--primary)", padding: "7px 10px", borderRadius: 8, cursor: "pointer", display: "flex", alignItems: "center", gap: 4, fontSize: 12 }}>
+                    <Printer size={13} /> Print
+                  </button>
+                  <button onClick={() => handleDelete(p.id)} title="Delete"
+                    style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "7px 9px", borderRadius: 8, cursor: "pointer" }}>
+                    <Trash2 size={13} />
+                  </button>
+                </div>
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
                 <div style={{ fontSize: 12 }}><div style={{ color: "var(--text-muted)", marginBottom: 2 }}>Basic</div><div>Rs. {Number(p.basicSalary).toLocaleString()}</div></div>
@@ -203,10 +215,16 @@ export default function Payslips() {
                     <td style={{ padding: "11px 14px", fontSize: 13, color: "#ef4444" }}>-Rs. {Number(p.deductions || 0).toLocaleString()}</td>
                     <td style={{ padding: "11px 14px", fontWeight: 700, color: "var(--primary)" }}>Rs. {Number(p.netPay).toLocaleString()}</td>
                     <td style={{ padding: "11px 14px" }}>
-                      <button onClick={() => setShowPrint(p)}
-                        style={{ border: "none", background: "var(--primary-light)", color: "var(--primary)", padding: "6px 10px", borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", gap: 4, fontSize: 12 }}>
-                        <Printer size={13} /> Print
-                      </button>
+                      <div style={{ display: "flex", gap: 6 }}>
+                        <button onClick={() => setShowPrint(p)}
+                          style={{ border: "none", background: "var(--primary-light)", color: "var(--primary)", padding: "6px 10px", borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", gap: 4, fontSize: 12 }}>
+                          <Printer size={13} /> Print
+                        </button>
+                        <button onClick={() => handleDelete(p.id)} title="Delete payslip"
+                          style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "6px 9px", borderRadius: 6, cursor: "pointer" }}>
+                          <Trash2 size={13} />
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}

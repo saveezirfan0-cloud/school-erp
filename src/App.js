@@ -1,30 +1,43 @@
-import React from "react";
+import React, { lazy, Suspense } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { Toaster } from "react-hot-toast";
 import { AuthProvider, useAuth } from "./context/AuthContext";
 import { BranchProvider } from "./context/BranchContext";
 import { UserProvider, useUser } from "./context/UserContext";
 import Layout from "./components/Layout/Layout";
+
+// Login is needed immediately; keep it eager. Everything else is
+// lazy-loaded so the initial bundle stays small and heavy pages
+// (charts, Excel export) only download when actually opened.
 import Login from "./pages/Login";
-import Dashboard from "./pages/Dashboard";
-import Students from "./pages/Students";
-import Employees from "./pages/Employees";
-import Fees from "./pages/Fees";
-import Expenses from "./pages/Expenses";
-import QuickPayment from "./pages/QuickPayment";
-import Branches from "./pages/Branches";
-import Settings from "./pages/Settings";
-import ChartOfAccounts from "./pages/ChartOfAccounts";
-import Payments from "./pages/Payments";
-import Payslips from "./pages/Payslips";
-import Reports from "./pages/Reports";
-import BankCash from "./pages/BankCash";
-import AccountDetail from "./pages/AccountDetail";
-import Journals from "./pages/Journals";
-import Users from "./pages/Users";
-import Unauthorized from "./pages/Unauthorized";
-import ReminderLogs from "./pages/ReminderLogs";
-import Import from "./pages/Import";
+
+const Dashboard = lazy(() => import("./pages/Dashboard"));
+const Students = lazy(() => import("./pages/Students"));
+const Employees = lazy(() => import("./pages/Employees"));
+const Fees = lazy(() => import("./pages/Fees"));
+const Expenses = lazy(() => import("./pages/Expenses"));
+const QuickPayment = lazy(() => import("./pages/QuickPayment"));
+const Branches = lazy(() => import("./pages/Branches"));
+const Settings = lazy(() => import("./pages/Settings"));
+const ChartOfAccounts = lazy(() => import("./pages/ChartOfAccounts"));
+const Payments = lazy(() => import("./pages/Payments"));
+const Payslips = lazy(() => import("./pages/Payslips"));
+const Reports = lazy(() => import("./pages/Reports"));
+const BankCash = lazy(() => import("./pages/BankCash"));
+const AccountDetail = lazy(() => import("./pages/AccountDetail"));
+const Journals = lazy(() => import("./pages/Journals"));
+const Users = lazy(() => import("./pages/Users"));
+const Unauthorized = lazy(() => import("./pages/Unauthorized"));
+const ReminderLogs = lazy(() => import("./pages/ReminderLogs"));
+const Import = lazy(() => import("./pages/Import"));
+const Trash = lazy(() => import("./pages/Trash"));
+
+const PageLoader = () => (
+  <div style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: 60 }}>
+    <div style={{ width: 32, height: 32, border: "3px solid #f5eaec", borderTop: "3px solid #7a2535", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
+    <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+  </div>
+);
 
 function PrivateRoute({ children, permission }) {
   const { user, loading } = useAuth();
@@ -59,6 +72,7 @@ export default function App() {
         <UserProvider>
           <BrowserRouter>
             <Toaster position="top-right" />
+            <Suspense fallback={<PageLoader />}>
             <Routes>
               {/* Public routes */}
               <Route path="/login" element={<Login />} />
@@ -156,8 +170,14 @@ export default function App() {
                     <Settings />
                   </PrivateRoute>
                 } />
+                <Route path="trash" element={
+                  <PrivateRoute>
+                    <Trash />
+                  </PrivateRoute>
+                } />
               </Route>
             </Routes>
+            </Suspense>
           </BrowserRouter>
         </UserProvider>
       </BranchProvider>

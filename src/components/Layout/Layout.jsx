@@ -2,6 +2,7 @@ import React, { useState, useEffect } from "react";
 import { Outlet, useLocation } from "react-router-dom";
 import Sidebar from "./Sidebar";
 import Navbar from "./Navbar";
+import QuickAdd from "./QuickAdd";
 
 export default function Layout() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -82,6 +83,8 @@ export default function Layout() {
           <Outlet />
         </main>
       </div>
+
+      <QuickAdd />
 
     </div>
   );
