@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from "react";
 import { db } from "../firebase";
-import { collection, getDocs } from "firebase/firestore";
+import { collection, getDocs } from "../firebase";
 import { useBranch } from "../context/BranchContext";
+import { toDate } from "../utils/dates";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line } from "recharts";
 
 export default function Reports() {
@@ -31,7 +32,7 @@ export default function Reports() {
       const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
       const monthly = months.map((month, i) => ({
         month,
-        income: invoices.filter(inv => inv.status === "paid" && new Date(inv.paidDate?.toDate?.() || inv.paidDate || Date.now()).getMonth() === i).reduce((s, inv) => s + Number(inv.amount || 0), 0),
+        income: invoices.filter(inv => inv.status === "paid" && (toDate(inv.paidDate) || new Date()).getMonth() === i).reduce((s, inv) => s + Number(inv.amount || 0), 0),
         expenses: expenses.filter(e => new Date(e.date || Date.now()).getMonth() === i).reduce((s, e) => s + Number(e.amount || 0), 0),
       }));
 

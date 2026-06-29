@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from "react";
 import { db } from "../firebase";
-import { collection, getDocs } from "firebase/firestore";
+import { collection, getDocs } from "../firebase";
 import { useBranch } from "../context/BranchContext";
 import { matchesBranch } from "../utils/branchFilter";
+import { toMillis, toDate } from "../utils/dates";
 import { Users, Receipt, TrendingDown, TrendingUp, UserCheck, Building2 } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line } from "recharts";
 
@@ -41,13 +42,13 @@ export default function Dashboard() {
 
         setStats({ students: students.length, employees: employees.length, feesCollected: collected, expenses: totalExp, pending, branches: branchSnap.size });
 
-        const recent = fees.sort((a, b) => (b.createdAt?.toDate?.() || 0) - (a.createdAt?.toDate?.() || 0)).slice(0, 6);
+        const recent = fees.sort((a, b) => toMillis(b.createdAt) - toMillis(a.createdAt)).slice(0, 6);
         setRecentInvoices(recent);
 
         const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
         const monthly = months.map((month, i) => ({
           month,
-          fees: fees.filter(f => f.status === "paid" && new Date(f.paidDate?.toDate?.() || f.createdAt?.toDate?.() || Date.now()).getMonth() === i).reduce((s, f) => s + Number(f.amount || 0), 0),
+          fees: fees.filter(f => f.status === "paid" && (toDate(f.paidDate) || toDate(f.createdAt) || new Date()).getMonth() === i).reduce((s, f) => s + Number(f.amount || 0), 0),
           expenses: expenses.filter(e => new Date(e.date || Date.now()).getMonth() === i).reduce((s, e) => s + Number(e.amount || 0), 0),
         }));
         setChartData(monthly);

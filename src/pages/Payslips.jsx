@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useRef } from "react";
 import { db } from "../firebase";
-import { collection, addDoc, onSnapshot, serverTimestamp } from "firebase/firestore";
+import { collection, addDoc, onSnapshot, serverTimestamp } from "../firebase";
 import { useBranch } from "../context/BranchContext";
 import { matchesBranch } from "../utils/branchFilter";
 import { exportToCSV, exportToPDF } from "../utils/exportUtils";

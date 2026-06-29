@@ -3,8 +3,8 @@ import { db, auth } from "../firebase";
 import {
   collection, addDoc, updateDoc, deleteDoc,
   doc, onSnapshot, serverTimestamp, setDoc
-} from "firebase/firestore";
-import { createUserWithEmailAndPassword } from "firebase/auth";
+} from "../firebase";
+import { createUserAsAdmin } from "../lib/adminUsers";
 import { useBranch } from "../context/BranchContext";
 import { useUser } from "../context/UserContext";
 import { PERMISSIONS } from "../context/UserContext";
@@ -124,15 +124,16 @@ export default function Users() {
         });
         toast.success("User updated");
       } else {
-        const cred = await createUserWithEmailAndPassword(auth, form.email, password);
-        await setDoc(doc(db, "users", cred.user.uid), {
-          uid: cred.user.uid,
+        // User creation now happens server-side via a Supabase Edge
+        // Function (the browser can't create auth users with the anon
+        // key). This creates the auth account AND the profile row.
+        await createUserAsAdmin({
           name: form.name,
           email: form.email,
+          password,
           role: form.role,
           branchId: form.branchId,
           pin: form.pin || null,
-          createdAt: serverTimestamp(),
         });
         toast.success("User created");
       }

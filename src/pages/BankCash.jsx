@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { db } from "../firebase";
-import { collection, onSnapshot } from "firebase/firestore";
+import { collection, onSnapshot } from "../firebase";
 import { useNavigate } from "react-router-dom";
 import { Landmark, TrendingUp, TrendingDown, ArrowRight } from "lucide-react";
 

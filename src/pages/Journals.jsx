@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from "react";
 import { db } from "../firebase";
-import { collection, addDoc, onSnapshot, serverTimestamp } from "firebase/firestore";
+import { collection, addDoc, deleteDoc, doc, onSnapshot, serverTimestamp } from "../firebase";
 import toast from "react-hot-toast";
-import { Plus, X } from "lucide-react";
+import { Plus, X, Trash2 } from "lucide-react";
 
 const empty = { date: "", reference: "", description: "", debitAccount: "", creditAccount: "", amount: "", notes: "" };
 
@@ -27,6 +27,12 @@ export default function Journals() {
     setForm(empty);
   };
 
+  const handleDelete = async (id) => {
+    if (!window.confirm("Delete this journal entry? This cannot be undone.")) return;
+    try { await deleteDoc(doc(db, "journals", id)); toast.success("Journal entry deleted"); }
+    catch { toast.error("Error deleting"); }
+  };
+
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
@@ -47,6 +53,7 @@ export default function Journals() {
               {["Date", "Reference", "Description", "Debit Account", "Credit Account", "Amount", "Notes"].map(h => (
                 <th key={h} style={{ padding: "12px 16px", textAlign: "left", fontSize: 12, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase" }}>{h}</th>
               ))}
+              <th style={{ padding: "12px 16px" }}></th>
             </tr>
           </thead>
           <tbody>
@@ -67,6 +74,9 @@ export default function Journals() {
                 </td>
                 <td style={{ padding: "12px 16px", fontSize: 14, fontWeight: 700 }}>Rs. {Number(j.amount).toLocaleString()}</td>
                 <td style={{ padding: "12px 16px", fontSize: 13, color: "var(--text-muted)" }}>{j.notes}</td>
+                <td style={{ padding: "12px 16px", textAlign: "right" }}>
+                  <button onClick={() => handleDelete(j.id)} style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "7px 9px", borderRadius: 8, cursor: "pointer" }}><Trash2 size={14} /></button>
+                </td>
               </tr>
             ))}
           </tbody>

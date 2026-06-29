@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from "react";
 import { db } from "../firebase";
-import { collection, onSnapshot } from "firebase/firestore";
+import { collection, onSnapshot } from "../firebase";
 import { useAuth } from "./AuthContext";
 
 const BranchContext = createContext();

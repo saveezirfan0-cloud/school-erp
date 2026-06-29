@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { db } from "../firebase";
-import { collection, onSnapshot, orderBy, query, limit, getDocs } from "firebase/firestore";
+import { collection, onSnapshot, orderBy, query, limit, getDocs } from "../firebase";
+import { toMillis, formatDate, formatTime } from "../utils/dates";
 import { CheckCircle, XCircle, Clock, MessageCircle, Play, RefreshCw } from "lucide-react";
 import toast from "react-hot-toast";
 
@@ -26,7 +27,7 @@ export default function ReminderLogs() {
           unsub = onSnapshot(collection(db, "reminderLogs"), (snap) => {
             const sorted = snap.docs
               .map(d => ({ id: d.id, ...d.data() }))
-              .sort((a, b) => (b.timestamp?.toDate?.() || 0) - (a.timestamp?.toDate?.() || 0));
+              .sort((a, b) => toMillis(b.timestamp) - toMillis(a.timestamp));
             setLogs(sorted);
             setLoading(false);
           });
@@ -187,14 +188,10 @@ export default function ReminderLogs() {
                   </div>
                   <div>
                     <div style={{ fontWeight: 600, fontSize: 15 }}>
-                      {log.timestamp?.toDate?.()?.toLocaleDateString("en-GB", {
-                        weekday: "long", day: "numeric", month: "long", year: "numeric"
-                      }) || "Date unknown"}
+                      {formatDate(log.timestamp, "en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric" }) || "Date unknown"}
                     </div>
                     <div style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 2 }}>
-                      {log.timestamp?.toDate?.()?.toLocaleTimeString("en-GB", {
-                        hour: "2-digit", minute: "2-digit"
-                      }) || ""}
+                      {formatTime(log.timestamp)}
                     </div>
                   </div>
                 </div>

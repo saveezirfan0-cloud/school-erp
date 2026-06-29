@@ -1,8 +1,10 @@
 import React, { useEffect, useState } from "react";
 import { db } from "../firebase";
-import { collection, addDoc, onSnapshot, serverTimestamp } from "firebase/firestore";
+import { collection, addDoc, deleteDoc, doc, onSnapshot, serverTimestamp } from "../firebase";
 import { useBranch } from "../context/BranchContext";
-import { matchesBranch } from "../utils/branchFilter";
+import { useCollection } from "../hooks/useCollection";
+import ListToolbar from "../components/UI/ListToolbar";
+import Pagination from "../components/UI/Pagination";
 import { exportToCSV, exportToPDF } from "../utils/exportUtils";
 import toast from "react-hot-toast";
 import { Plus, X, ArrowUpCircle, ArrowDownCircle, Trash2, Download, FileText } from "lucide-react";
@@ -23,7 +25,6 @@ function useIsMobile() {
 export default function Payments() {
   const { branches, activeBranch } = useBranch();
   const isMobile = useIsMobile();
-  const [payments, setPayments] = useState([]);
   const [accounts, setAccounts] = useState([]);
   const [showModal, setShowModal] = useState(false);
   const [mode, setMode] = useState("single");
@@ -31,30 +32,41 @@ export default function Payments() {
   const [bulkLines, setBulkLines] = useState([{ ...emptyLine }, { ...emptyLine }]);
   const [bulkDate, setBulkDate] = useState("");
   const [bulkRef, setBulkRef] = useState("");
+  const [search, setSearch] = useState("");
   const [filterType, setFilterType] = useState("");
   const [filterCategory, setFilterCategory] = useState("");
   const [filterDateFrom, setFilterDateFrom] = useState("");
   const [filterDateTo, setFilterDateTo] = useState("");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
 
+  // accounts still loaded directly (used by the modal dropdowns)
   useEffect(() => {
-    const u1 = onSnapshot(collection(db, "payments"), snap =>
-      setPayments(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => new Date(b.date) - new Date(a.date)))
-    );
     const u2 = onSnapshot(collection(db, "accounts"), snap =>
       setAccounts(snap.docs.map(d => ({ id: d.id, ...d.data() })))
     );
-    return () => { u1(); u2(); };
+    return () => { u2(); };
   }, []);
 
-  const bankCashAccounts = accounts.filter(a => a.subType === "Bank & Cash" || a.type === "Assets");
-
-  const filtered = payments.filter(p => {
-    const matchType = !filterType || p.type === filterType;
-    const matchCat = !filterCategory || p.category === filterCategory;
-    const matchFrom = !filterDateFrom || p.date >= filterDateFrom;
-    const matchTo = !filterDateTo || p.date <= filterDateTo;
-    return matchesBranch(p, activeBranch) && matchType && matchCat && matchFrom && matchTo;
+  // payments via the shared hook: realtime + search + filters + sort + paging
+  const { filtered, paged, total, pageCount, page: safePage } = useCollection("payments", {
+    activeBranch,
+    search,
+    searchFields: ["description", "account", "reference", "category"],
+    filters: { type: filterType, category: filterCategory, dateFrom: filterDateFrom, dateTo: filterDateTo },
+    filterFns: {
+      dateFrom: (row, val) => !val || (row.date || "") >= val,
+      dateTo: (row, val) => !val || (row.date || "") <= val,
+    },
+    sortBy: "date",
+    sortDir: "desc",
+    page,
+    pageSize,
   });
+
+  useEffect(() => { setPage(1); }, [search, filterType, filterCategory, filterDateFrom, filterDateTo, pageSize, activeBranch]);
+
+  const bankCashAccounts = accounts.filter(a => a.subType === "Bank & Cash" || a.type === "Assets");
 
   const totalIn = filtered.filter(p => p.type === "cash_in").reduce((s, p) => s + Number(p.amount), 0);
   const totalOut = filtered.filter(p => p.type === "cash_out").reduce((s, p) => s + Number(p.amount), 0);
@@ -80,6 +92,12 @@ export default function Payments() {
     setBulkDate(""); setBulkRef("");
   };
 
+  const handleDelete = async (id) => {
+    if (!window.confirm("Delete this payment? This cannot be undone.")) return;
+    try { await deleteDoc(doc(db, "payments", id)); toast.success("Payment deleted"); }
+    catch { toast.error("Error deleting"); }
+  };
+
   const updateBulkLine = (idx, field, value) =>
     setBulkLines(p => p.map((l, i) => i === idx ? { ...l, [field]: value } : l));
 
@@ -95,8 +113,8 @@ export default function Payments() {
     filtered.map(p => [p.date, p.type === "cash_in" ? "Cash In" : "Cash Out", p.account, p.description, `Rs. ${Number(p.amount).toLocaleString()}`])
   );
 
-  const clearFilters = () => { setFilterType(""); setFilterCategory(""); setFilterDateFrom(""); setFilterDateTo(""); };
-  const hasFilters = filterType || filterCategory || filterDateFrom || filterDateTo;
+  const clearFilters = () => { setSearch(""); setFilterType(""); setFilterCategory(""); setFilterDateFrom(""); setFilterDateTo(""); };
+  const hasFilters = search || filterType || filterCategory || filterDateFrom || filterDateTo;
 
   const modalStyle = {
     position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)",
@@ -141,34 +159,30 @@ export default function Payments() {
       </div>
 
       {/* Filters */}
-      <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
-        <select value={filterType} onChange={e => setFilterType(e.target.value)}
-          style={{ padding: "8px 10px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 13, background: "white" }}>
-          <option value="">All Types</option>
-          <option value="cash_in">Cash In</option>
-          <option value="cash_out">Cash Out</option>
-        </select>
-        <select value={filterCategory} onChange={e => setFilterCategory(e.target.value)}
-          style={{ padding: "8px 10px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 13, background: "white" }}>
-          <option value="">All Categories</option>
-          {CATEGORIES.map(c => <option key={c}>{c}</option>)}
-        </select>
-        {!isMobile && <>
-          <input type="date" value={filterDateFrom} onChange={e => setFilterDateFrom(e.target.value)}
-            style={{ padding: "8px 10px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 13 }} />
-          <input type="date" value={filterDateTo} onChange={e => setFilterDateTo(e.target.value)}
-            style={{ padding: "8px 10px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 13 }} />
-        </>}
-        {hasFilters && (
-          <button onClick={clearFilters}
-            style={{ padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13, color: "var(--text-muted)" }}>Clear</button>
-        )}
-      </div>
+      <ListToolbar
+        search={search}
+        onSearch={setSearch}
+        searchPlaceholder="Search description, account, reference..."
+        filters={[
+          { key: "type", value: filterType, onChange: setFilterType, placeholder: "All Types", options: [{ value: "cash_in", label: "Cash In" }, { value: "cash_out", label: "Cash Out" }] },
+          { key: "category", value: filterCategory, onChange: setFilterCategory, placeholder: "All Categories", options: CATEGORIES.map(c => ({ value: c, label: c })) },
+        ]}
+        active={hasFilters}
+        onClear={clearFilters}
+        rightSlot={!isMobile ? (
+          <>
+            <input type="date" value={filterDateFrom} onChange={e => setFilterDateFrom(e.target.value)} title="From date"
+              style={{ padding: "8px 10px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 13 }} />
+            <input type="date" value={filterDateTo} onChange={e => setFilterDateTo(e.target.value)} title="To date"
+              style={{ padding: "8px 10px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 13 }} />
+          </>
+        ) : null}
+      />
 
       {/* Mobile cards */}
       {isMobile ? (
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          {filtered.map(p => (
+          {paged.map(p => (
             <div key={p.id} style={{ background: "white", borderRadius: 12, padding: 16, border: "1px solid var(--border)" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
                 <div>
@@ -181,13 +195,16 @@ export default function Payments() {
               </div>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <span style={{ padding: "3px 10px", borderRadius: 20, fontSize: 12, background: "#f1f5f9", color: "#475569" }}>{p.category}</span>
-                <div style={{ fontSize: 18, fontWeight: 700, color: p.type === "cash_in" ? "#10b981" : "#ef4444" }}>
-                  {p.type === "cash_in" ? "+" : "-"}Rs. {Number(p.amount).toLocaleString()}
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <div style={{ fontSize: 18, fontWeight: 700, color: p.type === "cash_in" ? "#10b981" : "#ef4444" }}>
+                    {p.type === "cash_in" ? "+" : "-"}Rs. {Number(p.amount).toLocaleString()}
+                  </div>
+                  <button onClick={() => handleDelete(p.id)} style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "6px 9px", borderRadius: 6, cursor: "pointer" }}><Trash2 size={13} /></button>
                 </div>
               </div>
             </div>
           ))}
-          {filtered.length === 0 && <div style={{ padding: 40, textAlign: "center", color: "var(--text-muted)", background: "white", borderRadius: 12 }}>No payments found</div>}
+          {total === 0 && <div style={{ padding: 40, textAlign: "center", color: "var(--text-muted)", background: "white", borderRadius: 12 }}>No payments found</div>}
         </div>
       ) : (
         /* Desktop table */
@@ -199,10 +216,11 @@ export default function Payments() {
                   {["Date", "Type", "Account", "Category", "Description", "Reference", "Amount"].map(h => (
                     <th key={h} style={{ padding: "11px 14px", textAlign: "left", fontSize: 11, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", whiteSpace: "nowrap" }}>{h}</th>
                   ))}
+                  <th style={{ padding: "11px 14px", textAlign: "right", fontSize: 11, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase" }}></th>
                 </tr>
               </thead>
               <tbody>
-                {filtered.map(p => (
+                {paged.map(p => (
                   <tr key={p.id} style={{ borderTop: "1px solid var(--border)" }}>
                     <td style={{ padding: "11px 14px", fontSize: 13, whiteSpace: "nowrap" }}>{p.date}</td>
                     <td style={{ padding: "11px 14px" }}>
@@ -217,14 +235,22 @@ export default function Payments() {
                     <td style={{ padding: "11px 14px", fontSize: 14, fontWeight: 600, color: p.type === "cash_in" ? "#10b981" : "#ef4444", whiteSpace: "nowrap" }}>
                       {p.type === "cash_in" ? "+" : "-"}Rs. {Number(p.amount).toLocaleString()}
                     </td>
+                    <td style={{ padding: "11px 14px", textAlign: "right" }}>
+                      <button onClick={() => handleDelete(p.id)} style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "7px 9px", borderRadius: 8, cursor: "pointer" }}><Trash2 size={14} /></button>
+                    </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
-          {filtered.length === 0 && <div style={{ padding: 40, textAlign: "center", color: "var(--text-muted)" }}>No payments found</div>}
+          {total === 0 && <div style={{ padding: 40, textAlign: "center", color: "var(--text-muted)" }}>No payments found</div>}
         </div>
       )}
+
+      <Pagination
+        page={safePage} pageCount={pageCount} total={total} pageSize={pageSize}
+        onPage={setPage} onPageSize={setPageSize}
+      />
 
       {/* Modal */}
       {showModal && (

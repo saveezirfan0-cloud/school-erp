@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from "react";
 import { db } from "../firebase";
-import { collection, addDoc, updateDoc, doc, onSnapshot, serverTimestamp } from "firebase/firestore";
+import { collection, addDoc, updateDoc, doc, onSnapshot, serverTimestamp } from "../firebase";
 import { useBranch } from "../context/BranchContext";
+import Pagination from "../components/UI/Pagination";
 import { sendWhatsAppMessage } from "../utils/whatsapp";
 import { exportToCSV, exportToPDF } from "../utils/exportUtils";
 import toast from "react-hot-toast";
@@ -36,6 +37,8 @@ export default function Fees() {
   const [filterMonth, setFilterMonth] = useState("");
   const [filterBranch, setFilterBranch] = useState("");
   const [filterStudent, setFilterStudent] = useState("");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
   const [bulkMonth, setBulkMonth] = useState("");
   const [bulkYear, setBulkYear] = useState(new Date().getFullYear());
   const [bulkDueDate, setBulkDueDate] = useState("");
@@ -55,14 +58,31 @@ export default function Fees() {
     return () => { u1(); u2(); };
   }, []);
 
+  useEffect(() => { setPage(1); }, [filterStatus, filterMonth, filterBranch, filterStudent, pageSize, activeBranch]);
+
   const filtered = invoices.filter(inv => {
     const matchBranch = (activeBranch === "all" || inv.branchId === activeBranch) && (!filterBranch || inv.branchId === filterBranch);
     const matchStatus = !filterStatus || inv.status === filterStatus;
     const matchMonth = !filterMonth || inv.month === filterMonth;
     const matchStudent = !filterStudent || inv.studentName?.toLowerCase().includes(filterStudent.toLowerCase());
     return matchBranch && matchStatus && matchMonth && matchStudent;
-  }).sort((a, b) => (b.createdAt?.toDate?.() || 0) - (a.createdAt?.toDate?.() || 0));
+  }).sort((a, b) => {
+    // createdAt is an ISO string after the Supabase migration (was a
+    // Firestore Timestamp before). Parse defensively for both.
+    const ts = (v) => {
+      if (!v) return 0;
+      if (typeof v?.toDate === "function") return v.toDate().getTime();
+      const t = new Date(v).getTime();
+      return Number.isNaN(t) ? 0 : t;
+    };
+    return ts(b.createdAt) - ts(a.createdAt);
+  });
 
+  // pagination over filtered invoices
+  const rowCount = filtered.length;
+  const pageCount = Math.max(1, Math.ceil(rowCount / pageSize));
+  const safePage = Math.min(Math.max(1, page), pageCount);
+  const paged = filtered.slice((safePage - 1) * pageSize, safePage * pageSize);
   const totalAmount = lineItems.reduce((s, i) => s + Number(i.amount || 0), 0);
   const totalCollected = filtered.filter(i => i.status === "paid").reduce((s, i) => s + Number(i.amount), 0);
   const totalPending = filtered.filter(i => i.status === "pending").reduce((s, i) => s + Number(i.amount), 0);
@@ -239,7 +259,7 @@ export default function Fees() {
       {/* Mobile card view */}
       {isMobile ? (
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          {filtered.map(inv => (
+          {paged.map(inv => (
             <div key={inv.id} style={{ background: "white", borderRadius: 12, padding: 16, border: "1px solid var(--border)" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
                 <div>
@@ -298,7 +318,7 @@ export default function Fees() {
                 </tr>
               </thead>
               <tbody>
-                {filtered.map(inv => (
+                {paged.map(inv => (
                   <tr key={inv.id} style={{ borderTop: "1px solid var(--border)" }}>
                     <td style={{ padding: "11px 14px", fontSize: 14, fontWeight: 500, whiteSpace: "nowrap" }}>{inv.studentName}</td>
                     <td style={{ padding: "11px 14px", fontSize: 13, whiteSpace: "nowrap" }}>{inv.month} {inv.year}</td>
@@ -331,6 +351,11 @@ export default function Fees() {
           {filtered.length === 0 && <div style={{ padding: 40, textAlign: "center", color: "var(--text-muted)" }}>No invoices found</div>}
         </div>
       )}
+
+      <Pagination
+        page={safePage} pageCount={pageCount} total={rowCount} pageSize={pageSize}
+        onPage={setPage} onPageSize={setPageSize}
+      />
 
       {/* Create Invoice Modal */}
       {showModal && (

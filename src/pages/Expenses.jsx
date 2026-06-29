@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from "react";
 import { db } from "../firebase";
-import { collection, addDoc, deleteDoc, doc, onSnapshot, serverTimestamp } from "firebase/firestore";
+import { collection, addDoc, deleteDoc, doc, onSnapshot, serverTimestamp } from "../firebase";
 import { useBranch } from "../context/BranchContext";
+import Pagination from "../components/UI/Pagination";
 import { exportToCSV, exportToPDF } from "../utils/exportUtils";
 import toast from "react-hot-toast";
 import { Plus, Trash2, X, Download, FileText } from "lucide-react";
@@ -33,6 +34,11 @@ export default function Expenses() {
   const [filterBranch, setFilterBranch] = useState("");
   const [filterDateFrom, setFilterDateFrom] = useState("");
   const [filterDateTo, setFilterDateTo] = useState("");
+  const [search, setSearch] = useState("");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
+
+  React.useEffect(() => { setPage(1); }, [search, filterCategory, filterBranch, filterDateFrom, filterDateTo, pageSize, activeBranch]);
 
   useEffect(() => {
     const unsub = onSnapshot(collection(db, "expenses"), snap =>
@@ -49,8 +55,16 @@ export default function Expenses() {
     const matchCat = !filterCategory || e.category === filterCategory;
     const matchFrom = !filterDateFrom || e.date >= filterDateFrom;
     const matchTo = !filterDateTo || e.date <= filterDateTo;
-    return matchBranch && matchCat && matchFrom && matchTo;
+    const q = search.trim().toLowerCase();
+    const matchSearch = !q || (e.description || "").toLowerCase().includes(q) || (e.notes || "").toLowerCase().includes(q) || (e.category || "").toLowerCase().includes(q);
+    return matchBranch && matchCat && matchFrom && matchTo && matchSearch;
   });
+
+  // pagination over the filtered set
+  const rowCount = filtered.length;
+  const pageCount = Math.max(1, Math.ceil(rowCount / pageSize));
+  const safePage = Math.min(Math.max(1, page), pageCount);
+  const paged = filtered.slice((safePage - 1) * pageSize, safePage * pageSize);
 
   const total = filtered.reduce((s, e) => s + Number(e.amount || 0), 0);
 
@@ -91,8 +105,8 @@ export default function Expenses() {
     filtered.map(e => [e.date, e.description, e.category, branches.find(b => b.id === e.branchId)?.name || "Main", `Rs. ${Number(e.amount).toLocaleString()}`])
   );
 
-  const clearFilters = () => { setFilterCategory(""); setFilterBranch(""); setFilterDateFrom(""); setFilterDateTo(""); };
-  const hasFilters = filterCategory || filterBranch || filterDateFrom || filterDateTo;
+  const clearFilters = () => { setSearch(""); setFilterCategory(""); setFilterBranch(""); setFilterDateFrom(""); setFilterDateTo(""); };
+  const hasFilters = search || filterCategory || filterBranch || filterDateFrom || filterDateTo;
 
   return (
     <div>
@@ -125,6 +139,10 @@ export default function Expenses() {
 
       {/* Filters */}
       <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
+        <div style={{ position: "relative", flex: 1, minWidth: 160 }}>
+          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search description, notes..."
+            style={{ width: "100%", padding: "8px 10px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 13, boxSizing: "border-box" }} />
+        </div>
         <select value={filterCategory} onChange={e => setFilterCategory(e.target.value)}
           style={{ padding: "8px 10px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 13, background: "white", flex: isMobile ? 1 : "none" }}>
           <option value="">All Categories</option>
@@ -154,7 +172,7 @@ export default function Expenses() {
       {/* Mobile card view */}
       {isMobile ? (
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          {filtered.map(exp => (
+          {paged.map(exp => (
             <div key={exp.id} style={{ background: "white", borderRadius: 12, padding: 16, border: "1px solid var(--border)" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
                 <div style={{ flex: 1, marginRight: 10 }}>
@@ -200,7 +218,7 @@ export default function Expenses() {
                 </tr>
               </thead>
               <tbody>
-                {filtered.map(exp => (
+                {paged.map(exp => (
                   <tr key={exp.id} style={{ borderTop: "1px solid var(--border)" }}>
                     <td style={{ padding: "11px 14px", fontSize: 13, whiteSpace: "nowrap" }}>{exp.date}</td>
                     <td style={{ padding: "11px 14px", fontSize: 14, fontWeight: 500 }}>{exp.description}</td>
@@ -229,6 +247,11 @@ export default function Expenses() {
           )}
         </div>
       )}
+
+      <Pagination
+        page={safePage} pageCount={pageCount} total={rowCount} pageSize={pageSize}
+        onPage={setPage} onPageSize={setPageSize}
+      />
 
       {/* Add Expense Modal */}
       {showModal && (

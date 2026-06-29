@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { db } from "../firebase";
-import { collection, onSnapshot, addDoc, serverTimestamp } from "firebase/firestore";
+import { collection, onSnapshot, addDoc, serverTimestamp } from "../firebase";
 import { useParams, useNavigate } from "react-router-dom";
 import { ArrowLeft, ArrowUpCircle, ArrowDownCircle, Plus, X } from "lucide-react";
 import toast from "react-hot-toast";

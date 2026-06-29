@@ -1,8 +1,10 @@
 import React, { useEffect, useState } from "react";
 import { db } from "../firebase";
-import { collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot, serverTimestamp } from "firebase/firestore";
+import { collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot, serverTimestamp } from "../firebase";
 import { useBranch } from "../context/BranchContext";
-import { matchesBranch } from "../utils/branchFilter";
+import { useCollection } from "../hooks/useCollection";
+import ListToolbar from "../components/UI/ListToolbar";
+import Pagination from "../components/UI/Pagination";
 import { exportToCSV, exportToPDF } from "../utils/exportUtils";
 import toast from "react-hot-toast";
 import { Plus, Trash2, X, Edit2, Download, FileText } from "lucide-react";
@@ -22,27 +24,31 @@ function useIsMobile() {
 export default function Employees() {
   const { branches, activeBranch } = useBranch();
   const isMobile = useIsMobile();
-  const [employees, setEmployees] = useState([]);
   const [showModal, setShowModal] = useState(false);
   const [form, setForm] = useState(empty);
   const [editing, setEditing] = useState(null);
   const [filterRole, setFilterRole] = useState("");
   const [search, setSearch] = useState("");
+  const [sortField, setSortField] = useState("");
+  const [sortDir, setSortDir] = useState("asc");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
 
-  useEffect(() => {
-    const unsub = onSnapshot(collection(db, "employees"), snap =>
-      setEmployees(snap.docs.map(d => ({ id: d.id, ...d.data() })))
-    );
-    return unsub;
-  }, []);
+  const { rows: employees, filtered, paged, total, pageCount, page: safePage } = useCollection("employees", {
+    activeBranch,
+    search,
+    searchFields: ["name", "role", "phone", "email"],
+    filters: { role: filterRole },
+    sortBy: sortField,
+    sortDir,
+    page,
+    pageSize,
+  });
 
   const roles = [...new Set(employees.map(e => e.role).filter(Boolean))];
+  const active = !!(search || filterRole || sortField);
 
-  const filtered = employees.filter(e => {
-    const matchRole = !filterRole || e.role === filterRole;
-    const matchSearch = !search || e.name?.toLowerCase().includes(search.toLowerCase());
-    return matchesBranch(e, activeBranch) && matchRole && matchSearch;
-  });
+  React.useEffect(() => { setPage(1); }, [search, filterRole, pageSize, activeBranch]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -71,7 +77,7 @@ export default function Employees() {
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, flexWrap: "wrap", gap: 10 }}>
-        <h2 style={{ fontSize: 20, fontWeight: 700 }}>Employees / Teachers <span style={{ fontSize: 13, fontWeight: 400, color: "var(--text-muted)" }}>({filtered.length})</span></h2>
+        <h2 style={{ fontSize: 20, fontWeight: 700 }}>Employees / Teachers <span style={{ fontSize: 13, fontWeight: 400, color: "var(--text-muted)" }}>({total})</span></h2>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           {!isMobile && <>
             <button onClick={handleCSV} style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13 }}><Download size={14} /> CSV</button>
@@ -84,22 +90,29 @@ export default function Employees() {
         </div>
       </div>
 
-      <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
-        <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search name..."
-          style={{ padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14, minWidth: 160 }} />
-        <select value={filterRole} onChange={e => setFilterRole(e.target.value)}
-          style={{ padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14, background: "white" }}>
-          <option value="">All Roles</option>
-          {roles.map(r => <option key={r}>{r}</option>)}
-        </select>
-        {(search || filterRole) && (
-          <button onClick={() => { setSearch(""); setFilterRole(""); }}
-            style={{ padding: "8px 14px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13, color: "var(--text-muted)" }}>Clear</button>
-        )}
-      </div>
+      <ListToolbar
+        search={search}
+        onSearch={setSearch}
+        searchPlaceholder="Search name, role, phone, email..."
+        filters={[
+          { key: "role", value: filterRole, onChange: setFilterRole, placeholder: "All Roles", options: roles.map(r => ({ value: r, label: r })) },
+        ]}
+        sort={{
+          field: sortField, dir: sortDir,
+          onSortField: setSortField,
+          onToggleDir: () => setSortDir(d => (d === "asc" ? "desc" : "asc")),
+          options: [
+            { value: "name", label: "Name" },
+            { value: "role", label: "Role" },
+            { value: "salary", label: "Salary" },
+          ],
+        }}
+        active={active}
+        onClear={() => { setSearch(""); setFilterRole(""); setSortField(""); setSortDir("asc"); }}
+      />
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 16 }}>
-        {filtered.map(emp => (
+        {paged.map(emp => (
           <div key={emp.id} style={{ background: "white", borderRadius: 12, padding: 20, border: "1px solid var(--border)" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
               <div style={{ width: 44, height: 44, borderRadius: "50%", background: "var(--primary-light)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, fontWeight: 700, color: "var(--primary)" }}>
@@ -123,7 +136,12 @@ export default function Employees() {
           </div>
         ))}
       </div>
-      {filtered.length === 0 && <div style={{ padding: 40, textAlign: "center", color: "var(--text-muted)", background: "white", borderRadius: 12, border: "1px solid var(--border)", marginTop: 8 }}>No employees found</div>}
+      {total === 0 && <div style={{ padding: 40, textAlign: "center", color: "var(--text-muted)", background: "white", borderRadius: 12, border: "1px solid var(--border)", marginTop: 8 }}>No employees found</div>}
+
+      <Pagination
+        page={safePage} pageCount={pageCount} total={total} pageSize={pageSize}
+        onPage={setPage} onPageSize={setPageSize}
+      />
 
       {showModal && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: isMobile ? "flex-end" : "center", justifyContent: "center", zIndex: 1000, padding: isMobile ? 0 : 16 }}>

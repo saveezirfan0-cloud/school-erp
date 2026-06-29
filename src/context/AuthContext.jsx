@@ -1,24 +1,42 @@
 import React, { createContext, useContext, useEffect, useState } from "react";
-import { auth } from "../firebase";
-import { signInWithEmailAndPassword, signOut, onAuthStateChanged } from "firebase/auth";
+import { supabase } from "../lib/supabaseClient";
 
 const AuthContext = createContext();
 export const useAuth = () => useContext(AuthContext);
+
+// Normalize a Supabase user into the shape the app expects from
+// Firebase (it reads `user.uid` and `user.email`).
+function shapeUser(sUser) {
+  if (!sUser) return null;
+  return { ...sUser, uid: sUser.id, email: sUser.email };
+}
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, (u) => {
-      setUser(u);
+    // Initial session.
+    supabase.auth.getSession().then(({ data }) => {
+      setUser(shapeUser(data?.session?.user || null));
       setLoading(false);
     });
-    return unsub;
+
+    // Live auth state (replaces onAuthStateChanged).
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(shapeUser(session?.user || null));
+      setLoading(false);
+    });
+
+    return () => sub.subscription.unsubscribe();
   }, []);
 
-  const login = (email, password) => signInWithEmailAndPassword(auth, email, password);
-  const logout = () => signOut(auth);
+  const login = async (email, password) => {
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error) throw error;
+  };
+
+  const logout = () => supabase.auth.signOut();
 
   return (
     <AuthContext.Provider value={{ user, loading, login, logout }}>

@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { db } from "../firebase";
-import { collection, addDoc, deleteDoc, doc, serverTimestamp } from "firebase/firestore";
+import { collection, addDoc, deleteDoc, doc, serverTimestamp } from "../firebase";
 import { useBranch } from "../context/BranchContext";
 import toast from "react-hot-toast";
 import { Plus, Trash2, Building2 } from "lucide-react";

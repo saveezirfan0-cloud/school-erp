@@ -1,5 +1,5 @@
 import { db } from "../firebase";
-import { collection, addDoc, serverTimestamp } from "firebase/firestore";
+import { collection, addDoc, serverTimestamp } from "../firebase";
 
 export async function logAction(user, action, module, details = "") {
   try {

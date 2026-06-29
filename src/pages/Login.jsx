@@ -2,9 +2,8 @@ import React, { useState, useEffect } from "react";
 import { useAuth } from "../context/AuthContext";
 import { useNavigate } from "react-router-dom";
 import { db } from "../firebase";
-import { collection, getDocs } from "firebase/firestore";
-import { signInWithEmailAndPassword } from "firebase/auth";
-import { auth } from "../firebase";
+import { collection, getDocs } from "../firebase";
+import { supabase } from "../lib/supabaseClient";
 import toast from "react-hot-toast";
 import { Eye, EyeOff, Hash } from "lucide-react";
 

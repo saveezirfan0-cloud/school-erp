@@ -1,17 +1,18 @@
-import React, { useEffect, useState } from "react";
-import { db } from "../firebase";
-import { collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot, serverTimestamp } from "firebase/firestore";
+import React, { useState } from "react";
+import { db, addDoc, updateDoc, deleteDoc, doc, collection, serverTimestamp } from "../firebase";
 import { useBranch } from "../context/BranchContext";
-import { matchesBranch } from "../utils/branchFilter";
+import { useCollection } from "../hooks/useCollection";
+import ListToolbar from "../components/UI/ListToolbar";
+import Pagination from "../components/UI/Pagination";
 import { exportToCSV, exportToPDF } from "../utils/exportUtils";
 import toast from "react-hot-toast";
-import { Plus, Search, Edit2, Trash2, X, Download, FileText } from "lucide-react";
+import { Plus, Edit2, Trash2, X, Download, FileText } from "lucide-react";
 
 const emptyStudent = { name: "", studentId: "", grade: "", parentName: "", parentPhone: "", email: "", branchId: "", monthlyFee: "", address: "", dob: "", recurringFee: false };
 
 function useIsMobile() {
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
-  useEffect(() => {
+  React.useEffect(() => {
     const handler = () => setIsMobile(window.innerWidth <= 768);
     window.addEventListener("resize", handler);
     return () => window.removeEventListener("resize", handler);
@@ -22,27 +23,35 @@ function useIsMobile() {
 export default function Students() {
   const { branches, activeBranch } = useBranch();
   const isMobile = useIsMobile();
-  const [students, setStudents] = useState([]);
+
   const [search, setSearch] = useState("");
   const [filterGrade, setFilterGrade] = useState("");
+  const [sortField, setSortField] = useState("");
+  const [sortDir, setSortDir] = useState("asc");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
+
   const [showModal, setShowModal] = useState(false);
   const [form, setForm] = useState(emptyStudent);
   const [editing, setEditing] = useState(null);
 
-  useEffect(() => {
-    const unsub = onSnapshot(collection(db, "students"), snap =>
-      setStudents(snap.docs.map(d => ({ id: d.id, ...d.data() })))
-    );
-    return unsub;
-  }, []);
-
-  const grades = [...new Set(students.map(s => s.grade).filter(Boolean))].sort();
-
-  const filtered = students.filter(s => {
-    const matchSearch = !search || s.name?.toLowerCase().includes(search.toLowerCase()) || s.studentId?.toLowerCase().includes(search.toLowerCase());
-    const matchGrade = !filterGrade || s.grade === filterGrade;
-    return matchesBranch(s, activeBranch) && matchSearch && matchGrade;
+  const { rows, filtered, paged, total, pageCount, page: safePage } = useCollection("students", {
+    activeBranch,
+    search,
+    searchFields: ["name", "studentId", "parentName", "parentPhone"],
+    filters: { grade: filterGrade },
+    sortBy: sortField,
+    sortDir,
+    page,
+    pageSize,
   });
+
+  const grades = [...new Set(rows.map((s) => s.grade).filter(Boolean))].sort();
+  const active = !!(search || filterGrade || sortField);
+
+  React.useEffect(() => { setPage(1); }, [search, filterGrade, pageSize, activeBranch]);
+
+  const clearAll = () => { setSearch(""); setFilterGrade(""); setSortField(""); setSortDir("asc"); };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -55,23 +64,28 @@ export default function Students() {
         toast.success("Student added");
       }
       setShowModal(false); setForm(emptyStudent); setEditing(null);
-    } catch { toast.error("Error saving"); }
+    } catch (err) { toast.error(err?.message || "Error saving"); }
+  };
+
+  const handleDelete = async (id) => {
+    if (!window.confirm("Delete this student? This cannot be undone.")) return;
+    try { await deleteDoc(doc(db, "students", id)); toast.success("Student deleted"); }
+    catch (err) { toast.error(err?.message || "Error deleting"); }
   };
 
   const handleCSV = () => exportToCSV("students",
     ["ID", "Name", "Grade", "Parent", "Phone", "Fee", "Branch"],
-    filtered.map(s => [s.studentId, s.name, s.grade, s.parentName, s.parentPhone, s.monthlyFee, branches.find(b => b.id === s.branchId)?.name || "Main"])
+    filtered.map((s) => [s.studentId, s.name, s.grade, s.parentName, s.parentPhone, s.monthlyFee, branches.find((b) => b.id === s.branchId)?.name || "Main"])
   );
-
   const handlePDF = () => exportToPDF("Students Report",
     ["ID", "Name", "Grade", "Parent", "Phone", "Fee"],
-    filtered.map(s => [s.studentId, s.name, s.grade, s.parentName, s.parentPhone, `Rs. ${s.monthlyFee}`])
+    filtered.map((s) => [s.studentId, s.name, s.grade, s.parentName, s.parentPhone, `Rs. ${s.monthlyFee}`])
   );
 
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 10 }}>
-        <h2 style={{ fontSize: 20, fontWeight: 700 }}>Students <span style={{ fontSize: 13, fontWeight: 400, color: "var(--text-muted)" }}>({filtered.length})</span></h2>
+        <h2 style={{ fontSize: 20, fontWeight: 700 }}>Students <span style={{ fontSize: 13, fontWeight: 400, color: "var(--text-muted)" }}>({total})</span></h2>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           {!isMobile && <>
             <button onClick={handleCSV} style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13 }}><Download size={14} /> CSV</button>
@@ -84,26 +98,31 @@ export default function Students() {
         </div>
       </div>
 
-      <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
-        <div style={{ position: "relative", flex: 1, minWidth: 160 }}>
-          <Search size={14} style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: "var(--text-muted)" }} />
-          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search name or ID..."
-            style={{ width: "100%", padding: "8px 8px 8px 30px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14, boxSizing: "border-box" }} />
-        </div>
-        <select value={filterGrade} onChange={e => setFilterGrade(e.target.value)}
-          style={{ padding: "8px 10px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 13, background: "white" }}>
-          <option value="">All Grades</option>
-          {grades.map(g => <option key={g}>{g}</option>)}
-        </select>
-        {(search || filterGrade) && (
-          <button onClick={() => { setSearch(""); setFilterGrade(""); }}
-            style={{ padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13, color: "var(--text-muted)" }}>Clear</button>
-        )}
-      </div>
+      <ListToolbar
+        search={search}
+        onSearch={setSearch}
+        searchPlaceholder="Search name, ID, parent, phone..."
+        filters={[
+          { key: "grade", value: filterGrade, onChange: setFilterGrade, placeholder: "All Grades", options: grades.map((g) => ({ value: g, label: g })) },
+        ]}
+        sort={{
+          field: sortField, dir: sortDir,
+          onSortField: setSortField,
+          onToggleDir: () => setSortDir((d) => (d === "asc" ? "desc" : "asc")),
+          options: [
+            { value: "name", label: "Name" },
+            { value: "studentId", label: "Student ID" },
+            { value: "grade", label: "Grade" },
+            { value: "monthlyFee", label: "Monthly Fee" },
+          ],
+        }}
+        active={active}
+        onClear={clearAll}
+      />
 
       {isMobile ? (
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          {filtered.map(s => (
+          {paged.map((s) => (
             <div key={s.id} style={{ background: "white", borderRadius: 12, padding: 16, border: "1px solid var(--border)" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -117,7 +136,7 @@ export default function Students() {
                 </div>
                 <div style={{ display: "flex", gap: 6 }}>
                   <button onClick={() => { setForm(s); setEditing(s.id); setShowModal(true); }} style={{ border: "none", background: "var(--primary-light)", color: "var(--primary)", padding: "7px 9px", borderRadius: 8, cursor: "pointer" }}><Edit2 size={14} /></button>
-                  <button onClick={() => { if (window.confirm("Delete?")) deleteDoc(doc(db, "students", s.id)); }} style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "7px 9px", borderRadius: 8, cursor: "pointer" }}><Trash2 size={14} /></button>
+                  <button onClick={() => handleDelete(s.id)} style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "7px 9px", borderRadius: 8, cursor: "pointer" }}><Trash2 size={14} /></button>
                 </div>
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
@@ -127,12 +146,12 @@ export default function Students() {
                 <div style={{ fontSize: 12 }}><div style={{ color: "var(--text-muted)", marginBottom: 2 }}>Phone</div><a href={`tel:${s.parentPhone}`} style={{ color: "#2a8c7a", fontWeight: 500, textDecoration: "none" }}>{s.parentPhone || "—"}</a></div>
               </div>
               <div style={{ marginTop: 10, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <span style={{ fontSize: 12, color: "var(--text-muted)" }}>{branches.find(b => b.id === s.branchId)?.name || "Main Office"}</span>
+                <span style={{ fontSize: 12, color: "var(--text-muted)" }}>{branches.find((b) => b.id === s.branchId)?.name || "Main Office"}</span>
                 {s.recurringFee && <span style={{ padding: "2px 8px", borderRadius: 20, fontSize: 11, background: "#ecfdf5", color: "#10b981", fontWeight: 600 }}>Auto fees</span>}
               </div>
             </div>
           ))}
-          {filtered.length === 0 && <div style={{ padding: 40, textAlign: "center", color: "var(--text-muted)", background: "white", borderRadius: 12 }}>No students found</div>}
+          {total === 0 && <div style={{ padding: 40, textAlign: "center", color: "var(--text-muted)", background: "white", borderRadius: 12 }}>No students found</div>}
         </div>
       ) : (
         <div style={{ background: "white", borderRadius: 12, border: "1px solid var(--border)", overflow: "hidden" }}>
@@ -140,13 +159,13 @@ export default function Students() {
             <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 700 }}>
               <thead>
                 <tr style={{ background: "#f8fafc" }}>
-                  {["ID", "Name", "Grade", "Parent", "Phone", "Fee", "Branch", "Auto", "Actions"].map(h => (
+                  {["ID", "Name", "Grade", "Parent", "Phone", "Fee", "Branch", "Auto", "Actions"].map((h) => (
                     <th key={h} style={{ padding: "11px 14px", textAlign: "left", fontSize: 11, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", whiteSpace: "nowrap" }}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
-                {filtered.map(s => (
+                {paged.map((s) => (
                   <tr key={s.id} style={{ borderTop: "1px solid var(--border)" }}>
                     <td style={{ padding: "11px 14px", fontSize: 12, fontFamily: "monospace" }}>{s.studentId}</td>
                     <td style={{ padding: "11px 14px", fontSize: 14, fontWeight: 500, whiteSpace: "nowrap" }}>{s.name}</td>
@@ -154,7 +173,7 @@ export default function Students() {
                     <td style={{ padding: "11px 14px", fontSize: 13, whiteSpace: "nowrap" }}>{s.parentName}</td>
                     <td style={{ padding: "11px 14px", fontSize: 13 }}>{s.parentPhone}</td>
                     <td style={{ padding: "11px 14px", fontSize: 13, fontWeight: 600 }}>Rs. {s.monthlyFee}</td>
-                    <td style={{ padding: "11px 14px", fontSize: 13 }}>{branches.find(b => b.id === s.branchId)?.name || "Main Office"}</td>
+                    <td style={{ padding: "11px 14px", fontSize: 13 }}>{branches.find((b) => b.id === s.branchId)?.name || "Main Office"}</td>
                     <td style={{ padding: "11px 14px" }}>
                       <span style={{ padding: "2px 8px", borderRadius: 20, fontSize: 11, fontWeight: 600, background: s.recurringFee ? "#ecfdf5" : "#f8fafc", color: s.recurringFee ? "#10b981" : "var(--text-muted)" }}>
                         {s.recurringFee ? "Auto" : "Manual"}
@@ -163,7 +182,7 @@ export default function Students() {
                     <td style={{ padding: "11px 14px" }}>
                       <div style={{ display: "flex", gap: 6 }}>
                         <button onClick={() => { setForm(s); setEditing(s.id); setShowModal(true); }} style={{ border: "none", background: "var(--primary-light)", color: "var(--primary)", padding: "6px 9px", borderRadius: 6, cursor: "pointer" }}><Edit2 size={13} /></button>
-                        <button onClick={() => { if (window.confirm("Delete?")) deleteDoc(doc(db, "students", s.id)); }} style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "6px 9px", borderRadius: 6, cursor: "pointer" }}><Trash2 size={13} /></button>
+                        <button onClick={() => handleDelete(s.id)} style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "6px 9px", borderRadius: 6, cursor: "pointer" }}><Trash2 size={13} /></button>
                       </div>
                     </td>
                   </tr>
@@ -171,9 +190,14 @@ export default function Students() {
               </tbody>
             </table>
           </div>
-          {filtered.length === 0 && <div style={{ padding: 40, textAlign: "center", color: "var(--text-muted)" }}>No students found</div>}
+          {total === 0 && <div style={{ padding: 40, textAlign: "center", color: "var(--text-muted)" }}>No students found</div>}
         </div>
       )}
+
+      <Pagination
+        page={safePage} pageCount={pageCount} total={total} pageSize={pageSize}
+        onPage={setPage} onPageSize={setPageSize}
+      />
 
       {showModal && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: isMobile ? "flex-end" : "center", justifyContent: "center", zIndex: 1000, padding: isMobile ? 0 : 16 }}>
@@ -196,20 +220,20 @@ export default function Students() {
                 ].map(({ label, key, type = "text", required }) => (
                   <div key={key}>
                     <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 5 }}>{label}</label>
-                    <input type={type} value={form[key] || ""} onChange={e => setForm(p => ({ ...p, [key]: e.target.value }))} required={required}
+                    <input type={type} value={form[key] || ""} onChange={(e) => setForm((p) => ({ ...p, [key]: e.target.value }))} required={required}
                       style={{ width: "100%", padding: "10px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14, boxSizing: "border-box" }} />
                   </div>
                 ))}
                 <div>
                   <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 5 }}>Branch</label>
-                  <select value={form.branchId || ""} onChange={e => setForm(p => ({ ...p, branchId: e.target.value }))}
+                  <select value={form.branchId || ""} onChange={(e) => setForm((p) => ({ ...p, branchId: e.target.value }))}
                     style={{ width: "100%", padding: "10px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14 }}>
                     <option value="">Main Office</option>
-                    {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+                    {branches.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
                   </select>
                 </div>
                 <div style={{ display: "flex", alignItems: "center", gap: 10, padding: 12, border: "1px solid var(--border)", borderRadius: 8, background: form.recurringFee ? "#f0fdf4" : "#f8fafc" }}>
-                  <input type="checkbox" id="recurringFee" checked={form.recurringFee || false} onChange={e => setForm(p => ({ ...p, recurringFee: e.target.checked }))} style={{ width: 18, height: 18 }} />
+                  <input type="checkbox" id="recurringFee" checked={form.recurringFee || false} onChange={(e) => setForm((p) => ({ ...p, recurringFee: e.target.checked }))} style={{ width: 18, height: 18 }} />
                   <div>
                     <label htmlFor="recurringFee" style={{ fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Auto monthly fees</label>
                     <div style={{ fontSize: 11, color: "var(--text-muted)" }}>Invoice created each month</div>

@@ -1,6 +1,6 @@
 import React, { useState, useRef } from "react";
 import { db } from "../firebase";
-import { collection, addDoc, serverTimestamp } from "firebase/firestore";
+import { collection, addDoc, serverTimestamp } from "../firebase";
 import * as XLSX from "xlsx";
 import toast from "react-hot-toast";
 import {

@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
-import { db, storage } from "../firebase";
-import { collection, addDoc, getDocs, serverTimestamp } from "firebase/firestore";
-import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
+import { db } from "../firebase";
+import { collection, addDoc, getDocs, serverTimestamp } from "../firebase";
+import { uploadReceipt } from "../lib/storage";
 import { sendWhatsAppMessage } from "../utils/whatsapp";
 import toast from "react-hot-toast";
 import { Search, CheckCircle, ChevronLeft, ChevronRight } from "lucide-react";
@@ -43,9 +43,7 @@ export default function QuickPayment() {
     try {
       let receiptUrl = null;
       if (receipt) {
-        const fileRef = ref(storage, `receipts/${Date.now()}_${receipt.name}`);
-        await uploadBytes(fileRef, receipt);
-        receiptUrl = await getDownloadURL(fileRef);
+        receiptUrl = await uploadReceipt(receipt);
       }
       await addDoc(collection(db, "invoices"), {
         studentId: selected.id,
