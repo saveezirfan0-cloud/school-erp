@@ -1,0 +1,17 @@
+{
+  "short_name": "ZMI",
+  "name": "ZMI School Management",
+  "icons": [
+    {
+      "src": "zmi_logo.png",
+      "sizes": "192x192 512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "theme_color": "#7a2535",
+  "background_color": "#ffffff"
+}
