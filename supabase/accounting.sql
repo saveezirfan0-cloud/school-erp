@@ -26,6 +26,14 @@ alter table public.invoices add column if not exists paid_amount   numeric defau
 alter table public.invoices add column if not exists paid_account  text;
 alter table public.invoices add column if not exists paid_date     text;
 
+-- invoices: concession tracking (non-profit "forgiven" amount).
+-- The invoice keeps its full amount; concession_amount records how
+-- much was waived so it can be reported as the institute's
+-- contribution. discount_at_invoice is an optional concession set
+-- when the invoice is created.
+alter table public.invoices add column if not exists concession_amount  numeric default 0;
+alter table public.invoices add column if not exists concession_note    text;
+
 -- payslips: paid tracking (already written by the app; ensure columns)
 alter table public.payslips add column if not exists status        text default 'pending';
 alter table public.payslips add column if not exists paid_account  text;

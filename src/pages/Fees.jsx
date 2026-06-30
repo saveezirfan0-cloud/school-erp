@@ -34,6 +34,8 @@ export default function Fees() {
   const [payDate, setPayDate] = useState(new Date().toISOString().slice(0, 10));
   const [payAmount, setPayAmount] = useState("");
   const [alreadyPaid, setAlreadyPaid] = useState(0);
+  const [concession, setConcession] = useState(false);
+  const [concessionNote, setConcessionNote] = useState("");
   const [showModal, setShowModal] = useState(false);
   const [showBulk, setShowBulk] = useState(false);
   const [showRecurring, setShowRecurring] = useState(false);
@@ -188,41 +190,62 @@ export default function Fees() {
   const confirmPay = async () => {
     if (!payAccount) return toast.error("Select the account that received payment");
     const amt = Number(payAmount);
-    if (!amt || amt <= 0) return toast.error("Enter a valid amount");
+    if (amt < 0) return toast.error("Enter a valid amount");
     const total = Number(payModal.amount || 0);
     const newPaid = alreadyPaid + amt;
+    const remainingAfter = total - newPaid;
+
+    // Concession closes out the remaining balance as "forgiven".
+    const concessionAmt = concession ? Math.max(0, remainingAfter) : 0;
+
     if (newPaid - total > 0.001) return toast.error(`That exceeds the balance. Remaining is Rs. ${(total - alreadyPaid).toLocaleString()}`);
+    if (amt === 0 && !concession) return toast.error("Enter an amount or mark the balance as concession");
+
     try {
-      await recordPayment({
-        type: "cash_in",
-        account: payAccount,
-        amount: amt,
-        category: "Fee Collection",
-        description: `Fee — ${payModal.studentName || "student"} (${payModal.month || ""})`,
-        reference: payModal.id,
-        branchId: payModal.branchId || "",
-        date: payDate,
-        source: "invoice",
-        sourceId: payModal.id,
-      });
-      const status = newPaid + 0.001 >= total ? "paid" : "partial";
+      // Only record a real payment if money actually changed hands.
+      if (amt > 0) {
+        await recordPayment({
+          type: "cash_in",
+          account: payAccount,
+          amount: amt,
+          category: "Fee Collection",
+          description: `Fee — ${payModal.studentName || "student"} (${payModal.month || ""})`,
+          reference: payModal.id,
+          branchId: payModal.branchId || "",
+          date: payDate,
+          source: "invoice",
+          sourceId: payModal.id,
+        });
+      }
+
+      // Status: paid if money + concession covers the invoice, else partial.
+      const covered = newPaid + concessionAmt + 0.001 >= total;
+      const status = covered ? "paid" : "partial";
+
+      const existingConcession = Number(payModal.concessionAmount || 0);
       await updateDoc(doc(db, "invoices", payModal.id), {
         status,
         paidAmount: newPaid,
         paidDate: payDate,
         paidAccount: payAccount,
+        concessionAmount: existingConcession + concessionAmt,
+        concessionNote: concession ? (concessionNote || "Concession") : (payModal.concessionNote || ""),
       });
+
       const student = students.find(s => s.id === payModal.studentId);
       if (student?.parentPhone) {
-        const msg = status === "paid"
-          ? `✅ Fee fully paid for ${student.name} (${payModal.month}). Thank you!`
-          : `✅ Part payment of Rs. ${amt.toLocaleString()} received for ${student.name} (${payModal.month}). Balance: Rs. ${(total - newPaid).toLocaleString()}.`;
+        let msg;
+        if (status === "paid" && concessionAmt > 0)
+          msg = `✅ Fee settled for ${student.name} (${payModal.month}). Paid Rs. ${amt.toLocaleString()}${concessionAmt > 0 ? `, concession Rs. ${concessionAmt.toLocaleString()}` : ""}. Thank you!`;
+        else if (status === "paid")
+          msg = `✅ Fee fully paid for ${student.name} (${payModal.month}). Thank you!`;
+        else
+          msg = `✅ Part payment of Rs. ${amt.toLocaleString()} received for ${student.name} (${payModal.month}). Balance: Rs. ${(total - newPaid).toLocaleString()}.`;
         await sendWhatsAppMessage(student.parentPhone, msg);
       }
-      toast.success(status === "paid" ? "Payment recorded — fully paid" : "Partial payment recorded");
-      setPayModal(null);
-      setPayAccount("");
-      setPayAmount("");
+      toast.success(concessionAmt > 0 ? "Recorded with concession" : status === "paid" ? "Payment recorded — fully paid" : "Partial payment recorded");
+      setPayModal(null); setPayAccount(""); setPayAmount("");
+      setConcession(false); setConcessionNote("");
     } catch (e) {
       toast.error(e?.message || "Error recording payment");
     }
@@ -455,6 +478,28 @@ export default function Fees() {
             <label style={{ display: "block", fontSize: 13, fontWeight: 600, marginBottom: 5 }}>Amount to pay now *</label>
             <input type="number" value={payAmount} onChange={(e) => setPayAmount(e.target.value)}
               style={{ width: "100%", padding: "10px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14, marginBottom: 12, boxSizing: "border-box" }} />
+
+            {/* Concession: forgive the remaining balance for non-profit tracking */}
+            {(() => {
+              const total = Number(payModal.amount || 0);
+              const remainingAfter = Math.max(0, total - alreadyPaid - Number(payAmount || 0));
+              return remainingAfter > 0 ? (
+                <div style={{ background: concession ? "#fffbeb" : "#f8fafc", border: "1px solid " + (concession ? "#fde68a" : "var(--border)"), borderRadius: 10, padding: 12, marginBottom: 12 }}>
+                  <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
+                    <input type="checkbox" checked={concession} onChange={(e) => setConcession(e.target.checked)} style={{ width: 18, height: 18 }} />
+                    <div>
+                      <div style={{ fontSize: 13, fontWeight: 600 }}>Mark remaining Rs. {remainingAfter.toLocaleString()} as concession</div>
+                      <div style={{ fontSize: 11, color: "var(--text-muted)" }}>Closes the invoice; the unpaid amount is tracked as concession (waived).</div>
+                    </div>
+                  </label>
+                  {concession && (
+                    <input value={concessionNote} onChange={(e) => setConcessionNote(e.target.value)} placeholder="Reason (optional) — e.g. financial hardship"
+                      style={{ width: "100%", padding: "8px 10px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 13, marginTop: 8, boxSizing: "border-box" }} />
+                  )}
+                </div>
+              ) : null;
+            })()}
+
             <label style={{ display: "block", fontSize: 13, fontWeight: 600, marginBottom: 5 }}>Received into account *</label>
             {payAccounts.length === 0 ? (
               <div style={{ fontSize: 13, color: "#ef4444", marginBottom: 12 }}>No Bank &amp; Cash accounts yet. Add one in Chart of Accounts first.</div>

@@ -183,9 +183,17 @@ export function UserProvider({ children }) {
     return unsub;
   }, [user]);
 
-  // Resolve permissions — check built-in first, then custom roles
+  // Resolve permissions — role defaults, then per-user overrides.
   const role = userProfile?.role || "admin";
-  const permissions = PERMISSIONS[role] || customRolePerms[role] || PERMISSIONS.admin;
+  const basePermissions = PERMISSIONS[role] || customRolePerms[role] || PERMISSIONS.admin;
+
+  // Per-user overrides (set in Access Overview) win over the role
+  // default. Admins are always full-access regardless of overrides.
+  const permissions = React.useMemo(() => {
+    if (role === "admin") return PERMISSIONS.admin;
+    const overrides = userProfile?.pagePermissions || {};
+    return { ...basePermissions, ...overrides };
+  }, [role, basePermissions, userProfile]);
 
   // Helper — check a single permission
   const can = useCallback((permission) => {

@@ -28,6 +28,7 @@ const BankCash = lazy(() => import("./pages/BankCash"));
 const AccountDetail = lazy(() => import("./pages/AccountDetail"));
 const Journals = lazy(() => import("./pages/Journals"));
 const Users = lazy(() => import("./pages/Users"));
+const AccessOverview = lazy(() => import("./pages/AccessOverview"));
 const Unauthorized = lazy(() => import("./pages/Unauthorized"));
 const ReminderLogs = lazy(() => import("./pages/ReminderLogs"));
 const Import = lazy(() => import("./pages/Import"));
@@ -159,6 +160,11 @@ export default function App() {
                 <Route path="users" element={
                   <PrivateRoute permission="canManageUsers">
                     <Users />
+                  </PrivateRoute>
+                } />
+                <Route path="access" element={
+                  <PrivateRoute permission="canManageUsers">
+                    <AccessOverview />
                   </PrivateRoute>
                 } />
                 <Route path="reminder-logs" element={

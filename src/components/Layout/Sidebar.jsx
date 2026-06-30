@@ -116,6 +116,12 @@ export default function Sidebar({ onClose }) {
       show: can("canManageUsers"),
     },
     {
+      to: "/access",
+      icon: ShieldCheck,
+      label: "Access Control",
+      show: can("canManageUsers"),
+    },
+    {
       to: "/trash",
       icon: Trash2,
       label: "Trash",

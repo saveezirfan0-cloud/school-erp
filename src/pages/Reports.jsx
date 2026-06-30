@@ -24,19 +24,26 @@ export default function Reports() {
       const payslips = payslipsSnap.docs.map(d => d.data());
       const accounts = accountsSnap.docs.map(d => d.data());
 
-      const fees = invoices.filter(i => i.status === "paid").reduce((s, i) => s + Number(i.amount || 0), 0);
-      const pending = invoices.filter(i => i.status === "pending").reduce((s, i) => s + Number(i.amount || 0), 0);
+      // Collected = actual money received (paid_amount), not the
+      // invoice face value — because concessions mean paid < amount.
+      const collected = invoices.reduce((s, i) => s + Number(i.paidAmount || 0), 0);
+      const concessions = invoices.reduce((s, i) => s + Number(i.concessionAmount || 0), 0);
+      const billed = invoices.reduce((s, i) => s + Number(i.amount || 0), 0);
+      const pending = invoices
+        .filter(i => i.status === "pending" || i.status === "partial")
+        .reduce((s, i) => s + (Number(i.amount || 0) - Number(i.paidAmount || 0) - Number(i.concessionAmount || 0)), 0);
+      const fees = collected; // income = money actually collected
       const totalExp = expenses.reduce((s, e) => s + Number(e.amount || 0), 0);
       const salaries = payslips.reduce((s, p) => s + Number(p.netPay || 0), 0);
 
       const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
       const monthly = months.map((month, i) => ({
         month,
-        income: invoices.filter(inv => inv.status === "paid" && (toDate(inv.paidDate) || new Date()).getMonth() === i).reduce((s, inv) => s + Number(inv.amount || 0), 0),
+        income: invoices.filter(inv => (toDate(inv.paidDate) || new Date()).getMonth() === i).reduce((s, inv) => s + Number(inv.paidAmount || 0), 0),
         expenses: expenses.filter(e => new Date(e.date || Date.now()).getMonth() === i).reduce((s, e) => s + Number(e.amount || 0), 0),
       }));
 
-      setData({ income: fees, expenses: totalExp, fees, pending, salaries, monthly, accounts });
+      setData({ income: fees, expenses: totalExp, fees, pending, salaries, monthly, accounts, concessions, billed, collected });
     };
     fetchAll();
   }, [activeBranch]);
@@ -78,12 +85,14 @@ export default function Reports() {
               <div style={{ marginBottom: 24 }}>
                 <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", marginBottom: 12, letterSpacing: 1 }}>Income</div>
                 {[
-                  { label: "Fee Collections", value: data.fees },
-                  { label: "Pending Fees (not collected)", value: data.pending, muted: true },
-                ].map(({ label, value, muted }) => (
+                  { label: "Total Billed (face value)", value: data.billed || 0, muted: true },
+                  { label: "Fee Collections (received)", value: data.collected || 0 },
+                  { label: "Concessions (waived)", value: data.concessions || 0, amber: true },
+                  { label: "Pending Fees (outstanding)", value: data.pending, muted: true },
+                ].map(({ label, value, muted, amber }) => (
                   <div key={label} style={{ display: "flex", justifyContent: "space-between", padding: "10px 0", borderBottom: "1px solid var(--border)", opacity: muted ? 0.5 : 1 }}>
                     <span style={{ fontSize: 14 }}>{label}</span>
-                    <span style={{ fontSize: 14, fontWeight: 600, color: "#10b981" }}>Rs. {value.toLocaleString()}</span>
+                    <span style={{ fontSize: 14, fontWeight: 600, color: amber ? "#f59e0b" : "#10b981" }}>Rs. {value.toLocaleString()}</span>
                   </div>
                 ))}
                 <div style={{ display: "flex", justifyContent: "space-between", padding: "12px 0", fontWeight: 700 }}>

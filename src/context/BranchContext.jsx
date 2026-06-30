@@ -24,7 +24,19 @@ export function BranchProvider({ children }) {
     const unsub = onSnapshot(
       collection(db, "branches"),
       (snap) => {
-        setBranches(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+        const all = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        // Safety net: if the data ever contains duplicate branch names,
+        // show each name only once (keep the first). The real fix is the
+        // unique constraint in fix_duplicate_branches.sql, but this keeps
+        // the UI clean regardless.
+        const seen = new Set();
+        const unique = all.filter(b => {
+          const key = (b.name || "").trim().toLowerCase();
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+        setBranches(unique);
         setLoading(false);
       },
       (error) => {

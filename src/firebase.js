@@ -47,7 +47,7 @@ const COLUMNS = {
   branches: ["id", "name", "address", "phone", "created_at", "updated_at"],
   students: ["id", "name", "student_id", "grade", "parent_name", "parent_phone", "email", "branch_id", "monthly_fee", "address", "dob", "recurring_fee", "created_at", "updated_at"],
   employees: ["id", "name", "branch_id", "created_at", "updated_at"],
-  invoices: ["id", "student_id", "branch_id", "amount", "status", "due_date", "date", "paid_amount", "paid_account", "paid_date", "created_at", "updated_at"],
+  invoices: ["id", "student_id", "branch_id", "amount", "status", "due_date", "date", "paid_amount", "paid_account", "paid_date", "concession_amount", "concession_note", "created_at", "updated_at"],
   expenses: ["id", "description", "category", "amount", "date", "branch_id", "paid_account", "created_at", "updated_at"],
   payments: ["id", "type", "account", "description", "category", "amount", "date", "reference", "branch_id", "source", "source_id", "reversed", "reversal_of", "created_at", "updated_at"],
   payslips: ["id", "employee_id", "branch_id", "amount", "month", "date", "status", "paid_account", "paid_date", "created_at", "updated_at"],
