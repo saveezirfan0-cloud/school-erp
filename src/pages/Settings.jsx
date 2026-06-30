@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { sendWhatsAppMessage } from "../utils/whatsapp";
+import { sendWhatsAppHelloTest, sendWhatsAppMessage } from "../utils/whatsapp";
 import toast from "react-hot-toast";
 import { MessageCircle, CheckCircle, AlertCircle, Link2, Send } from "lucide-react";
 
@@ -21,12 +21,15 @@ export default function Settings() {
     if (!testPhone.trim()) return toast.error("Enter a phone number with country code");
     setSending(true);
     try {
-      const res = await sendWhatsAppMessage(testPhone, "✅ Test message from ZMI School ERP. WhatsApp is working!");
-      if (res?.skipped) toast.error("WhatsApp isn't configured yet");
-      else if (res?.error || res?.error_data) toast.error("Send failed — check your token/number");
-      else toast.success("Test message sent");
-    } catch {
-      toast.error("Send failed");
+      // Use the built-in hello_world TEMPLATE, which Meta delivers even
+      // outside the 24-hour window (a plain text test would be rejected
+      // if the recipient hasn't messaged you recently).
+      const res = await sendWhatsAppHelloTest(testPhone);
+      if (res.skipped) toast.error("WhatsApp isn't configured yet");
+      else if (!res.ok) toast.error("Send failed: " + (res.error || "unknown error"), { duration: 6000 });
+      else toast.success("Test sent — check WhatsApp on that number");
+    } catch (e) {
+      toast.error("Send failed: " + (e?.message || "unknown"));
     } finally {
       setSending(false);
     }
@@ -51,7 +54,7 @@ export default function Settings() {
         </div>
         {waConfigured ? (
           <>
-            <p style={{ color: "var(--text-muted)", fontSize: 14, marginBottom: 12 }}>Send a test message to confirm it's working. Use full international format, e.g. <strong>923001234567</strong>.</p>
+            <p style={{ color: "var(--text-muted)", fontSize: 14, marginBottom: 12 }}>Sends the built-in <strong>hello_world</strong> template (works even before the parent has messaged you). Use full international format, e.g. <strong>923001234567</strong>.</p>
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
               <input value={testPhone} onChange={(e) => setTestPhone(e.target.value)} placeholder="923001234567" style={{ ...input, flex: 1, minWidth: 180 }} />
               <button onClick={sendTest} disabled={sending}

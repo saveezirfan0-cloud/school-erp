@@ -253,10 +253,11 @@ export default function Fees() {
 
   const sendReminder = async (inv) => {
     const student = students.find(s => s.id === inv.studentId);
-    if (student?.parentPhone) {
-      await sendWhatsAppMessage(student.parentPhone, `📢 Fee of Rs. ${inv.amount} for ${student.name} is due for ${inv.month}. Due: ${inv.dueDate}.`);
-      toast.success("Reminder sent");
-    } else toast.error("No phone number on record");
+    if (!student?.parentPhone) return toast.error("No phone number on record");
+    const res = await sendWhatsAppMessage(student.parentPhone, `📢 Fee of Rs. ${inv.amount} for ${student.name} is due for ${inv.month}. Due: ${inv.dueDate}.`);
+    if (res?.ok) toast.success("Reminder sent");
+    else if (res?.skipped) toast.error("WhatsApp isn't configured");
+    else toast.error("Reminder failed: " + (res?.error || "unknown") + (String(res?.error || "").includes("24") || String(res?.error || "").toLowerCase().includes("template") ? " — needs an approved template (see WhatsApp guide)" : ""), { duration: 7000 });
   };
 
   const handleDelete = async (inv) => {
