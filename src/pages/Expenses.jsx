@@ -3,6 +3,7 @@ import { db } from "../firebase";
 import { collection, addDoc, deleteDoc, doc, onSnapshot, serverTimestamp } from "../firebase";
 import { useBranch } from "../context/BranchContext";
 import Pagination from "../components/UI/Pagination";
+import { recordPayment, bankCashAccounts, reverseSourcePayments } from "../utils/accounting";
 import { exportToCSV, exportToPDF } from "../utils/exportUtils";
 import toast from "react-hot-toast";
 import { Plus, Trash2, X, Download, FileText } from "lucide-react";
@@ -24,9 +25,10 @@ export default function Expenses() {
   const { branches, activeBranch } = useBranch();
   const isMobile = useIsMobile();
   const [expenses, setExpenses] = useState([]);
+  const [accounts, setAccounts] = useState([]);
   const [showModal, setShowModal] = useState(false);
   const [mode, setMode] = useState("single");
-  const [form, setForm] = useState({ description: "", amount: "", category: "", date: "", branchId: "", notes: "" });
+  const [form, setForm] = useState({ description: "", amount: "", category: "", date: "", branchId: "", notes: "", paidAccount: "" });
   const [bulkLines, setBulkLines] = useState([{ ...emptyLine }, { ...emptyLine }]);
   const [bulkDate, setBulkDate] = useState("");
   const [bulkBranch, setBulkBranch] = useState("");
@@ -47,7 +49,10 @@ export default function Expenses() {
           .sort((a, b) => new Date(b.date) - new Date(a.date))
       )
     );
-    return unsub;
+    const uAcc = onSnapshot(collection(db, "accounts"), snap =>
+      setAccounts(snap.docs.map(d => ({ id: d.id, ...d.data() })))
+    );
+    return () => { unsub(); uAcc(); };
   }, []);
 
   const filtered = expenses.filter(e => {
@@ -68,12 +73,42 @@ export default function Expenses() {
 
   const total = filtered.reduce((s, e) => s + Number(e.amount || 0), 0);
 
+  const payAccounts = bankCashAccounts(accounts);
+
+  const handleDelete = async (exp) => {
+    if (!window.confirm("Delete this expense? If it was paid from an account, the payment will be reversed. You can restore it from Trash.")) return;
+    try {
+      await reverseSourcePayments("expense", exp.id);
+      await deleteDoc(doc(db, "expenses", exp.id));
+      toast.success("Expense deleted");
+    } catch (err) { toast.error(err?.message || "Error deleting"); }
+  };
+
   const handleSingle = async (e) => {
     e.preventDefault();
-    await addDoc(collection(db, "expenses"), { ...form, createdAt: serverTimestamp() });
+    const docRef = await addDoc(collection(db, "expenses"), { ...form, createdAt: serverTimestamp() });
+    // If paid from an account, record the cash_out so balances update.
+    if (form.paidAccount) {
+      try {
+        await recordPayment({
+          type: "cash_out",
+          account: form.paidAccount,
+          amount: form.amount,
+          category: form.category || "Expense",
+          description: form.description || "Expense",
+          reference: docRef?.id || "",
+          branchId: form.branchId || "",
+          date: form.date || undefined,
+          source: "expense",
+          sourceId: docRef?.id || "",
+        });
+      } catch (err) {
+        toast.error("Expense saved, but payment not recorded: " + (err?.message || ""));
+      }
+    }
     toast.success("Expense added");
     setShowModal(false);
-    setForm({ description: "", amount: "", category: "", date: "", branchId: "", notes: "" });
+    setForm({ description: "", amount: "", category: "", date: "", branchId: "", notes: "", paidAccount: "" });
   };
 
   const handleBulk = async (e) => {
@@ -179,7 +214,7 @@ export default function Expenses() {
                   <div style={{ fontWeight: 600, fontSize: 15 }}>{exp.description}</div>
                   <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>{exp.date}</div>
                 </div>
-                <button onClick={() => deleteDoc(doc(db, "expenses", exp.id))}
+                <button onClick={() => handleDelete(exp)}
                   style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "7px 9px", borderRadius: 8, cursor: "pointer", flexShrink: 0 }}>
                   <Trash2 size={14} />
                 </button>
@@ -232,7 +267,7 @@ export default function Expenses() {
                       Rs. {Number(exp.amount).toLocaleString()}
                     </td>
                     <td style={{ padding: "11px 14px" }}>
-                      <button onClick={() => deleteDoc(doc(db, "expenses", exp.id))}
+                      <button onClick={() => handleDelete(exp)}
                         style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "6px 10px", borderRadius: 6, cursor: "pointer" }}>
                         <Trash2 size={13} />
                       </button>
@@ -305,6 +340,16 @@ export default function Expenses() {
                       style={{ width: "100%", padding: "10px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14 }}>
                       <option value="">Main</option>
                       {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+                    </select>
+                  </div>
+                  <div style={{ gridColumn: isMobile ? "1" : "span 2" }}>
+                    <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 5 }}>
+                      Paid from account <span style={{ color: "var(--text-muted)", fontWeight: 400 }}>(optional — leave blank if unpaid)</span>
+                    </label>
+                    <select value={form.paidAccount} onChange={e => setForm(p => ({ ...p, paidAccount: e.target.value }))}
+                      style={{ width: "100%", padding: "10px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14 }}>
+                      <option value="">Not paid yet</option>
+                      {payAccounts.map(a => <option key={a.id} value={a.name}>{a.name}</option>)}
                     </select>
                   </div>
                   <div style={{ gridColumn: isMobile ? "1" : "span 2" }}>

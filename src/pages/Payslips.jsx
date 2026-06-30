@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useRef } from "react";
 import { db } from "../firebase";
-import { collection, addDoc, deleteDoc, doc, onSnapshot, serverTimestamp } from "../firebase";
+import { collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot, serverTimestamp } from "../firebase";
+import { recordPayment, bankCashAccounts, reverseSourcePayments } from "../utils/accounting";
 import { useBranch } from "../context/BranchContext";
 import { matchesBranch } from "../utils/branchFilter";
 import { exportToCSV, exportToPDF } from "../utils/exportUtils";
@@ -25,6 +26,10 @@ export default function Payslips() {
   const isMobile = useIsMobile();
   const [payslips, setPayslips] = useState([]);
   const [employees, setEmployees] = useState([]);
+  const [accounts, setAccounts] = useState([]);
+  const [payModal, setPayModal] = useState(null); // payslip being paid
+  const [payAccount, setPayAccount] = useState("");
+  const [payDate, setPayDate] = useState(new Date().toISOString().slice(0, 10));
   const [showModal, setShowModal] = useState(false);
   const [showPrint, setShowPrint] = useState(null);
   const [showRecurring, setShowRecurring] = useState(false);
@@ -42,8 +47,43 @@ export default function Payslips() {
     const u2 = onSnapshot(collection(db, "employees"), snap =>
       setEmployees(snap.docs.map(d => ({ id: d.id, ...d.data() })))
     );
-    return () => { u1(); u2(); };
+    const u3 = onSnapshot(collection(db, "accounts"), snap =>
+      setAccounts(snap.docs.map(d => ({ id: d.id, ...d.data() })))
+    );
+    return () => { u1(); u2(); u3(); };
   }, []);
+
+  const payAccounts = bankCashAccounts(accounts);
+
+  // Mark a payslip paid: stamp status + create the cash_out payment
+  // against the chosen bank/cash account so balances stay correct.
+  const confirmPay = async () => {
+    if (!payAccount) return toast.error("Select the account paid from");
+    try {
+      await recordPayment({
+        type: "cash_out",
+        account: payAccount,
+        amount: payModal.netPay,
+        category: "Salary",
+        description: `Salary — ${payModal.employeeName} (${payModal.month} ${payModal.year})`,
+        reference: payModal.id,
+        branchId: payModal.branchId || "",
+        date: payDate,
+        source: "payslip",
+        sourceId: payModal.id,
+      });
+      await updateDoc(doc(db, "payslips", payModal.id), {
+        status: "paid",
+        paidDate: payDate,
+        paidAccount: payAccount,
+      });
+      toast.success("Salary paid and recorded");
+      setPayModal(null);
+      setPayAccount("");
+    } catch (e) {
+      toast.error(e?.message || "Error recording payment");
+    }
+  };
 
   const filtered = payslips.filter(p => {
     const matchMonth = !filterMonth || p.month === filterMonth;
@@ -91,9 +131,12 @@ export default function Payslips() {
   };
 
   const handleDelete = async (id) => {
-    if (!window.confirm("Delete this payslip? You can restore it from Trash.")) return;
-    try { await deleteDoc(doc(db, "payslips", id)); toast.success("Payslip moved to Trash"); }
-    catch (err) { toast.error(err?.message || "Error deleting"); }
+    if (!window.confirm("Delete this payslip? Any recorded salary payment will be reversed. You can restore it from Trash.")) return;
+    try {
+      await reverseSourcePayments("payslip", id);
+      await deleteDoc(doc(db, "payslips", id));
+      toast.success("Payslip moved to Trash");
+    } catch (err) { toast.error(err?.message || "Error deleting"); }
   };
 
   const handlePrint = () => {
@@ -215,7 +258,16 @@ export default function Payslips() {
                     <td style={{ padding: "11px 14px", fontSize: 13, color: "#ef4444" }}>-Rs. {Number(p.deductions || 0).toLocaleString()}</td>
                     <td style={{ padding: "11px 14px", fontWeight: 700, color: "var(--primary)" }}>Rs. {Number(p.netPay).toLocaleString()}</td>
                     <td style={{ padding: "11px 14px" }}>
-                      <div style={{ display: "flex", gap: 6 }}>
+                      <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                        <span style={{ padding: "3px 9px", borderRadius: 20, fontSize: 11, fontWeight: 600, background: p.status === "paid" ? "#ecfdf5" : "#fffbeb", color: p.status === "paid" ? "#10b981" : "#f59e0b" }}>
+                          {p.status === "paid" ? "paid" : "pending"}
+                        </span>
+                        {p.status !== "paid" && (
+                          <button onClick={() => { setPayModal(p); setPayAccount(payAccounts[0]?.name || ""); }} title="Mark paid"
+                            style={{ border: "none", background: "#ecfdf5", color: "#10b981", padding: "6px 10px", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 600 }}>
+                            Pay
+                          </button>
+                        )}
                         <button onClick={() => setShowPrint(p)}
                           style={{ border: "none", background: "var(--primary-light)", color: "var(--primary)", padding: "6px 10px", borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", gap: 4, fontSize: 12 }}>
                           <Printer size={13} /> Print
@@ -333,6 +385,43 @@ export default function Payslips() {
                 <button type="submit" style={{ flex: 2, padding: "11px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600 }}>Generate</button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Pay salary modal */}
+      {payModal && (
+        <div onClick={(e) => { if (e.target === e.currentTarget) setPayModal(null); }}
+          style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 16 }}>
+          <div style={{ background: "white", borderRadius: 16, padding: 28, width: "100%", maxWidth: 420 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 16 }}>
+              <h3 style={{ fontSize: 17, fontWeight: 700 }}>Pay Salary</h3>
+              <button onClick={() => setPayModal(null)} style={{ border: "none", background: "none", cursor: "pointer" }}><X size={20} /></button>
+            </div>
+            <div style={{ background: "#f8fafc", borderRadius: 10, padding: 14, marginBottom: 16 }}>
+              <div style={{ fontWeight: 600 }}>{payModal.employeeName}</div>
+              <div style={{ fontSize: 13, color: "var(--text-muted)" }}>{payModal.month} {payModal.year}</div>
+              <div style={{ fontSize: 20, fontWeight: 700, color: "var(--primary)", marginTop: 6 }}>Rs. {Number(payModal.netPay).toLocaleString()}</div>
+            </div>
+            <label style={{ display: "block", fontSize: 13, fontWeight: 600, marginBottom: 5 }}>Pay from account *</label>
+            {payAccounts.length === 0 ? (
+              <div style={{ fontSize: 13, color: "#ef4444", marginBottom: 12 }}>No Bank &amp; Cash accounts yet. Add one in Chart of Accounts first.</div>
+            ) : (
+              <select value={payAccount} onChange={(e) => setPayAccount(e.target.value)}
+                style={{ width: "100%", padding: "10px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14, marginBottom: 12 }}>
+                {payAccounts.map(a => <option key={a.id} value={a.name}>{a.name}</option>)}
+              </select>
+            )}
+            <label style={{ display: "block", fontSize: 13, fontWeight: 600, marginBottom: 5 }}>Payment date</label>
+            <input type="date" value={payDate} onChange={(e) => setPayDate(e.target.value)}
+              style={{ width: "100%", padding: "10px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14, marginBottom: 18, boxSizing: "border-box" }} />
+            <div style={{ display: "flex", gap: 10 }}>
+              <button onClick={() => setPayModal(null)} style={{ flex: 1, padding: "11px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white" }}>Cancel</button>
+              <button onClick={confirmPay} disabled={payAccounts.length === 0}
+                style={{ flex: 2, padding: "11px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: payAccounts.length === 0 ? "not-allowed" : "pointer", fontWeight: 600, opacity: payAccounts.length === 0 ? 0.6 : 1 }}>
+                Confirm Payment
+              </button>
+            </div>
           </div>
         </div>
       )}

@@ -6,7 +6,8 @@ import ListToolbar from "../components/UI/ListToolbar";
 import Pagination from "../components/UI/Pagination";
 import { exportToCSV, exportToPDF } from "../utils/exportUtils";
 import toast from "react-hot-toast";
-import { Plus, Edit2, Trash2, X, Download, FileText } from "lucide-react";
+import { Plus, Edit2, Trash2, X, Download, FileText, Receipt } from "lucide-react";
+import { useNavigate } from "react-router-dom";
 
 const emptyStudent = { name: "", studentId: "", grade: "", parentName: "", parentPhone: "", email: "", branchId: "", monthlyFee: "", address: "", dob: "", recurringFee: false };
 
@@ -23,6 +24,7 @@ function useIsMobile() {
 export default function Students() {
   const { branches, activeBranch } = useBranch();
   const isMobile = useIsMobile();
+  const navigate = useNavigate();
 
   const [search, setSearch] = useState("");
   const [filterGrade, setFilterGrade] = useState("");
@@ -135,6 +137,7 @@ export default function Students() {
                   </div>
                 </div>
                 <div style={{ display: "flex", gap: 6 }}>
+                  <button onClick={() => navigate(`/students/${s.id}/ledger`)} title="Ledger" style={{ border: "none", background: "#eff6ff", color: "#2563eb", padding: "7px 9px", borderRadius: 8, cursor: "pointer" }}><Receipt size={14} /></button>
                   <button onClick={() => { setForm(s); setEditing(s.id); setShowModal(true); }} style={{ border: "none", background: "var(--primary-light)", color: "var(--primary)", padding: "7px 9px", borderRadius: 8, cursor: "pointer" }}><Edit2 size={14} /></button>
                   <button onClick={() => handleDelete(s.id)} style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "7px 9px", borderRadius: 8, cursor: "pointer" }}><Trash2 size={14} /></button>
                 </div>
@@ -181,6 +184,7 @@ export default function Students() {
                     </td>
                     <td style={{ padding: "11px 14px" }}>
                       <div style={{ display: "flex", gap: 6 }}>
+                        <button onClick={() => navigate(`/students/${s.id}/ledger`)} title="Ledger" style={{ border: "none", background: "#eff6ff", color: "#2563eb", padding: "6px 9px", borderRadius: 6, cursor: "pointer" }}><Receipt size={13} /></button>
                         <button onClick={() => { setForm(s); setEditing(s.id); setShowModal(true); }} style={{ border: "none", background: "var(--primary-light)", color: "var(--primary)", padding: "6px 9px", borderRadius: 6, cursor: "pointer" }}><Edit2 size={13} /></button>
                         <button onClick={() => handleDelete(s.id)} style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "6px 9px", borderRadius: 6, cursor: "pointer" }}><Trash2 size={13} /></button>
                       </div>

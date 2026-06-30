@@ -4,6 +4,7 @@ import { collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot, serverTimest
 import { useBranch } from "../context/BranchContext";
 import Pagination from "../components/UI/Pagination";
 import { sendWhatsAppMessage } from "../utils/whatsapp";
+import { recordPayment, bankCashAccounts, reverseSourcePayments, getSourcePaidTotal } from "../utils/accounting";
 import { exportToCSV, exportToPDF } from "../utils/exportUtils";
 import toast from "react-hot-toast";
 import { Plus, MessageCircle, CheckCircle, X, Trash2, Download, FileText, RefreshCw, Users } from "lucide-react";
@@ -27,6 +28,12 @@ export default function Fees() {
   const isMobile = useIsMobile();
   const [invoices, setInvoices] = useState([]);
   const [students, setStudents] = useState([]);
+  const [accounts, setAccounts] = useState([]);
+  const [payModal, setPayModal] = useState(null);
+  const [payAccount, setPayAccount] = useState("");
+  const [payDate, setPayDate] = useState(new Date().toISOString().slice(0, 10));
+  const [payAmount, setPayAmount] = useState("");
+  const [alreadyPaid, setAlreadyPaid] = useState(0);
   const [showModal, setShowModal] = useState(false);
   const [showBulk, setShowBulk] = useState(false);
   const [showRecurring, setShowRecurring] = useState(false);
@@ -55,8 +62,13 @@ export default function Fees() {
       setStudents(s);
       setBulkStudents(s.map(st => ({ ...st, selected: false, amount: st.monthlyFee || "", paid: false })));
     });
-    return () => { u1(); u2(); };
+    const u3 = onSnapshot(collection(db, "accounts"), snap =>
+      setAccounts(snap.docs.map(d => ({ id: d.id, ...d.data() })))
+    );
+    return () => { u1(); u2(); u3(); };
   }, []);
+
+  const payAccounts = bankCashAccounts(accounts);
 
   useEffect(() => { setPage(1); }, [filterStatus, filterMonth, filterBranch, filterStudent, pageSize, activeBranch]);
 
@@ -158,12 +170,62 @@ export default function Fees() {
   };
 
   const markPaid = async (inv) => {
-    await updateDoc(doc(db, "invoices", inv.id), { status: "paid", paidDate: serverTimestamp() });
-    const student = students.find(s => s.id === inv.studentId);
-    if (student?.parentPhone) {
-      await sendWhatsAppMessage(student.parentPhone, `✅ Fee of Rs. ${inv.amount} for ${student.name} received for ${inv.month}. Thank you!`);
+    setPayModal(inv);
+    setPayAccount(payAccounts[0]?.name || "");
+    setPayDate(new Date().toISOString().slice(0, 10));
+    // Look up how much has already been received for this invoice.
+    try {
+      const paid = await getSourcePaidTotal("invoice", inv.id);
+      setAlreadyPaid(paid);
+      const remaining = Math.max(0, Number(inv.amount || 0) - paid);
+      setPayAmount(String(remaining));
+    } catch {
+      setAlreadyPaid(0);
+      setPayAmount(String(inv.amount || ""));
     }
-    toast.success("Marked paid");
+  };
+
+  const confirmPay = async () => {
+    if (!payAccount) return toast.error("Select the account that received payment");
+    const amt = Number(payAmount);
+    if (!amt || amt <= 0) return toast.error("Enter a valid amount");
+    const total = Number(payModal.amount || 0);
+    const newPaid = alreadyPaid + amt;
+    if (newPaid - total > 0.001) return toast.error(`That exceeds the balance. Remaining is Rs. ${(total - alreadyPaid).toLocaleString()}`);
+    try {
+      await recordPayment({
+        type: "cash_in",
+        account: payAccount,
+        amount: amt,
+        category: "Fee Collection",
+        description: `Fee — ${payModal.studentName || "student"} (${payModal.month || ""})`,
+        reference: payModal.id,
+        branchId: payModal.branchId || "",
+        date: payDate,
+        source: "invoice",
+        sourceId: payModal.id,
+      });
+      const status = newPaid + 0.001 >= total ? "paid" : "partial";
+      await updateDoc(doc(db, "invoices", payModal.id), {
+        status,
+        paidAmount: newPaid,
+        paidDate: payDate,
+        paidAccount: payAccount,
+      });
+      const student = students.find(s => s.id === payModal.studentId);
+      if (student?.parentPhone) {
+        const msg = status === "paid"
+          ? `✅ Fee fully paid for ${student.name} (${payModal.month}). Thank you!`
+          : `✅ Part payment of Rs. ${amt.toLocaleString()} received for ${student.name} (${payModal.month}). Balance: Rs. ${(total - newPaid).toLocaleString()}.`;
+        await sendWhatsAppMessage(student.parentPhone, msg);
+      }
+      toast.success(status === "paid" ? "Payment recorded — fully paid" : "Partial payment recorded");
+      setPayModal(null);
+      setPayAccount("");
+      setPayAmount("");
+    } catch (e) {
+      toast.error(e?.message || "Error recording payment");
+    }
   };
 
   const sendReminder = async (inv) => {
@@ -175,9 +237,13 @@ export default function Fees() {
   };
 
   const handleDelete = async (inv) => {
-    if (!window.confirm("Delete this invoice? This cannot be undone.")) return;
-    try { await deleteDoc(doc(db, "invoices", inv.id)); toast.success("Invoice deleted"); }
-    catch (err) { toast.error(err?.message || "Error deleting"); }
+    if (!window.confirm("Delete this invoice? Any recorded payments for it will be reversed. You can restore it from Trash.")) return;
+    try {
+      // Reverse any money posted for this invoice so balances don't drift.
+      await reverseSourcePayments("invoice", inv.id);
+      await deleteDoc(doc(db, "invoices", inv.id));
+      toast.success("Invoice deleted");
+    } catch (err) { toast.error(err?.message || "Error deleting"); }
   };
 
   const handleCSV = () => exportToCSV("fees",
@@ -272,8 +338,8 @@ export default function Fees() {
                   <div style={{ fontWeight: 600, fontSize: 15 }}>{inv.studentName}</div>
                   <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>{inv.month} {inv.year}</div>
                 </div>
-                <span style={{ padding: "4px 12px", borderRadius: 20, fontSize: 12, fontWeight: 600, background: inv.status === "paid" ? "#ecfdf5" : "#fffbeb", color: inv.status === "paid" ? "#10b981" : "#f59e0b" }}>
-                  {inv.status}
+                <span style={{ padding: "4px 12px", borderRadius: 20, fontSize: 12, fontWeight: 600, background: inv.status === "paid" ? "#ecfdf5" : inv.status === "partial" ? "#eff6ff" : "#fffbeb", color: inv.status === "paid" ? "#10b981" : inv.status === "partial" ? "#2563eb" : "#f59e0b" }}>
+                  {inv.status}{inv.status === "partial" && inv.paidAmount ? ` (Rs. ${Number(inv.paidAmount).toLocaleString()})` : ""}
                 </span>
               </div>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
@@ -288,10 +354,10 @@ export default function Fees() {
                 </div>
               )}
               <div style={{ display: "flex", gap: 8 }}>
-                {inv.status === "pending" && (
+                {inv.status !== "paid" && (
                   <button onClick={() => markPaid(inv)}
                     style={{ flex: 1, border: "none", background: "#ecfdf5", color: "#10b981", padding: "10px", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "center", gap: 4 }}>
-                    <CheckCircle size={14} /> Mark Paid
+                    <CheckCircle size={14} /> {inv.status === "partial" ? "Add Payment" : "Mark Paid"}
                   </button>
                 )}
                 <button onClick={() => sendReminder(inv)}
@@ -338,15 +404,15 @@ export default function Fees() {
                     <td style={{ padding: "11px 14px", fontSize: 14, fontWeight: 600, whiteSpace: "nowrap" }}>Rs. {Number(inv.amount).toLocaleString()}</td>
                     <td style={{ padding: "11px 14px", fontSize: 13 }}>{inv.dueDate || "—"}</td>
                     <td style={{ padding: "11px 14px" }}>
-                      <span style={{ padding: "3px 10px", borderRadius: 20, fontSize: 11, fontWeight: 600, background: inv.status === "paid" ? "#ecfdf5" : "#fffbeb", color: inv.status === "paid" ? "#10b981" : "#f59e0b", whiteSpace: "nowrap" }}>
-                        {inv.status}
+                      <span style={{ padding: "3px 10px", borderRadius: 20, fontSize: 11, fontWeight: 600, background: inv.status === "paid" ? "#ecfdf5" : inv.status === "partial" ? "#eff6ff" : "#fffbeb", color: inv.status === "paid" ? "#10b981" : inv.status === "partial" ? "#2563eb" : "#f59e0b", whiteSpace: "nowrap" }}>
+                        {inv.status}{inv.status === "partial" && inv.paidAmount ? ` · Rs.${Number(inv.paidAmount).toLocaleString()}` : ""}
                       </span>
                     </td>
                     <td style={{ padding: "11px 14px" }}>
                       <div style={{ display: "flex", gap: 5 }}>
-                        {inv.status === "pending" && (
+                        {inv.status !== "paid" && (
                           <button onClick={() => markPaid(inv)} style={{ border: "none", background: "#ecfdf5", color: "#10b981", padding: "5px 9px", borderRadius: 6, cursor: "pointer", fontSize: 11, display: "flex", alignItems: "center", gap: 3 }}>
-                            <CheckCircle size={12} /> Paid
+                            <CheckCircle size={12} /> {inv.status === "partial" ? "Add" : "Paid"}
                           </button>
                         )}
                         <button onClick={() => sendReminder(inv)} style={{ border: "none", background: "#f0fdf4", color: "#16a34a", padding: "5px 9px", borderRadius: 6, cursor: "pointer", fontSize: 11 }}>Remind</button>
@@ -367,6 +433,50 @@ export default function Fees() {
         page={safePage} pageCount={pageCount} total={rowCount} pageSize={pageSize}
         onPage={setPage} onPageSize={setPageSize}
       />
+
+      {/* Record payment modal */}
+      {payModal && (
+        <div onClick={(e) => { if (e.target === e.currentTarget) setPayModal(null); }}
+          style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 16 }}>
+          <div style={{ background: "white", borderRadius: 16, padding: 28, width: "100%", maxWidth: 420 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 16 }}>
+              <h3 style={{ fontSize: 17, fontWeight: 700 }}>Record Fee Payment</h3>
+              <button onClick={() => setPayModal(null)} style={{ border: "none", background: "none", cursor: "pointer" }}><X size={20} /></button>
+            </div>
+            <div style={{ background: "#f8fafc", borderRadius: 10, padding: 14, marginBottom: 16 }}>
+              <div style={{ fontWeight: 600 }}>{payModal.studentName}</div>
+              <div style={{ fontSize: 13, color: "var(--text-muted)" }}>{payModal.month} {payModal.year}</div>
+              <div style={{ display: "flex", gap: 16, marginTop: 8 }}>
+                <div><div style={{ fontSize: 11, color: "var(--text-muted)" }}>Invoice</div><div style={{ fontWeight: 700 }}>Rs. {Number(payModal.amount || 0).toLocaleString()}</div></div>
+                <div><div style={{ fontSize: 11, color: "var(--text-muted)" }}>Already paid</div><div style={{ fontWeight: 700, color: "#10b981" }}>Rs. {alreadyPaid.toLocaleString()}</div></div>
+                <div><div style={{ fontSize: 11, color: "var(--text-muted)" }}>Balance</div><div style={{ fontWeight: 700, color: "var(--primary)" }}>Rs. {Math.max(0, Number(payModal.amount || 0) - alreadyPaid).toLocaleString()}</div></div>
+              </div>
+            </div>
+            <label style={{ display: "block", fontSize: 13, fontWeight: 600, marginBottom: 5 }}>Amount to pay now *</label>
+            <input type="number" value={payAmount} onChange={(e) => setPayAmount(e.target.value)}
+              style={{ width: "100%", padding: "10px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14, marginBottom: 12, boxSizing: "border-box" }} />
+            <label style={{ display: "block", fontSize: 13, fontWeight: 600, marginBottom: 5 }}>Received into account *</label>
+            {payAccounts.length === 0 ? (
+              <div style={{ fontSize: 13, color: "#ef4444", marginBottom: 12 }}>No Bank &amp; Cash accounts yet. Add one in Chart of Accounts first.</div>
+            ) : (
+              <select value={payAccount} onChange={(e) => setPayAccount(e.target.value)}
+                style={{ width: "100%", padding: "10px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14, marginBottom: 12 }}>
+                {payAccounts.map(a => <option key={a.id} value={a.name}>{a.name}</option>)}
+              </select>
+            )}
+            <label style={{ display: "block", fontSize: 13, fontWeight: 600, marginBottom: 5 }}>Payment date</label>
+            <input type="date" value={payDate} onChange={(e) => setPayDate(e.target.value)}
+              style={{ width: "100%", padding: "10px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14, marginBottom: 18, boxSizing: "border-box" }} />
+            <div style={{ display: "flex", gap: 10 }}>
+              <button onClick={() => setPayModal(null)} style={{ flex: 1, padding: "11px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white" }}>Cancel</button>
+              <button onClick={confirmPay} disabled={payAccounts.length === 0}
+                style={{ flex: 2, padding: "11px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: payAccounts.length === 0 ? "not-allowed" : "pointer", fontWeight: 600, opacity: payAccounts.length === 0 ? 0.6 : 1 }}>
+                Confirm Payment
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Create Invoice Modal */}
       {showModal && (
