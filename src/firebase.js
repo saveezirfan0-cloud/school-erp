@@ -51,7 +51,7 @@ const COLUMNS = {
   expenses: ["id", "description", "category", "amount", "date", "branch_id", "paid_account", "created_at", "updated_at"],
   payments: ["id", "type", "account", "description", "category", "amount", "date", "reference", "branch_id", "source", "source_id", "reversed", "reversal_of", "created_at", "updated_at"],
   payslips: ["id", "employee_id", "branch_id", "amount", "month", "date", "status", "paid_account", "paid_date", "created_at", "updated_at"],
-  accounts: ["id", "code", "name", "type", "sub_type", "created_at", "updated_at"],
+  accounts: ["id", "code", "name", "type", "sub_type", "balance", "created_at", "updated_at"],
   journals: ["id", "date", "reference", "description", "debit_account", "credit_account", "amount", "notes", "created_at", "updated_at"],
   custom_roles: ["id", "permissions", "created_at", "updated_at"],
   reminder_logs: ["id", "student_id", "phone", "message", "status", "date", "timestamp", "created_at", "updated_at"],

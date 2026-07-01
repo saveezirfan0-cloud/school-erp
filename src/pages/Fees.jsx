@@ -3,6 +3,7 @@ import { db } from "../firebase";
 import { collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot, serverTimestamp } from "../firebase";
 import { useBranch } from "../context/BranchContext";
 import Pagination from "../components/UI/Pagination";
+import SearchableSelect from "../components/UI/SearchableSelect";
 import { sendWhatsAppMessage } from "../utils/whatsapp";
 import { recordPayment, bankCashAccounts, reverseSourcePayments, getSourcePaidTotal } from "../utils/accounting";
 import { exportToCSV, exportToPDF } from "../utils/exportUtils";
@@ -36,6 +37,7 @@ export default function Fees() {
   const [alreadyPaid, setAlreadyPaid] = useState(0);
   const [concession, setConcession] = useState(false);
   const [concessionNote, setConcessionNote] = useState("");
+  const [submitting, setSubmitting] = useState(false);
   const [showModal, setShowModal] = useState(false);
   const [showBulk, setShowBulk] = useState(false);
   const [showRecurring, setShowRecurring] = useState(false);
@@ -107,23 +109,47 @@ export default function Fees() {
 
   const handleCreate = async (e) => {
     e.preventDefault();
+    if (submitting) return; // block double-submit
     const student = students.find(s => s.id === form.studentId);
     if (!student) return toast.error("Student not found");
-    const amount = lineItems.reduce((s, i) => s + Number(i.amount || 0), 0);
-    const status = form.directPayment ? "paid" : "pending";
-    await addDoc(collection(db, "invoices"), {
-      ...form, studentName: student.name, parentPhone: student.parentPhone,
-      branchId: student.branchId, status, amount, lineItems,
-      paidDate: form.directPayment ? serverTimestamp() : null,
-      createdAt: serverTimestamp()
-    });
-    if (form.directPayment && student.parentPhone) {
-      await sendWhatsAppMessage(student.parentPhone, `✅ Fee payment of Rs. ${amount} received for ${student.name} for ${form.month}. Thank you!`);
+    setSubmitting(true);
+    try {
+      const amount = lineItems.reduce((s, i) => s + Number(i.amount || 0), 0);
+      const status = form.directPayment ? "paid" : "pending";
+      const invRef = await addDoc(collection(db, "invoices"), {
+        ...form, studentName: student.name, parentPhone: student.parentPhone,
+        branchId: student.branchId, status, amount, lineItems,
+        paidAmount: form.directPayment ? amount : 0,
+        paidDate: form.directPayment ? new Date().toISOString().slice(0, 10) : null,
+        createdAt: serverTimestamp()
+      });
+      // If receiving payment now, also post it to the ledger so bank
+      // balances stay correct (uses the first available account, or
+      // records without an account if none exist yet).
+      if (form.directPayment) {
+        const acct = payAccounts[0]?.name;
+        if (acct) {
+          await recordPayment({
+            type: "cash_in", account: acct, amount,
+            category: "Fee Collection",
+            description: `Fee — ${student.name} (${form.month || ""})`,
+            reference: invRef.id, branchId: student.branchId || "",
+            source: "invoice", sourceId: invRef.id,
+          });
+        }
+        if (student.parentPhone) {
+          await sendWhatsAppMessage(student.parentPhone, `✅ Fee payment of Rs. ${amount} received for ${student.name} for ${form.month}. Thank you!`);
+        }
+      }
+      toast.success(form.directPayment ? "Payment received!" : "Invoice created");
+      setShowModal(false);
+      setForm({ studentId: "", month: "", year: new Date().getFullYear(), dueDate: "", notes: "", directPayment: false });
+      setLineItems(DEFAULT_LINE_ITEMS);
+    } catch (err) {
+      toast.error(err?.message || "Error creating invoice");
+    } finally {
+      setSubmitting(false);
     }
-    toast.success(form.directPayment ? "Payment received!" : "Invoice created");
-    setShowModal(false);
-    setForm({ studentId: "", month: "", year: new Date().getFullYear(), dueDate: "", notes: "", directPayment: false });
-    setLineItems(DEFAULT_LINE_ITEMS);
   };
 
   const handleBulkReceive = async (e) => {
@@ -188,6 +214,7 @@ export default function Fees() {
   };
 
   const confirmPay = async () => {
+    if (submitting) return;
     if (!payAccount) return toast.error("Select the account that received payment");
     const amt = Number(payAmount);
     if (amt < 0) return toast.error("Enter a valid amount");
@@ -201,6 +228,7 @@ export default function Fees() {
     if (newPaid - total > 0.001) return toast.error(`That exceeds the balance. Remaining is Rs. ${(total - alreadyPaid).toLocaleString()}`);
     if (amt === 0 && !concession) return toast.error("Enter an amount or mark the balance as concession");
 
+    setSubmitting(true);
     try {
       // Only record a real payment if money actually changed hands.
       if (amt > 0) {
@@ -248,6 +276,8 @@ export default function Fees() {
       setConcession(false); setConcessionNote("");
     } catch (e) {
       toast.error(e?.message || "Error recording payment");
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -515,9 +545,10 @@ export default function Fees() {
               style={{ width: "100%", padding: "10px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14, marginBottom: 18, boxSizing: "border-box" }} />
             <div style={{ display: "flex", gap: 10 }}>
               <button onClick={() => setPayModal(null)} style={{ flex: 1, padding: "11px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white" }}>Cancel</button>
-              <button onClick={confirmPay} disabled={payAccounts.length === 0}
-                style={{ flex: 2, padding: "11px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: payAccounts.length === 0 ? "not-allowed" : "pointer", fontWeight: 600, opacity: payAccounts.length === 0 ? 0.6 : 1 }}>
-                Confirm Payment
+              <button onClick={confirmPay} disabled={payAccounts.length === 0 || submitting}
+                style={{ flex: 2, padding: "11px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: (payAccounts.length === 0 || submitting) ? "not-allowed" : "pointer", fontWeight: 600, opacity: (payAccounts.length === 0 || submitting) ? 0.6 : 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+                {submitting && <span style={{ width: 15, height: 15, border: "2px solid rgba(255,255,255,0.5)", borderTop: "2px solid white", borderRadius: "50%", animation: "spin 0.7s linear infinite" }} />}
+                {submitting ? "Saving..." : "Confirm Payment"}
               </button>
             </div>
           </div>
@@ -536,14 +567,16 @@ export default function Fees() {
               <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 14, marginBottom: 16 }}>
                 <div style={{ gridColumn: isMobile ? "1" : "span 2" }}>
                   <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 5 }}>Student</label>
-                  <select value={form.studentId} onChange={e => {
-                    const s = students.find(st => st.id === e.target.value);
-                    setForm(p => ({ ...p, studentId: e.target.value }));
-                    if (s?.monthlyFee) setLineItems([{ description: "Tuition Fee", amount: s.monthlyFee }]);
-                  }} required style={{ width: "100%", padding: "10px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14 }}>
-                    <option value="">Select student</option>
-                    {students.map(s => <option key={s.id} value={s.id}>{s.name} ({s.studentId})</option>)}
-                  </select>
+                  <SearchableSelect
+                    value={form.studentId}
+                    onChange={(val) => {
+                      const s = students.find(st => st.id === val);
+                      setForm(p => ({ ...p, studentId: val }));
+                      if (s?.monthlyFee) setLineItems([{ description: "Tuition Fee", amount: s.monthlyFee }]);
+                    }}
+                    options={students.map(s => ({ value: s.id, label: `${s.name} (${s.studentId})`, sublabel: s.grade || "" }))}
+                    placeholder="Search student by name or ID..."
+                  />
                 </div>
                 <div>
                   <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 5 }}>Month</label>
@@ -602,9 +635,10 @@ export default function Fees() {
               <div style={{ display: "flex", gap: 10 }}>
                 <button type="button" onClick={() => setShowModal(false)}
                   style={{ flex: 1, padding: "11px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", fontSize: 14 }}>Cancel</button>
-                <button type="submit"
-                  style={{ flex: 2, padding: "11px", background: form.directPayment ? "#10b981" : "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600, fontSize: 14 }}>
-                  {form.directPayment ? "Receive Payment" : "Create Invoice"}
+                <button type="submit" disabled={submitting}
+                  style={{ flex: 2, padding: "11px", background: form.directPayment ? "#10b981" : "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: submitting ? "not-allowed" : "pointer", fontWeight: 600, fontSize: 14, opacity: submitting ? 0.7 : 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+                  {submitting && <span style={{ width: 15, height: 15, border: "2px solid rgba(255,255,255,0.5)", borderTop: "2px solid white", borderRadius: "50%", display: "inline-block", animation: "spin 0.7s linear infinite" }} />}
+                  {submitting ? "Saving..." : (form.directPayment ? "Receive Payment" : "Create Invoice")}
                 </button>
               </div>
             </form>

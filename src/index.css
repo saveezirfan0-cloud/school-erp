@@ -61,3 +61,5 @@ body {
 /* Touch-friendly buttons */
 button { cursor: pointer; }
 input, select, textarea { font-size: 16px !important; }
+/* Global spinner keyframe used by loading buttons */
+@keyframes spin { to { transform: rotate(360deg); } }

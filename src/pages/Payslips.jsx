@@ -7,6 +7,7 @@ import { matchesBranch } from "../utils/branchFilter";
 import { exportToCSV, exportToPDF } from "../utils/exportUtils";
 import toast from "react-hot-toast";
 import { Plus, Printer, X, RefreshCw, Download, FileText, Trash2 } from "lucide-react";
+import SearchableSelect from "../components/UI/SearchableSelect";
 
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 const empty = { employeeId: "", month: "", year: new Date().getFullYear(), basicSalary: "", allowances: "", deductions: "", notes: "" };
@@ -94,6 +95,7 @@ export default function Payslips() {
   const handleSubmit = async (e) => {
     e.preventDefault();
     const emp = employees.find(e => e.id === form.employeeId);
+    if (!emp) return toast.error("Please select an employee");
     const netPay = Number(form.basicSalary) + Number(form.allowances || 0) - Number(form.deductions || 0);
     await addDoc(collection(db, "payslips"), {
       ...form,
@@ -332,13 +334,15 @@ export default function Payslips() {
               <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 16 }}>
                 <div style={{ gridColumn: isMobile ? "1" : "span 2" }}>
                   <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 6 }}>Employee</label>
-                  <select value={form.employeeId} onChange={e => {
-                    const emp = employees.find(em => em.id === e.target.value);
-                    setForm(p => ({ ...p, employeeId: e.target.value, basicSalary: emp?.salary || "" }));
-                  }} required style={{ width: "100%", padding: "9px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14 }}>
-                    <option value="">Select employee</option>
-                    {employees.map(emp => <option key={emp.id} value={emp.id}>{emp.name} — {emp.role}</option>)}
-                  </select>
+                  <SearchableSelect
+                    value={form.employeeId}
+                    onChange={(val) => {
+                      const emp = employees.find(em => em.id === val);
+                      setForm(p => ({ ...p, employeeId: val, basicSalary: emp?.salary || "" }));
+                    }}
+                    options={employees.map(emp => ({ value: emp.id, label: emp.name, sublabel: emp.role || "" }))}
+                    placeholder="Search employee..."
+                  />
                 </div>
                 <div>
                   <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 6 }}>Month</label>

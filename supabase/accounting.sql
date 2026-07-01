@@ -41,3 +41,10 @@ alter table public.payslips add column if not exists paid_date     text;
 
 -- expenses: which account paid it (if any)
 alter table public.expenses add column if not exists paid_account  text;
+
+-- accounts: opening balance as a real column (was stored in extra jsonb).
+-- Migrate any existing value out of extra into the column.
+alter table public.accounts add column if not exists balance numeric default 0;
+update public.accounts
+  set balance = coalesce((extra->>'balance')::numeric, balance, 0)
+  where extra ? 'balance';
