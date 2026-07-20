@@ -1,9 +1,14 @@
 import React, { useState } from "react";
-import { db, addDoc, updateDoc, deleteDoc, doc, collection, serverTimestamp } from "../firebase";
+import { db, addDoc, updateDoc, deleteDoc, doc, collection, serverTimestamp, updateDocs, deleteDocs } from "../firebase";
 import { useBranch } from "../context/BranchContext";
 import { useCollection } from "../hooks/useCollection";
+import { useBulkSelect } from "../hooks/useBulkSelect";
 import ListToolbar from "../components/UI/ListToolbar";
 import Pagination from "../components/UI/Pagination";
+import BulkBar, { RowCheckbox, HeaderCheckbox } from "../components/UI/BulkBar";
+import BulkEditModal from "../components/UI/BulkEditModal";
+import { bulkResultMessage } from "../utils/bulk";
+import { logActivity } from "../utils/auditLog";
 import { exportToCSV, exportToPDF } from "../utils/exportUtils";
 import toast from "react-hot-toast";
 import { Plus, Edit2, Trash2, X, Download, FileText, Receipt } from "lucide-react";
@@ -51,6 +56,12 @@ export default function Students() {
   const grades = [...new Set(rows.map((s) => s.grade).filter(Boolean))].sort();
   const active = !!(search || filterGrade || sortField);
 
+  // multi-select for bulk actions
+  const bulk = useBulkSelect(filtered.map((s) => s.id));
+  const pagedIds = paged.map((s) => s.id);
+  const [showBulkEdit, setShowBulkEdit] = useState(false);
+  const [bulkBusy, setBulkBusy] = useState(false);
+
   React.useEffect(() => { setPage(1); }, [search, filterGrade, pageSize, activeBranch]);
 
   const clearAll = () => { setSearch(""); setFilterGrade(""); setSortField(""); setSortDir("asc"); };
@@ -61,18 +72,54 @@ export default function Students() {
       if (editing) {
         await updateDoc(doc(db, "students", editing), { ...form, updatedAt: serverTimestamp() });
         toast.success("Student updated");
+        logActivity("updated", "Students", `${form.name}${form.studentId ? ` (${form.studentId})` : ""}`);
       } else {
         await addDoc(collection(db, "students"), { ...form, createdAt: serverTimestamp() });
         toast.success("Student added");
+        logActivity("created", "Students", `${form.name}${form.studentId ? ` (${form.studentId})` : ""}`);
       }
       setShowModal(false); setForm(emptyStudent); setEditing(null);
     } catch (err) { toast.error(err?.message || "Error saving"); }
   };
 
-  const handleDelete = async (id) => {
-    if (!window.confirm("Delete this student? This cannot be undone.")) return;
-    try { await deleteDoc(doc(db, "students", id)); toast.success("Student deleted"); }
+  const handleDelete = async (s) => {
+    if (!window.confirm("Delete this student? You can restore them from Trash.")) return;
+    try {
+      await deleteDoc(doc(db, "students", s.id));
+      toast.success("Student moved to Trash");
+      logActivity("deleted", "Students", `${s.name}${s.studentId ? ` (${s.studentId})` : ""}`);
+    }
     catch (err) { toast.error(err?.message || "Error deleting"); }
+  };
+
+  const handleBulkDelete = async () => {
+    const ids = [...bulk.selected];
+    if (ids.length === 0) return;
+    if (!window.confirm(`Delete ${ids.length} student${ids.length === 1 ? "" : "s"}? Their invoices and ledgers are kept. You can restore students from Trash.`)) return;
+    setBulkBusy(true);
+    try {
+      await deleteDocs("students", ids);
+      toast.success(bulkResultMessage(ids.length, 0, "moved to Trash", "students"));
+      logActivity("deleted", "Students", `${ids.length} students (bulk)`);
+      bulk.clear();
+    } catch (err) {
+      toast.error(err?.message || "Bulk delete failed");
+    } finally { setBulkBusy(false); }
+  };
+
+  const handleBulkEditApply = async (changes) => {
+    setBulkBusy(true);
+    try {
+      const n = bulk.count;
+      if (changes.branchId === "main") changes.branchId = "";
+      await updateDocs("students", [...bulk.selected], { ...changes, updatedAt: serverTimestamp() });
+      toast.success(`${n} student${n === 1 ? "" : "s"} updated`);
+      logActivity("updated", "Students", `${n} students (bulk): ${Object.keys(changes).join(", ")}`);
+      setShowBulkEdit(false);
+      bulk.clear();
+    } catch (err) {
+      toast.error(err?.message || "Bulk update failed");
+    } finally { setBulkBusy(false); }
   };
 
   const handleCSV = () => exportToCSV("students",
@@ -125,9 +172,10 @@ export default function Students() {
       {isMobile ? (
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           {paged.map((s) => (
-            <div key={s.id} style={{ background: "white", borderRadius: 12, padding: 16, border: "1px solid var(--border)" }}>
+            <div key={s.id} style={{ background: "white", borderRadius: 12, padding: 16, border: bulk.isSelected(s.id) ? "1.5px solid var(--primary)" : "1px solid var(--border)" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <RowCheckbox checked={bulk.isSelected(s.id)} onChange={() => bulk.toggle(s.id)} label={`Select ${s.name}`} />
                   <div style={{ width: 40, height: 40, borderRadius: "50%", background: "var(--primary-light)", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, color: "var(--primary)", fontSize: 16 }}>
                     {s.name?.charAt(0)?.toUpperCase()}
                   </div>
@@ -139,7 +187,7 @@ export default function Students() {
                 <div style={{ display: "flex", gap: 6 }}>
                   <button onClick={() => navigate(`/students/${s.id}/ledger`)} title="Ledger" style={{ border: "none", background: "#eff6ff", color: "#2563eb", padding: "7px 9px", borderRadius: 8, cursor: "pointer" }}><Receipt size={14} /></button>
                   <button onClick={() => { setForm(s); setEditing(s.id); setShowModal(true); }} style={{ border: "none", background: "var(--primary-light)", color: "var(--primary)", padding: "7px 9px", borderRadius: 8, cursor: "pointer" }}><Edit2 size={14} /></button>
-                  <button onClick={() => handleDelete(s.id)} style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "7px 9px", borderRadius: 8, cursor: "pointer" }}><Trash2 size={14} /></button>
+                  <button onClick={() => handleDelete(s)} style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "7px 9px", borderRadius: 8, cursor: "pointer" }}><Trash2 size={14} /></button>
                 </div>
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
@@ -162,6 +210,9 @@ export default function Students() {
             <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 700 }}>
               <thead>
                 <tr style={{ background: "#f8fafc" }}>
+                  <th style={{ padding: "11px 6px 11px 14px", width: 34 }}>
+                    <HeaderCheckbox checked={bulk.pageChecked(pagedIds)} indeterminate={bulk.pageIndeterminate(pagedIds)} onChange={() => bulk.togglePage(pagedIds)} />
+                  </th>
                   {["ID", "Name", "Grade", "Parent", "Phone", "Fee", "Branch", "Auto", "Actions"].map((h) => (
                     <th key={h} style={{ padding: "11px 14px", textAlign: "left", fontSize: 11, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", whiteSpace: "nowrap" }}>{h}</th>
                   ))}
@@ -169,7 +220,10 @@ export default function Students() {
               </thead>
               <tbody>
                 {paged.map((s) => (
-                  <tr key={s.id} style={{ borderTop: "1px solid var(--border)" }}>
+                  <tr key={s.id} style={{ borderTop: "1px solid var(--border)", background: bulk.isSelected(s.id) ? "var(--primary-light)" : undefined }}>
+                    <td style={{ padding: "11px 6px 11px 14px" }}>
+                      <RowCheckbox checked={bulk.isSelected(s.id)} onChange={() => bulk.toggle(s.id)} label={`Select ${s.name}`} />
+                    </td>
                     <td style={{ padding: "11px 14px", fontSize: 12, fontFamily: "monospace" }}>{s.studentId}</td>
                     <td style={{ padding: "11px 14px", fontSize: 14, fontWeight: 500, whiteSpace: "nowrap" }}>{s.name}</td>
                     <td style={{ padding: "11px 14px", fontSize: 13 }}>{s.grade}</td>
@@ -186,7 +240,7 @@ export default function Students() {
                       <div style={{ display: "flex", gap: 6 }}>
                         <button onClick={() => navigate(`/students/${s.id}/ledger`)} title="Ledger" style={{ border: "none", background: "#eff6ff", color: "#2563eb", padding: "6px 9px", borderRadius: 6, cursor: "pointer" }}><Receipt size={13} /></button>
                         <button onClick={() => { setForm(s); setEditing(s.id); setShowModal(true); }} style={{ border: "none", background: "var(--primary-light)", color: "var(--primary)", padding: "6px 9px", borderRadius: 6, cursor: "pointer" }}><Edit2 size={13} /></button>
-                        <button onClick={() => handleDelete(s.id)} style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "6px 9px", borderRadius: 6, cursor: "pointer" }}><Trash2 size={13} /></button>
+                        <button onClick={() => handleDelete(s)} style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "6px 9px", borderRadius: 6, cursor: "pointer" }}><Trash2 size={13} /></button>
                       </div>
                     </td>
                   </tr>
@@ -202,6 +256,36 @@ export default function Students() {
         page={safePage} pageCount={pageCount} total={total} pageSize={pageSize}
         onPage={setPage} onPageSize={setPageSize}
       />
+
+      {/* Bulk actions bar */}
+      <BulkBar
+        count={bulk.count}
+        total={filtered.length}
+        noun="students"
+        busy={bulkBusy}
+        onSelectAll={() => bulk.selectAll(filtered.map((s) => s.id))}
+        onClear={bulk.clear}
+        actions={[
+          { label: "Edit", icon: Edit2, onClick: () => setShowBulkEdit(true) },
+          { label: "Delete", icon: Trash2, variant: "danger", onClick: handleBulkDelete },
+        ]}
+      />
+
+      {/* Bulk edit modal */}
+      {showBulkEdit && (
+        <BulkEditModal
+          title={`Edit ${bulk.count} student${bulk.count === 1 ? "" : "s"}`}
+          busy={bulkBusy}
+          onClose={() => setShowBulkEdit(false)}
+          onApply={handleBulkEditApply}
+          fields={[
+            { key: "grade", label: "Grade / Class", type: "text", placeholder: "e.g. Grade 5" },
+            { key: "branchId", label: "Branch", type: "select", options: [{ value: "main", label: "Main Office" }, ...branches.map((b) => ({ value: b.id, label: b.name }))] },
+            { key: "monthlyFee", label: "Monthly Fee (Rs.)", type: "number", placeholder: "e.g. 5000", hint: "Applies to future invoices only — existing invoices keep their amounts." },
+            { key: "recurringFee", label: "Auto-recurring fee", type: "boolean" },
+          ]}
+        />
+      )}
 
       {showModal && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: isMobile ? "flex-end" : "center", justifyContent: "center", zIndex: 1000, padding: isMobile ? 0 : 16 }}>

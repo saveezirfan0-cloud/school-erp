@@ -1,14 +1,19 @@
 import React, { useEffect, useState } from "react";
 import { db } from "../firebase";
-import { collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot, serverTimestamp } from "../firebase";
+import { collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot, serverTimestamp, updateDocs, deleteDocs } from "../firebase";
 import { useBranch } from "../context/BranchContext";
 import Pagination from "../components/UI/Pagination";
 import SearchableSelect from "../components/UI/SearchableSelect";
+import { useBulkSelect } from "../hooks/useBulkSelect";
+import BulkBar, { RowCheckbox, HeaderCheckbox } from "../components/UI/BulkBar";
+import BulkEditModal from "../components/UI/BulkEditModal";
+import { runBulk, bulkResultMessage } from "../utils/bulk";
+import { logActivity } from "../utils/auditLog";
 import { sendWhatsAppMessage } from "../utils/whatsapp";
 import { recordPayment, bankCashAccounts, reverseSourcePayments, getSourcePaidTotal } from "../utils/accounting";
 import { exportToCSV, exportToPDF } from "../utils/exportUtils";
 import toast from "react-hot-toast";
-import { Plus, MessageCircle, CheckCircle, X, Trash2, Download, FileText, RefreshCw, Users } from "lucide-react";
+import { Plus, MessageCircle, CheckCircle, X, Trash2, Download, FileText, RefreshCw, Users, Pencil } from "lucide-react";
 
 const DEFAULT_LINE_ITEMS = [{ description: "Tuition Fee", amount: "" }];
 const LINE_ITEM_PRESETS = ["Tuition Fee", "Registration Fee", "Exam Fee", "Transport Fee", "Custom"];
@@ -56,6 +61,12 @@ export default function Fees() {
   const [bulkStudents, setBulkStudents] = useState([]);
   const [recurringMonth, setRecurringMonth] = useState(MONTHS[new Date().getMonth()]);
   const [recurringYear, setRecurringYear] = useState(new Date().getFullYear());
+  const [showBulkEdit, setShowBulkEdit] = useState(false);
+  const [bulkPayModal, setBulkPayModal] = useState(false);
+  const [bulkPayAccount, setBulkPayAccount] = useState("");
+  const [bulkPayDate, setBulkPayDate] = useState(new Date().toISOString().slice(0, 10));
+  const [bulkPayWhatsApp, setBulkPayWhatsApp] = useState(false);
+  const [bulkBusy, setBulkBusy] = useState(false);
 
   useEffect(() => {
     const u1 = onSnapshot(collection(db, "invoices"), snap =>
@@ -99,6 +110,11 @@ export default function Fees() {
   const pageCount = Math.max(1, Math.ceil(rowCount / pageSize));
   const safePage = Math.min(Math.max(1, page), pageCount);
   const paged = filtered.slice((safePage - 1) * pageSize, safePage * pageSize);
+
+  // multi-select for bulk actions (selection only ever contains
+  // currently-visible/filtered invoices)
+  const bulk = useBulkSelect(filtered.map(inv => inv.id));
+  const pagedIds = paged.map(inv => inv.id);
   const totalAmount = lineItems.reduce((s, i) => s + Number(i.amount || 0), 0);
   const totalCollected = filtered.filter(i => i.status === "paid").reduce((s, i) => s + Number(i.amount), 0);
   const totalPending = filtered.filter(i => i.status === "pending").reduce((s, i) => s + Number(i.amount), 0);
@@ -142,6 +158,7 @@ export default function Fees() {
         }
       }
       toast.success(form.directPayment ? "Payment received!" : "Invoice created");
+      logActivity(form.directPayment ? "collected" : "created", "Invoices", `Invoice ${student.name} — ${form.month} ${form.year} · Rs. ${Number(amount).toLocaleString()}${form.directPayment ? " (paid on the spot)" : ""}`);
       setShowModal(false);
       setForm({ studentId: "", month: "", year: new Date().getFullYear(), dueDate: "", notes: "", directPayment: false });
       setLineItems(DEFAULT_LINE_ITEMS);
@@ -173,6 +190,7 @@ export default function Fees() {
       count++;
     }
     toast.success(`${count} invoices created`);
+    logActivity("created", "Invoices", `${count} invoices — ${bulkMonth} ${bulkYear} (bulk)`);
     setShowBulk(false);
   };
 
@@ -194,6 +212,7 @@ export default function Fees() {
       count++;
     }
     toast.success(count > 0 ? `Generated ${count} invoices` : "All invoices already exist for this month");
+    if (count > 0) logActivity("generated", "Invoices", `${count} recurring invoices — ${recurringMonth} ${recurringYear}`);
     setShowRecurring(false);
   };
 
@@ -272,6 +291,7 @@ export default function Fees() {
         await sendWhatsAppMessage(student.parentPhone, msg);
       }
       toast.success(concessionAmt > 0 ? "Recorded with concession" : status === "paid" ? "Payment recorded — fully paid" : "Partial payment recorded");
+      logActivity("collected", "Fees", `Rs. ${amt.toLocaleString()} from ${payModal.studentName || "student"} (${payModal.month || ""}) into ${payAccount}${concessionAmt > 0 ? ` + concession Rs. ${concessionAmt.toLocaleString()}` : ""}`);
       setPayModal(null); setPayAccount(""); setPayAmount("");
       setConcession(false); setConcessionNote("");
     } catch (e) {
@@ -297,7 +317,85 @@ export default function Fees() {
       await reverseSourcePayments("invoice", inv.id);
       await deleteDoc(doc(db, "invoices", inv.id));
       toast.success("Invoice deleted");
+      logActivity("deleted", "Invoices", `Invoice ${inv.studentName} — ${inv.month} ${inv.year} · Rs. ${Number(inv.amount || 0).toLocaleString()}`);
     } catch (err) { toast.error(err?.message || "Error deleting"); }
+  };
+
+  const selectedInvoices = () => invoices.filter(i => bulk.selected.has(i.id));
+
+  const handleBulkDelete = async () => {
+    const items = selectedInvoices();
+    if (items.length === 0) return;
+    if (!window.confirm(`Delete ${items.length} invoice${items.length === 1 ? "" : "s"}? Any recorded payments for them will be reversed. You can restore them from Trash.`)) return;
+    setBulkBusy(true);
+    const t = toast.loading(`Deleting ${items.length} invoices…`);
+    try {
+      // Reverse each invoice's ledger money first; only invoices whose
+      // reversal succeeded get deleted, so balances can never drift.
+      const { ok, failed } = await runBulk(items, (inv) => reverseSourcePayments("invoice", inv.id), {
+        onProgress: (d, tot) => toast.loading(`Reversing payments ${d}/${tot}…`, { id: t }),
+      });
+      if (ok.length) await deleteDocs("invoices", ok.map(i => i.id));
+      toast[failed.length ? "error" : "success"](bulkResultMessage(ok.length, failed.length, "moved to Trash", "invoices"), { id: t });
+      if (ok.length) logActivity("deleted", "Invoices", `${ok.length} invoices (bulk)`);
+      bulk.clear();
+    } catch (err) {
+      toast.error(err?.message || "Bulk delete failed", { id: t });
+    } finally { setBulkBusy(false); }
+  };
+
+  const handleBulkEditApply = async (changes) => {
+    setBulkBusy(true);
+    try {
+      const n = bulk.count;
+      await updateDocs("invoices", [...bulk.selected], { ...changes, updatedAt: serverTimestamp() });
+      toast.success(`${n} invoice${n === 1 ? "" : "s"} updated`);
+      logActivity("updated", "Invoices", `${n} invoices (bulk): ${Object.keys(changes).join(", ")}`);
+      setShowBulkEdit(false);
+      bulk.clear();
+    } catch (err) {
+      toast.error(err?.message || "Bulk update failed");
+    } finally { setBulkBusy(false); }
+  };
+
+  const handleBulkMarkPaid = async () => {
+    if (!bulkPayAccount) return toast.error("Select the account that received payment");
+    const targets = selectedInvoices().filter(i => i.status !== "paid");
+    if (targets.length === 0) { setBulkPayModal(false); return toast("All selected invoices are already paid"); }
+    setBulkBusy(true);
+    const t = toast.loading(`Recording payments 0/${targets.length}…`);
+    try {
+      const { ok, failed } = await runBulk(targets, async (inv) => {
+        // Same flow as the single "Mark Paid": look up what's already
+        // been received, collect the remainder into the chosen
+        // account, then stamp the invoice paid.
+        const already = await getSourcePaidTotal("invoice", inv.id);
+        const total = Number(inv.amount || 0);
+        const remaining = Math.max(0, total - already);
+        if (remaining > 0) {
+          await recordPayment({
+            type: "cash_in", account: bulkPayAccount, amount: remaining,
+            category: "Fee Collection",
+            description: `Fee — ${inv.studentName || "student"} (${inv.month || ""})`,
+            reference: inv.id, branchId: inv.branchId || "", date: bulkPayDate,
+            source: "invoice", sourceId: inv.id,
+          });
+        }
+        await updateDoc(doc(db, "invoices", inv.id), {
+          status: "paid", paidAmount: already + remaining,
+          paidDate: bulkPayDate, paidAccount: bulkPayAccount,
+        });
+        if (bulkPayWhatsApp && inv.parentPhone && remaining > 0) {
+          await sendWhatsAppMessage(inv.parentPhone, `✅ Fee of Rs. ${remaining.toLocaleString()} received for ${inv.studentName} (${inv.month || ""}). Thank you!`);
+        }
+      }, { chunkSize: 3, onProgress: (d, tot) => toast.loading(`Recording payments ${d}/${tot}…`, { id: t }) });
+      toast[failed.length ? "error" : "success"](bulkResultMessage(ok.length, failed.length, "marked paid", "invoices"), { id: t });
+      if (ok.length) logActivity("collected", "Fees", `${ok.length} invoices marked paid into ${bulkPayAccount} (bulk)`);
+      setBulkPayModal(false);
+      bulk.clear();
+    } catch (err) {
+      toast.error(err?.message || "Bulk payment failed", { id: t });
+    } finally { setBulkBusy(false); }
   };
 
   const handleCSV = () => exportToCSV("fees",
@@ -386,11 +484,16 @@ export default function Fees() {
       {isMobile ? (
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           {paged.map(inv => (
-            <div key={inv.id} style={{ background: "white", borderRadius: 12, padding: 16, border: "1px solid var(--border)" }}>
+            <div key={inv.id} style={{ background: "white", borderRadius: 12, padding: 16, border: bulk.isSelected(inv.id) ? "1.5px solid var(--primary)" : "1px solid var(--border)" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
-                <div>
-                  <div style={{ fontWeight: 600, fontSize: 15 }}>{inv.studentName}</div>
-                  <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>{inv.month} {inv.year}</div>
+                <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+                  <div style={{ paddingTop: 3 }}>
+                    <RowCheckbox checked={bulk.isSelected(inv.id)} onChange={() => bulk.toggle(inv.id)} label={`Select invoice for ${inv.studentName}`} />
+                  </div>
+                  <div>
+                    <div style={{ fontWeight: 600, fontSize: 15 }}>{inv.studentName}</div>
+                    <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>{inv.month} {inv.year}</div>
+                  </div>
                 </div>
                 <span style={{ padding: "4px 12px", borderRadius: 20, fontSize: 12, fontWeight: 600, background: inv.status === "paid" ? "#ecfdf5" : inv.status === "partial" ? "#eff6ff" : "#fffbeb", color: inv.status === "paid" ? "#10b981" : inv.status === "partial" ? "#2563eb" : "#f59e0b" }}>
                   {inv.status}{inv.status === "partial" && inv.paidAmount ? ` (Rs. ${Number(inv.paidAmount).toLocaleString()})` : ""}
@@ -442,6 +545,9 @@ export default function Fees() {
             <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 650 }}>
               <thead>
                 <tr style={{ background: "#f8fafc" }}>
+                  <th style={{ padding: "11px 6px 11px 14px", width: 34 }}>
+                    <HeaderCheckbox checked={bulk.pageChecked(pagedIds)} indeterminate={bulk.pageIndeterminate(pagedIds)} onChange={() => bulk.togglePage(pagedIds)} />
+                  </th>
                   {["Student", "Month", "Line Items", "Total", "Due Date", "Status", "Actions"].map(h => (
                     <th key={h} style={{ padding: "11px 14px", textAlign: "left", fontSize: 11, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", whiteSpace: "nowrap" }}>{h}</th>
                   ))}
@@ -449,7 +555,10 @@ export default function Fees() {
               </thead>
               <tbody>
                 {paged.map(inv => (
-                  <tr key={inv.id} style={{ borderTop: "1px solid var(--border)" }}>
+                  <tr key={inv.id} style={{ borderTop: "1px solid var(--border)", background: bulk.isSelected(inv.id) ? "var(--primary-light)" : undefined }}>
+                    <td style={{ padding: "11px 6px 11px 14px" }}>
+                      <RowCheckbox checked={bulk.isSelected(inv.id)} onChange={() => bulk.toggle(inv.id)} label={`Select invoice for ${inv.studentName}`} />
+                    </td>
                     <td style={{ padding: "11px 14px", fontSize: 14, fontWeight: 500, whiteSpace: "nowrap" }}>{inv.studentName}</td>
                     <td style={{ padding: "11px 14px", fontSize: 13, whiteSpace: "nowrap" }}>{inv.month} {inv.year}</td>
                     <td style={{ padding: "11px 14px", fontSize: 12, color: "var(--text-muted)", maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
@@ -487,6 +596,80 @@ export default function Fees() {
         page={safePage} pageCount={pageCount} total={rowCount} pageSize={pageSize}
         onPage={setPage} onPageSize={setPageSize}
       />
+
+      {/* Bulk actions bar (appears when invoices are selected) */}
+      <BulkBar
+        count={bulk.count}
+        total={filtered.length}
+        noun="invoices"
+        busy={bulkBusy}
+        onSelectAll={() => bulk.selectAll(filtered.map(i => i.id))}
+        onClear={bulk.clear}
+        actions={[
+          { label: "Edit", icon: Pencil, onClick: () => setShowBulkEdit(true) },
+          { label: "Mark Paid", icon: CheckCircle, variant: "success", onClick: () => { setBulkPayAccount(payAccounts[0]?.name || ""); setBulkPayDate(new Date().toISOString().slice(0, 10)); setBulkPayWhatsApp(false); setBulkPayModal(true); } },
+          { label: "Delete", icon: Trash2, variant: "danger", onClick: handleBulkDelete },
+        ]}
+      />
+
+      {/* Bulk edit modal */}
+      {showBulkEdit && (
+        <BulkEditModal
+          title={`Edit ${bulk.count} invoice${bulk.count === 1 ? "" : "s"}`}
+          busy={bulkBusy}
+          onClose={() => setShowBulkEdit(false)}
+          onApply={handleBulkEditApply}
+          fields={[
+            { key: "dueDate", label: "Due Date", type: "date" },
+            { key: "month", label: "Month", type: "select", options: MONTHS.map(m => ({ value: m, label: m })) },
+            { key: "year", label: "Year", type: "number", placeholder: String(new Date().getFullYear()) },
+            { key: "status", label: "Status", type: "select", options: [{ value: "pending", label: "Pending" }, { value: "partial", label: "Partial" }, { value: "paid", label: "Paid" }], hint: "Changes the label only — no money is recorded or reversed. Use Mark Paid to receive payments." },
+          ]}
+        />
+      )}
+
+      {/* Bulk mark-paid modal */}
+      {bulkPayModal && (() => {
+        const targets = selectedInvoices().filter(i => i.status !== "paid");
+        const approxOutstanding = targets.reduce((s, i) => s + Math.max(0, Number(i.amount || 0) - Number(i.paidAmount || 0)), 0);
+        return (
+          <div onClick={(e) => { if (e.target === e.currentTarget && !bulkBusy) setBulkPayModal(false); }}
+            style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: isMobile ? "flex-end" : "center", justifyContent: "center", zIndex: 1000, padding: isMobile ? 0 : 16 }}>
+            <div style={{ background: "white", borderRadius: isMobile ? "20px 20px 0 0" : 16, padding: isMobile ? "24px 20px" : 28, width: "100%", maxWidth: isMobile ? "100%" : 440 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 14 }}>
+                <h3 style={{ fontSize: 17, fontWeight: 700 }}>Receive Payment — {targets.length} invoice{targets.length === 1 ? "" : "s"}</h3>
+                <button onClick={() => setBulkPayModal(false)} disabled={bulkBusy} style={{ border: "none", background: "none", cursor: "pointer" }}><X size={20} /></button>
+              </div>
+              <div style={{ background: "#f8fafc", borderRadius: 10, padding: 14, marginBottom: 16, fontSize: 13, color: "var(--text-muted)" }}>
+                Each selected unpaid invoice will have its remaining balance collected into the account below and be marked <strong>paid</strong>.
+                {bulk.count > targets.length && <> Already-paid invoices in the selection are skipped.</>}
+                <div style={{ marginTop: 8, fontSize: 14, color: "#1e293b" }}>Outstanding (approx.): <strong>Rs. {approxOutstanding.toLocaleString()}</strong></div>
+              </div>
+              <label style={{ display: "block", fontSize: 13, fontWeight: 600, marginBottom: 5 }}>Received into account *</label>
+              <select value={bulkPayAccount} onChange={e => setBulkPayAccount(e.target.value)}
+                style={{ width: "100%", padding: "10px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14, marginBottom: 12, background: "white" }}>
+                <option value="">Select account</option>
+                {payAccounts.map(a => <option key={a.id} value={a.name}>{a.name}</option>)}
+              </select>
+              <label style={{ display: "block", fontSize: 13, fontWeight: 600, marginBottom: 5 }}>Payment date</label>
+              <input type="date" value={bulkPayDate} onChange={e => setBulkPayDate(e.target.value)}
+                style={{ width: "100%", padding: "10px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14, marginBottom: 12, boxSizing: "border-box" }} />
+              <label style={{ display: "flex", alignItems: "center", gap: 9, fontSize: 13, marginBottom: 18, cursor: "pointer" }}>
+                <input type="checkbox" checked={bulkPayWhatsApp} onChange={e => setBulkPayWhatsApp(e.target.checked)} style={{ width: 16, height: 16, accentColor: "var(--primary)" }} />
+                Send WhatsApp confirmation to parents
+              </label>
+              <div style={{ display: "flex", gap: 10 }}>
+                <button onClick={() => setBulkPayModal(false)} disabled={bulkBusy}
+                  style={{ flex: 1, padding: "11px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", fontSize: 14, background: "white" }}>Cancel</button>
+                <button onClick={handleBulkMarkPaid} disabled={bulkBusy || targets.length === 0}
+                  style={{ flex: 2, padding: "11px", background: "#10b981", color: "white", border: "none", borderRadius: 8, cursor: bulkBusy ? "wait" : "pointer", fontWeight: 600, fontSize: 14, opacity: bulkBusy ? 0.7 : 1 }}>
+                  {bulkBusy ? "Recording…" : `Collect ${targets.length} Payment${targets.length === 1 ? "" : "s"}`}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Record payment modal */}
       {payModal && (

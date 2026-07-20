@@ -1,12 +1,17 @@
 import React, { useEffect, useState } from "react";
 import { db } from "../firebase";
-import { collection, addDoc, deleteDoc, doc, onSnapshot, serverTimestamp } from "../firebase";
+import { collection, addDoc, deleteDoc, doc, onSnapshot, serverTimestamp, updateDocs, deleteDocs } from "../firebase";
 import { useBranch } from "../context/BranchContext";
 import Pagination from "../components/UI/Pagination";
+import { useBulkSelect } from "../hooks/useBulkSelect";
+import BulkBar, { RowCheckbox, HeaderCheckbox } from "../components/UI/BulkBar";
+import BulkEditModal from "../components/UI/BulkEditModal";
+import { runBulk, bulkResultMessage } from "../utils/bulk";
+import { logActivity } from "../utils/auditLog";
 import { recordPayment, bankCashAccounts, reverseSourcePayments } from "../utils/accounting";
 import { exportToCSV, exportToPDF } from "../utils/exportUtils";
 import toast from "react-hot-toast";
-import { Plus, Trash2, X, Download, FileText } from "lucide-react";
+import { Plus, Trash2, X, Download, FileText, Pencil } from "lucide-react";
 
 const CATEGORIES = ["Rent", "Utilities", "Salaries", "Supplies", "Maintenance", "Transport", "Other"];
 const emptyLine = { description: "", amount: "", category: "" };
@@ -75,13 +80,55 @@ export default function Expenses() {
 
   const payAccounts = bankCashAccounts(accounts);
 
+  // multi-select for bulk actions
+  const bulk = useBulkSelect(filtered.map(e => e.id));
+  const pagedIds = paged.map(e => e.id);
+  const [showBulkEdit, setShowBulkEdit] = useState(false);
+  const [bulkBusy, setBulkBusy] = useState(false);
+
   const handleDelete = async (exp) => {
     if (!window.confirm("Delete this expense? If it was paid from an account, the payment will be reversed. You can restore it from Trash.")) return;
     try {
       await reverseSourcePayments("expense", exp.id);
       await deleteDoc(doc(db, "expenses", exp.id));
       toast.success("Expense deleted");
+      logActivity("deleted", "Expenses", `${exp.description} · Rs. ${Number(exp.amount || 0).toLocaleString()}`);
     } catch (err) { toast.error(err?.message || "Error deleting"); }
+  };
+
+  const handleBulkDelete = async () => {
+    const ids = [...bulk.selected];
+    if (ids.length === 0) return;
+    if (!window.confirm(`Delete ${ids.length} expense${ids.length === 1 ? "" : "s"}? Payments made from accounts will be reversed. You can restore them from Trash.`)) return;
+    setBulkBusy(true);
+    const t = toast.loading(`Deleting ${ids.length} expenses…`);
+    try {
+      const { ok, failed } = await runBulk(ids, (id) => reverseSourcePayments("expense", id), {
+        onProgress: (d, tot) => toast.loading(`Reversing payments ${d}/${tot}…`, { id: t }),
+      });
+      if (ok.length) await deleteDocs("expenses", ok);
+      toast[failed.length ? "error" : "success"](bulkResultMessage(ok.length, failed.length, "moved to Trash", "expenses"), { id: t });
+      if (ok.length) logActivity("deleted", "Expenses", `${ok.length} expenses (bulk)`);
+      bulk.clear();
+    } catch (err) {
+      toast.error(err?.message || "Bulk delete failed", { id: t });
+    } finally { setBulkBusy(false); }
+  };
+
+  const handleBulkEditApply = async (changes) => {
+    setBulkBusy(true);
+    try {
+      const n = bulk.count;
+      // "main" is the UI sentinel for the Main branch (stored as "").
+      if (changes.branchId === "main") changes.branchId = "";
+      await updateDocs("expenses", [...bulk.selected], { ...changes, updatedAt: serverTimestamp() });
+      toast.success(`${n} expense${n === 1 ? "" : "s"} updated`);
+      logActivity("updated", "Expenses", `${n} expenses (bulk): ${Object.keys(changes).join(", ")}`);
+      setShowBulkEdit(false);
+      bulk.clear();
+    } catch (err) {
+      toast.error(err?.message || "Bulk update failed");
+    } finally { setBulkBusy(false); }
   };
 
   const handleSingle = async (e) => {
@@ -107,6 +154,7 @@ export default function Expenses() {
       }
     }
     toast.success("Expense added");
+    logActivity("created", "Expenses", `${form.description} · Rs. ${Number(form.amount || 0).toLocaleString()}${form.paidAccount ? ` paid from ${form.paidAccount}` : ""}`);
     setShowModal(false);
     setForm({ description: "", amount: "", category: "", date: "", branchId: "", notes: "", paidAccount: "" });
   };
@@ -119,6 +167,7 @@ export default function Expenses() {
       addDoc(collection(db, "expenses"), { ...line, date: bulkDate, branchId: bulkBranch, createdAt: serverTimestamp() })
     ));
     toast.success(`${valid.length} expenses added`);
+    logActivity("created", "Expenses", `${valid.length} expenses (bulk entry)`);
     setShowModal(false);
     setBulkLines([{ ...emptyLine }, { ...emptyLine }]);
     setBulkDate("");
@@ -208,11 +257,16 @@ export default function Expenses() {
       {isMobile ? (
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           {paged.map(exp => (
-            <div key={exp.id} style={{ background: "white", borderRadius: 12, padding: 16, border: "1px solid var(--border)" }}>
+            <div key={exp.id} style={{ background: "white", borderRadius: 12, padding: 16, border: bulk.isSelected(exp.id) ? "1.5px solid var(--primary)" : "1px solid var(--border)" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
-                <div style={{ flex: 1, marginRight: 10 }}>
-                  <div style={{ fontWeight: 600, fontSize: 15 }}>{exp.description}</div>
-                  <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>{exp.date}</div>
+                <div style={{ flex: 1, marginRight: 10, display: "flex", gap: 10, alignItems: "flex-start" }}>
+                  <div style={{ paddingTop: 3 }}>
+                    <RowCheckbox checked={bulk.isSelected(exp.id)} onChange={() => bulk.toggle(exp.id)} label={`Select expense ${exp.description}`} />
+                  </div>
+                  <div>
+                    <div style={{ fontWeight: 600, fontSize: 15 }}>{exp.description}</div>
+                    <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>{exp.date}</div>
+                  </div>
                 </div>
                 <button onClick={() => handleDelete(exp)}
                   style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "7px 9px", borderRadius: 8, cursor: "pointer", flexShrink: 0 }}>
@@ -247,6 +301,9 @@ export default function Expenses() {
             <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 520 }}>
               <thead>
                 <tr style={{ background: "#f8fafc" }}>
+                  <th style={{ padding: "11px 6px 11px 14px", width: 34 }}>
+                    <HeaderCheckbox checked={bulk.pageChecked(pagedIds)} indeterminate={bulk.pageIndeterminate(pagedIds)} onChange={() => bulk.togglePage(pagedIds)} />
+                  </th>
                   {["Date", "Description", "Category", "Branch", "Amount", ""].map(h => (
                     <th key={h} style={{ padding: "11px 14px", textAlign: "left", fontSize: 11, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", whiteSpace: "nowrap" }}>{h}</th>
                   ))}
@@ -254,7 +311,10 @@ export default function Expenses() {
               </thead>
               <tbody>
                 {paged.map(exp => (
-                  <tr key={exp.id} style={{ borderTop: "1px solid var(--border)" }}>
+                  <tr key={exp.id} style={{ borderTop: "1px solid var(--border)", background: bulk.isSelected(exp.id) ? "var(--primary-light)" : undefined }}>
+                    <td style={{ padding: "11px 6px 11px 14px" }}>
+                      <RowCheckbox checked={bulk.isSelected(exp.id)} onChange={() => bulk.toggle(exp.id)} label={`Select expense ${exp.description}`} />
+                    </td>
                     <td style={{ padding: "11px 14px", fontSize: 13, whiteSpace: "nowrap" }}>{exp.date}</td>
                     <td style={{ padding: "11px 14px", fontSize: 14, fontWeight: 500 }}>{exp.description}</td>
                     <td style={{ padding: "11px 14px" }}>
@@ -287,6 +347,35 @@ export default function Expenses() {
         page={safePage} pageCount={pageCount} total={rowCount} pageSize={pageSize}
         onPage={setPage} onPageSize={setPageSize}
       />
+
+      {/* Bulk actions bar */}
+      <BulkBar
+        count={bulk.count}
+        total={filtered.length}
+        noun="expenses"
+        busy={bulkBusy}
+        onSelectAll={() => bulk.selectAll(filtered.map(e => e.id))}
+        onClear={bulk.clear}
+        actions={[
+          { label: "Edit", icon: Pencil, onClick: () => setShowBulkEdit(true) },
+          { label: "Delete", icon: Trash2, variant: "danger", onClick: handleBulkDelete },
+        ]}
+      />
+
+      {/* Bulk edit modal */}
+      {showBulkEdit && (
+        <BulkEditModal
+          title={`Edit ${bulk.count} expense${bulk.count === 1 ? "" : "s"}`}
+          busy={bulkBusy}
+          onClose={() => setShowBulkEdit(false)}
+          onApply={handleBulkEditApply}
+          fields={[
+            { key: "category", label: "Category", type: "select", options: CATEGORIES.map(c => ({ value: c, label: c })) },
+            { key: "date", label: "Date", type: "date" },
+            { key: "branchId", label: "Branch", type: "select", options: [{ value: "main", label: "Main" }, ...branches.map(b => ({ value: b.id, label: b.name }))] },
+          ]}
+        />
+      )}
 
       {/* Add Expense Modal */}
       {showModal && (

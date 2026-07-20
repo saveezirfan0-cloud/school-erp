@@ -5,6 +5,7 @@ import {
   doc, onSnapshot, serverTimestamp, setDoc
 } from "../firebase";
 import { createUserAsAdmin } from "../lib/adminUsers";
+import { logActivity } from "../utils/auditLog";
 import { useBranch } from "../context/BranchContext";
 import { useUser } from "../context/UserContext";
 import { PERMISSIONS } from "../context/UserContext";
@@ -123,6 +124,7 @@ export default function Users() {
           updatedAt: serverTimestamp(),
         });
         toast.success("User updated");
+        logActivity("updated", "Users", `${form.name || form.email} — role: ${form.role}`);
       } else {
         // User creation now happens server-side via a Supabase Edge
         // Function (the browser can't create auth users with the anon
@@ -136,6 +138,7 @@ export default function Users() {
           pin: form.pin || null,
         });
         toast.success("User created");
+        logActivity("created", "Users", `${form.name || form.email} (${form.email}) — role: ${form.role}`);
       }
       setShowModal(false);
       setForm(emptyUser);
@@ -152,6 +155,7 @@ export default function Users() {
     if (newPin.length < 4) return toast.error("PIN must be at least 4 digits");
     await updateDoc(doc(db, "users", pinUser.id), { pin: newPin });
     toast.success("PIN updated");
+    logActivity("updated", "Users", `PIN changed for ${pinUser.name || pinUser.email}`);
     setShowPinModal(false);
     setPinUser(null);
     setNewPin("");
@@ -159,8 +163,10 @@ export default function Users() {
 
   const handleDeleteUser = async (id) => {
     if (!window.confirm("Remove this user?")) return;
+    const u = users.find((x) => x.id === id);
     await deleteDoc(doc(db, "users", id));
     toast.success("User removed");
+    logActivity("deleted", "Users", `${u?.name || u?.email || id} removed`);
   };
 
   const handleSaveCustomRole = async (e) => {
@@ -172,6 +178,7 @@ export default function Users() {
       createdAt: serverTimestamp(),
     });
     toast.success("Custom role created");
+    logActivity("created", "Users", `Custom role "${customRole.label}"`);
     setShowRoleModal(false);
     setCustomRole(emptyCustomRole);
   };
@@ -186,6 +193,7 @@ export default function Users() {
       updatedAt: serverTimestamp(),
     });
     toast.success("Role updated");
+    logActivity("updated", "Users", `Role "${editingRole.label}" permissions changed`);
     setShowEditRoleModal(false);
     setEditingRole(null);
   };
@@ -196,6 +204,7 @@ export default function Users() {
     if (!window.confirm("Delete this custom role?")) return;
     await deleteDoc(doc(db, "customRoles", id));
     toast.success("Role deleted");
+    logActivity("deleted", "Users", `Custom role removed`);
   };
 
   const togglePermission = (key, target, setTarget) => {

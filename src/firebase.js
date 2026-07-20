@@ -260,6 +260,107 @@ export async function emptyTrash(name) {
   if (error) throw error;
 }
 
+// ---- bulk writes (multi-select actions) ----
+//
+// These power the bulk edit / bulk delete UI. Where possible they use
+// a single `UPDATE ... WHERE id IN (...)` round trip. The realtime
+// channel still receives one UPDATE event per row, so every open
+// session's cache stays in sync exactly like single-row writes.
+
+// Small helper: run `worker(item)` over items in chunks so we never
+// fire hundreds of parallel requests at Supabase.
+async function runInChunks(items, worker, chunkSize = 5) {
+  for (let i = 0; i < items.length; i += chunkSize) {
+    const chunk = items.slice(i, i + chunkSize);
+    const results = await Promise.allSettled(chunk.map(worker));
+    const firstErr = results.find((r) => r.status === "rejected");
+    if (firstErr) throw firstErr.reason;
+  }
+}
+
+// Update the same fields on many rows at once.
+//
+// Fast path: when every field maps to a real column, one bulk UPDATE.
+// Merge path: if any field lives in the `extra` jsonb (e.g. an
+// invoice's month/year), we must NOT bulk-write `extra` — that would
+// overwrite each row's other extra keys (studentName, lineItems,
+// notes...). Instead we read each row's extra, merge the patch in,
+// and update per row (chunked).
+export async function updateDocs(name, ids, data) {
+  const table = TABLE_MAP[name] || name;
+  if (!ids || ids.length === 0) return 0;
+  const cols = COLUMNS[table] || [];
+  const direct = {};
+  const extraPatch = {};
+  for (const [k, v] of Object.entries(data || {})) {
+    if (k === "id") continue;
+    const val = v === SERVER_TS ? new Date().toISOString() : v;
+    const snake = toSnake(k);
+    if (cols.includes(snake)) direct[snake] = val;
+    else extraPatch[k] = val;
+  }
+
+  if (Object.keys(extraPatch).length === 0) {
+    const { error } = await supabase.from(table).update(direct).in("id", ids);
+    if (error) throw error;
+    return ids.length;
+  }
+
+  const { data: rows, error: readErr } = await supabase
+    .from(table)
+    .select("id, extra")
+    .in("id", ids);
+  if (readErr) throw readErr;
+  await runInChunks(rows || [], async (r) => {
+    const merged = { ...(r.extra || {}), ...extraPatch };
+    const { error } = await supabase
+      .from(table)
+      .update({ ...direct, extra: merged })
+      .eq("id", r.id);
+    if (error) throw error;
+  });
+  return (rows || []).length;
+}
+
+// Delete many rows at once. Soft-delete tables move to Trash in a
+// single UPDATE; other tables hard-delete in a single DELETE.
+export async function deleteDocs(name, ids) {
+  const table = TABLE_MAP[name] || name;
+  if (!ids || ids.length === 0) return 0;
+  if (SOFT_DELETE_TABLES.has(table)) {
+    const { error } = await supabase
+      .from(table)
+      .update({ deleted_at: new Date().toISOString() })
+      .in("id", ids);
+    if (error) throw error;
+  } else {
+    const { error } = await supabase.from(table).delete().in("id", ids);
+    if (error) throw error;
+  }
+  return ids.length;
+}
+
+// Restore many trashed rows at once.
+export async function restoreDocs(name, ids) {
+  const table = TABLE_MAP[name] || name;
+  if (!ids || ids.length === 0) return 0;
+  const { error } = await supabase
+    .from(table)
+    .update({ deleted_at: null })
+    .in("id", ids);
+  if (error) throw error;
+  return ids.length;
+}
+
+// Permanently delete many rows at once (Trash "delete forever").
+export async function hardDeleteDocs(name, ids) {
+  const table = TABLE_MAP[name] || name;
+  if (!ids || ids.length === 0) return 0;
+  const { error } = await supabase.from(table).delete().in("id", ids);
+  if (error) throw error;
+  return ids.length;
+}
+
 // ---- reads ----
 export async function getDocs(ref) {
   let builder = supabase.from(ref.table).select("*");

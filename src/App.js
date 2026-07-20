@@ -33,6 +33,7 @@ const Unauthorized = lazy(() => import("./pages/Unauthorized"));
 const ReminderLogs = lazy(() => import("./pages/ReminderLogs"));
 const Import = lazy(() => import("./pages/Import"));
 const Trash = lazy(() => import("./pages/Trash"));
+const ActivityLog = lazy(() => import("./pages/ActivityLog"));
 
 const PageLoader = () => (
   <div style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: 60 }}>
@@ -185,6 +186,13 @@ export default function App() {
                 <Route path="trash" element={
                   <PrivateRoute>
                     <Trash />
+                  </PrivateRoute>
+                } />
+                <Route path="activity-log" element={
+                  <PrivateRoute>
+                    {/* ActivityLog itself is admin-gated (isAdmin check
+                        + admin-only SELECT policy on audit_log) */}
+                    <ActivityLog />
                   </PrivateRoute>
                 } />
               </Route>

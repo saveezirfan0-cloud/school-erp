@@ -1,10 +1,15 @@
 import React, { useEffect, useState } from "react";
 import { db } from "../firebase";
-import { collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot, serverTimestamp } from "../firebase";
+import { collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot, serverTimestamp, updateDocs, deleteDocs } from "../firebase";
 import { useBranch } from "../context/BranchContext";
 import { useCollection } from "../hooks/useCollection";
+import { useBulkSelect } from "../hooks/useBulkSelect";
 import ListToolbar from "../components/UI/ListToolbar";
 import Pagination from "../components/UI/Pagination";
+import BulkBar, { RowCheckbox } from "../components/UI/BulkBar";
+import BulkEditModal from "../components/UI/BulkEditModal";
+import { bulkResultMessage } from "../utils/bulk";
+import { logActivity } from "../utils/auditLog";
 import { exportToCSV, exportToPDF } from "../utils/exportUtils";
 import toast from "react-hot-toast";
 import { Plus, Trash2, X, Edit2, Download, FileText } from "lucide-react";
@@ -48,6 +53,50 @@ export default function Employees() {
   const roles = [...new Set(employees.map(e => e.role).filter(Boolean))];
   const active = !!(search || filterRole || sortField);
 
+  // multi-select for bulk actions
+  const bulk = useBulkSelect(filtered.map(e => e.id));
+  const [showBulkEdit, setShowBulkEdit] = useState(false);
+  const [bulkBusy, setBulkBusy] = useState(false);
+
+  const handleDeleteOne = async (emp) => {
+    if (!window.confirm("Delete this employee? You can restore them from Trash.")) return;
+    try {
+      await deleteDoc(doc(db, "employees", emp.id));
+      toast.success("Employee moved to Trash");
+      logActivity("deleted", "Employees", `${emp.name}${emp.role ? ` — ${emp.role}` : ""}`);
+    } catch (err) { toast.error(err?.message || "Error deleting"); }
+  };
+
+  const handleBulkDelete = async () => {
+    const ids = [...bulk.selected];
+    if (ids.length === 0) return;
+    if (!window.confirm(`Delete ${ids.length} employee${ids.length === 1 ? "" : "s"}? Their payslips are kept. You can restore employees from Trash.`)) return;
+    setBulkBusy(true);
+    try {
+      await deleteDocs("employees", ids);
+      toast.success(bulkResultMessage(ids.length, 0, "moved to Trash", "employees"));
+      logActivity("deleted", "Employees", `${ids.length} employees (bulk)`);
+      bulk.clear();
+    } catch (err) {
+      toast.error(err?.message || "Bulk delete failed");
+    } finally { setBulkBusy(false); }
+  };
+
+  const handleBulkEditApply = async (changes) => {
+    setBulkBusy(true);
+    try {
+      const n = bulk.count;
+      if (changes.branchId === "main") changes.branchId = "";
+      await updateDocs("employees", [...bulk.selected], { ...changes, updatedAt: serverTimestamp() });
+      toast.success(`${n} employee${n === 1 ? "" : "s"} updated`);
+      logActivity("updated", "Employees", `${n} employees (bulk): ${Object.keys(changes).join(", ")}`);
+      setShowBulkEdit(false);
+      bulk.clear();
+    } catch (err) {
+      toast.error(err?.message || "Bulk update failed");
+    } finally { setBulkBusy(false); }
+  };
+
   React.useEffect(() => { setPage(1); }, [search, filterRole, pageSize, activeBranch]);
 
   const handleSubmit = async (e) => {
@@ -56,9 +105,11 @@ export default function Employees() {
       if (editing) {
         await updateDoc(doc(db, "employees", editing), { ...form, updatedAt: serverTimestamp() });
         toast.success("Employee updated");
+        logActivity("updated", "Employees", `${form.name}${form.role ? ` — ${form.role}` : ""}`);
       } else {
         await addDoc(collection(db, "employees"), { ...form, createdAt: serverTimestamp() });
         toast.success("Employee added");
+        logActivity("created", "Employees", `${form.name}${form.role ? ` — ${form.role}` : ""}`);
       }
       setShowModal(false); setForm(empty); setEditing(null);
     } catch { toast.error("Error saving"); }
@@ -113,14 +164,17 @@ export default function Employees() {
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 16 }}>
         {paged.map(emp => (
-          <div key={emp.id} style={{ background: "white", borderRadius: 12, padding: 20, border: "1px solid var(--border)" }}>
+          <div key={emp.id} style={{ background: "white", borderRadius: 12, padding: 20, border: bulk.isSelected(emp.id) ? "1.5px solid var(--primary)" : "1px solid var(--border)" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-              <div style={{ width: 44, height: 44, borderRadius: "50%", background: "var(--primary-light)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, fontWeight: 700, color: "var(--primary)" }}>
-                {emp.name?.charAt(0)?.toUpperCase()}
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <RowCheckbox checked={bulk.isSelected(emp.id)} onChange={() => bulk.toggle(emp.id)} label={`Select ${emp.name}`} />
+                <div style={{ width: 44, height: 44, borderRadius: "50%", background: "var(--primary-light)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, fontWeight: 700, color: "var(--primary)" }}>
+                  {emp.name?.charAt(0)?.toUpperCase()}
+                </div>
               </div>
               <div style={{ display: "flex", gap: 6 }}>
                 <button onClick={() => { setForm(emp); setEditing(emp.id); setShowModal(true); }} style={{ border: "none", background: "var(--primary-light)", color: "var(--primary)", padding: "6px 8px", borderRadius: 6, cursor: "pointer" }}><Edit2 size={13} /></button>
-                <button onClick={() => { if (window.confirm("Delete?")) deleteDoc(doc(db, "employees", emp.id)); }} style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "6px 8px", borderRadius: 6, cursor: "pointer" }}><Trash2 size={13} /></button>
+                <button onClick={() => handleDeleteOne(emp)} style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "6px 8px", borderRadius: 6, cursor: "pointer" }}><Trash2 size={13} /></button>
               </div>
             </div>
             <div style={{ marginTop: 12 }}>
@@ -142,6 +196,35 @@ export default function Employees() {
         page={safePage} pageCount={pageCount} total={total} pageSize={pageSize}
         onPage={setPage} onPageSize={setPageSize}
       />
+
+      {/* Bulk actions bar */}
+      <BulkBar
+        count={bulk.count}
+        total={filtered.length}
+        noun="employees"
+        busy={bulkBusy}
+        onSelectAll={() => bulk.selectAll(filtered.map(e => e.id))}
+        onClear={bulk.clear}
+        actions={[
+          { label: "Edit", icon: Edit2, onClick: () => setShowBulkEdit(true) },
+          { label: "Delete", icon: Trash2, variant: "danger", onClick: handleBulkDelete },
+        ]}
+      />
+
+      {/* Bulk edit modal */}
+      {showBulkEdit && (
+        <BulkEditModal
+          title={`Edit ${bulk.count} employee${bulk.count === 1 ? "" : "s"}`}
+          busy={bulkBusy}
+          onClose={() => setShowBulkEdit(false)}
+          onApply={handleBulkEditApply}
+          fields={[
+            { key: "branchId", label: "Branch", type: "select", options: [{ value: "main", label: "Main Office" }, ...branches.map(b => ({ value: b.id, label: b.name }))] },
+            { key: "salary", label: "Monthly Salary (Rs.)", type: "number", placeholder: "e.g. 30000", hint: "Applies to future payslips only — existing payslips keep their amounts." },
+            { key: "recurringPayslip", label: "Auto-recurring payslip", type: "boolean" },
+          ]}
+        />
+      )}
 
       {showModal && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: isMobile ? "flex-end" : "center", justifyContent: "center", zIndex: 1000, padding: isMobile ? 0 : 16 }}>

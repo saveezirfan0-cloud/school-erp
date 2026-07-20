@@ -4,13 +4,13 @@ import {
   LayoutDashboard, Users, UserCheck, Receipt, TrendingDown,
   Building2, Settings, BookOpen, CreditCard, FileText,
   BarChart2, ChevronDown, ChevronRight, Landmark, BookMarked,
-  X, ShieldCheck, MessageCircle, Upload, Trash2
+  X, ShieldCheck, MessageCircle, Upload, Trash2, History
 } from "lucide-react";
 import { useUser } from "../../context/UserContext";
 
 export default function Sidebar({ onClose }) {
   const [openGroup, setOpenGroup] = useState("Accounting");
-  const { can } = useUser();
+  const { can, isAdmin } = useUser();
 
   const nav = [
     {
@@ -120,6 +120,12 @@ export default function Sidebar({ onClose }) {
       icon: ShieldCheck,
       label: "Access Control",
       show: can("canManageUsers"),
+    },
+    {
+      to: "/activity-log",
+      icon: History,
+      label: "Activity Log",
+      show: isAdmin,
     },
     {
       to: "/trash",

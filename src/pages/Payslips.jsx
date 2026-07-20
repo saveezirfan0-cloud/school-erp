@@ -1,12 +1,17 @@
 import React, { useEffect, useState, useRef } from "react";
 import { db } from "../firebase";
-import { collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot, serverTimestamp } from "../firebase";
+import { collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot, serverTimestamp, updateDocs, deleteDocs } from "../firebase";
 import { recordPayment, bankCashAccounts, reverseSourcePayments } from "../utils/accounting";
 import { useBranch } from "../context/BranchContext";
 import { matchesBranch } from "../utils/branchFilter";
+import { useBulkSelect } from "../hooks/useBulkSelect";
+import BulkBar, { RowCheckbox, HeaderCheckbox } from "../components/UI/BulkBar";
+import BulkEditModal from "../components/UI/BulkEditModal";
+import { runBulk, bulkResultMessage } from "../utils/bulk";
+import { logActivity } from "../utils/auditLog";
 import { exportToCSV, exportToPDF } from "../utils/exportUtils";
 import toast from "react-hot-toast";
-import { Plus, Printer, X, RefreshCw, Download, FileText, Trash2 } from "lucide-react";
+import { Plus, Printer, X, RefreshCw, Download, FileText, Trash2, Pencil, Banknote } from "lucide-react";
 import SearchableSelect from "../components/UI/SearchableSelect";
 
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
@@ -79,6 +84,7 @@ export default function Payslips() {
         paidAccount: payAccount,
       });
       toast.success("Salary paid and recorded");
+      logActivity("paid", "Payslips", `Salary ${payModal.employeeName} (${payModal.month} ${payModal.year}) · Rs. ${Number(payModal.netPay || 0).toLocaleString()} from ${payAccount}`);
       setPayModal(null);
       setPayAccount("");
     } catch (e) {
@@ -91,6 +97,86 @@ export default function Payslips() {
     const matchEmp = !filterEmployee || p.employeeName?.toLowerCase().includes(filterEmployee.toLowerCase());
     return matchesBranch(p, activeBranch) && matchMonth && matchEmp;
   });
+
+  // multi-select for bulk actions (this page shows all filtered rows,
+  // no pagination, so the header checkbox covers the whole list)
+  const bulk = useBulkSelect(filtered.map(p => p.id));
+  const visibleIds = filtered.map(p => p.id);
+  const [showBulkEdit, setShowBulkEdit] = useState(false);
+  const [bulkPayOpen, setBulkPayOpen] = useState(false);
+  const [bulkPayAccount, setBulkPayAccount] = useState("");
+  const [bulkPayDate, setBulkPayDate] = useState(new Date().toISOString().slice(0, 10));
+  const [bulkBusy, setBulkBusy] = useState(false);
+
+  const selectedPayslips = () => payslips.filter(p => bulk.selected.has(p.id));
+
+  const handleBulkDelete = async () => {
+    const items = selectedPayslips();
+    if (items.length === 0) return;
+    if (!window.confirm(`Delete ${items.length} payslip${items.length === 1 ? "" : "s"}? Any recorded salary payments will be reversed. You can restore them from Trash.`)) return;
+    setBulkBusy(true);
+    const t = toast.loading(`Deleting ${items.length} payslips…`);
+    try {
+      const { ok, failed } = await runBulk(items, (p) => reverseSourcePayments("payslip", p.id), {
+        onProgress: (d, tot) => toast.loading(`Reversing payments ${d}/${tot}…`, { id: t }),
+      });
+      if (ok.length) await deleteDocs("payslips", ok.map(p => p.id));
+      toast[failed.length ? "error" : "success"](bulkResultMessage(ok.length, failed.length, "moved to Trash", "payslips"), { id: t });
+      if (ok.length) logActivity("deleted", "Payslips", `${ok.length} payslips (bulk)`);
+      bulk.clear();
+    } catch (err) {
+      toast.error(err?.message || "Bulk delete failed", { id: t });
+    } finally { setBulkBusy(false); }
+  };
+
+  const handleBulkEditApply = async (changes) => {
+    setBulkBusy(true);
+    try {
+      const n = bulk.count;
+      await updateDocs("payslips", [...bulk.selected], { ...changes, updatedAt: serverTimestamp() });
+      toast.success(`${n} payslip${n === 1 ? "" : "s"} updated`);
+      logActivity("updated", "Payslips", `${n} payslips (bulk): ${Object.keys(changes).join(", ")}`);
+      setShowBulkEdit(false);
+      bulk.clear();
+    } catch (err) {
+      toast.error(err?.message || "Bulk update failed");
+    } finally { setBulkBusy(false); }
+  };
+
+  const handleBulkPay = async () => {
+    if (!bulkPayAccount) return toast.error("Select the account paid from");
+    const targets = selectedPayslips().filter(p => p.status !== "paid");
+    if (targets.length === 0) { setBulkPayOpen(false); return toast("All selected payslips are already paid"); }
+    setBulkBusy(true);
+    const t = toast.loading(`Paying salaries 0/${targets.length}…`);
+    try {
+      const { ok, failed } = await runBulk(targets, async (p) => {
+        await recordPayment({
+          type: "cash_out",
+          account: bulkPayAccount,
+          amount: p.netPay,
+          category: "Salary",
+          description: `Salary — ${p.employeeName} (${p.month} ${p.year})`,
+          reference: p.id,
+          branchId: p.branchId || "",
+          date: bulkPayDate,
+          source: "payslip",
+          sourceId: p.id,
+        });
+        await updateDoc(doc(db, "payslips", p.id), {
+          status: "paid",
+          paidDate: bulkPayDate,
+          paidAccount: bulkPayAccount,
+        });
+      }, { chunkSize: 3, onProgress: (d, tot) => toast.loading(`Paying salaries ${d}/${tot}…`, { id: t }) });
+      toast[failed.length ? "error" : "success"](bulkResultMessage(ok.length, failed.length, "paid", "salaries"), { id: t });
+      if (ok.length) logActivity("paid", "Payslips", `${ok.length} salaries from ${bulkPayAccount} (bulk)`);
+      setBulkPayOpen(false);
+      bulk.clear();
+    } catch (err) {
+      toast.error(err?.message || "Bulk payment failed", { id: t });
+    } finally { setBulkBusy(false); }
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -106,6 +192,7 @@ export default function Payslips() {
       createdAt: serverTimestamp()
     });
     toast.success("Payslip created");
+    logActivity("created", "Payslips", `Payslip ${emp?.name} — ${form.month} ${form.year} · Rs. ${Number(netPay).toLocaleString()}`);
     setShowModal(false);
     setForm(empty);
   };
@@ -129,15 +216,17 @@ export default function Payslips() {
       count++;
     }
     toast.success(count > 0 ? `Generated ${count} payslips for ${recurringMonth} ${recurringYear}` : "All payslips already exist for this month");
+    if (count > 0) logActivity("generated", "Payslips", `${count} recurring payslips — ${recurringMonth} ${recurringYear}`);
     setShowRecurring(false);
   };
 
-  const handleDelete = async (id) => {
+  const handleDelete = async (p) => {
     if (!window.confirm("Delete this payslip? Any recorded salary payment will be reversed. You can restore it from Trash.")) return;
     try {
-      await reverseSourcePayments("payslip", id);
-      await deleteDoc(doc(db, "payslips", id));
+      await reverseSourcePayments("payslip", p.id);
+      await deleteDoc(doc(db, "payslips", p.id));
       toast.success("Payslip moved to Trash");
+      logActivity("deleted", "Payslips", `Payslip ${p.employeeName} — ${p.month} ${p.year} · Rs. ${Number(p.netPay || 0).toLocaleString()}`);
     } catch (err) { toast.error(err?.message || "Error deleting"); }
   };
 
@@ -207,18 +296,23 @@ export default function Payslips() {
       {isMobile ? (
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           {filtered.map(p => (
-            <div key={p.id} style={{ background: "white", borderRadius: 12, padding: 16, border: "1px solid var(--border)" }}>
+            <div key={p.id} style={{ background: "white", borderRadius: 12, padding: 16, border: bulk.isSelected(p.id) ? "1.5px solid var(--primary)" : "1px solid var(--border)" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
-                <div>
-                  <div style={{ fontWeight: 600, fontSize: 15 }}>{p.employeeName}</div>
-                  <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>{p.role} · {p.month} {p.year}</div>
+                <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+                  <div style={{ paddingTop: 3 }}>
+                    <RowCheckbox checked={bulk.isSelected(p.id)} onChange={() => bulk.toggle(p.id)} label={`Select payslip for ${p.employeeName}`} />
+                  </div>
+                  <div>
+                    <div style={{ fontWeight: 600, fontSize: 15 }}>{p.employeeName}</div>
+                    <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>{p.role} · {p.month} {p.year}</div>
+                  </div>
                 </div>
                 <div style={{ display: "flex", gap: 6 }}>
                   <button onClick={() => setShowPrint(p)}
                     style={{ border: "none", background: "var(--primary-light)", color: "var(--primary)", padding: "7px 10px", borderRadius: 8, cursor: "pointer", display: "flex", alignItems: "center", gap: 4, fontSize: 12 }}>
                     <Printer size={13} /> Print
                   </button>
-                  <button onClick={() => handleDelete(p.id)} title="Delete"
+                  <button onClick={() => handleDelete(p)} title="Delete"
                     style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "7px 9px", borderRadius: 8, cursor: "pointer" }}>
                     <Trash2 size={13} />
                   </button>
@@ -244,6 +338,9 @@ export default function Payslips() {
             <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 600 }}>
               <thead>
                 <tr style={{ background: "#f8fafc" }}>
+                  <th style={{ padding: "11px 6px 11px 14px", width: 34 }}>
+                    <HeaderCheckbox checked={bulk.pageChecked(visibleIds)} indeterminate={bulk.pageIndeterminate(visibleIds)} onChange={() => bulk.togglePage(visibleIds)} />
+                  </th>
                   {["Employee", "Role", "Month", "Basic", "Allowances", "Deductions", "Net Pay", "Actions"].map(h => (
                     <th key={h} style={{ padding: "11px 14px", textAlign: "left", fontSize: 11, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", whiteSpace: "nowrap" }}>{h}</th>
                   ))}
@@ -251,7 +348,10 @@ export default function Payslips() {
               </thead>
               <tbody>
                 {filtered.map(p => (
-                  <tr key={p.id} style={{ borderTop: "1px solid var(--border)" }}>
+                  <tr key={p.id} style={{ borderTop: "1px solid var(--border)", background: bulk.isSelected(p.id) ? "var(--primary-light)" : undefined }}>
+                    <td style={{ padding: "11px 6px 11px 14px" }}>
+                      <RowCheckbox checked={bulk.isSelected(p.id)} onChange={() => bulk.toggle(p.id)} label={`Select payslip for ${p.employeeName}`} />
+                    </td>
                     <td style={{ padding: "11px 14px", fontWeight: 500 }}>{p.employeeName}</td>
                     <td style={{ padding: "11px 14px", fontSize: 13, color: "var(--text-muted)" }}>{p.role}</td>
                     <td style={{ padding: "11px 14px", fontSize: 13, whiteSpace: "nowrap" }}>{p.month} {p.year}</td>
@@ -274,7 +374,7 @@ export default function Payslips() {
                           style={{ border: "none", background: "var(--primary-light)", color: "var(--primary)", padding: "6px 10px", borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", gap: 4, fontSize: 12 }}>
                           <Printer size={13} /> Print
                         </button>
-                        <button onClick={() => handleDelete(p.id)} title="Delete payslip"
+                        <button onClick={() => handleDelete(p)} title="Delete payslip"
                           style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "6px 9px", borderRadius: 6, cursor: "pointer" }}>
                           <Trash2 size={13} />
                         </button>
@@ -288,6 +388,73 @@ export default function Payslips() {
           {filtered.length === 0 && <div style={{ padding: 40, textAlign: "center", color: "var(--text-muted)" }}>No payslips found</div>}
         </div>
       )}
+
+      {/* Bulk actions bar */}
+      <BulkBar
+        count={bulk.count}
+        total={filtered.length}
+        noun="payslips"
+        busy={bulkBusy}
+        onSelectAll={() => bulk.selectAll(filtered.map(p => p.id))}
+        onClear={bulk.clear}
+        actions={[
+          { label: "Edit", icon: Pencil, onClick: () => setShowBulkEdit(true) },
+          { label: "Pay Salaries", icon: Banknote, variant: "success", onClick: () => { setBulkPayAccount(payAccounts[0]?.name || ""); setBulkPayDate(new Date().toISOString().slice(0, 10)); setBulkPayOpen(true); } },
+          { label: "Delete", icon: Trash2, variant: "danger", onClick: handleBulkDelete },
+        ]}
+      />
+
+      {/* Bulk edit modal */}
+      {showBulkEdit && (
+        <BulkEditModal
+          title={`Edit ${bulk.count} payslip${bulk.count === 1 ? "" : "s"}`}
+          busy={bulkBusy}
+          onClose={() => setShowBulkEdit(false)}
+          onApply={handleBulkEditApply}
+          fields={[
+            { key: "month", label: "Month", type: "select", options: MONTHS.map(m => ({ value: m, label: m })) },
+            { key: "year", label: "Year", type: "number", placeholder: String(new Date().getFullYear()) },
+          ]}
+        />
+      )}
+
+      {/* Bulk pay-salaries modal */}
+      {bulkPayOpen && (() => {
+        const targets = selectedPayslips().filter(p => p.status !== "paid");
+        const totalNet = targets.reduce((s, p) => s + Number(p.netPay || 0), 0);
+        return (
+          <div onClick={(e) => { if (e.target === e.currentTarget && !bulkBusy) setBulkPayOpen(false); }} style={modalStyle}>
+            <div style={{ background: "white", borderRadius: isMobile ? "20px 20px 0 0" : 16, padding: isMobile ? "24px 20px" : 28, width: "100%", maxWidth: isMobile ? "100%" : 440 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 14 }}>
+                <h3 style={{ fontSize: 17, fontWeight: 700 }}>Pay {targets.length} Salar{targets.length === 1 ? "y" : "ies"}</h3>
+                <button onClick={() => setBulkPayOpen(false)} disabled={bulkBusy} style={{ border: "none", background: "none", cursor: "pointer" }}><X size={20} /></button>
+              </div>
+              <div style={{ background: "#f8fafc", borderRadius: 10, padding: 14, marginBottom: 16, fontSize: 13, color: "var(--text-muted)" }}>
+                Each selected pending payslip will be paid in full from the account below and marked <strong>paid</strong>.
+                {bulk.count > targets.length && <> Already-paid payslips in the selection are skipped.</>}
+                <div style={{ marginTop: 8, fontSize: 14, color: "#1e293b" }}>Total net pay: <strong>Rs. {totalNet.toLocaleString()}</strong></div>
+              </div>
+              <label style={{ display: "block", fontSize: 13, fontWeight: 600, marginBottom: 5 }}>Paid from account *</label>
+              <select value={bulkPayAccount} onChange={e => setBulkPayAccount(e.target.value)}
+                style={{ width: "100%", padding: "10px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14, marginBottom: 12, background: "white" }}>
+                <option value="">Select account</option>
+                {payAccounts.map(a => <option key={a.id} value={a.name}>{a.name}</option>)}
+              </select>
+              <label style={{ display: "block", fontSize: 13, fontWeight: 600, marginBottom: 5 }}>Payment date</label>
+              <input type="date" value={bulkPayDate} onChange={e => setBulkPayDate(e.target.value)}
+                style={{ width: "100%", padding: "10px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14, marginBottom: 18, boxSizing: "border-box" }} />
+              <div style={{ display: "flex", gap: 10 }}>
+                <button onClick={() => setBulkPayOpen(false)} disabled={bulkBusy}
+                  style={{ flex: 1, padding: "11px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", fontSize: 14, background: "white" }}>Cancel</button>
+                <button onClick={handleBulkPay} disabled={bulkBusy || targets.length === 0}
+                  style={{ flex: 2, padding: "11px", background: "#10b981", color: "white", border: "none", borderRadius: 8, cursor: bulkBusy ? "wait" : "pointer", fontWeight: 600, fontSize: 14, opacity: bulkBusy ? 0.7 : 1 }}>
+                  {bulkBusy ? "Paying…" : `Pay Rs. ${totalNet.toLocaleString()}`}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Recurring Modal */}
       {showRecurring && (

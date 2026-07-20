@@ -1,13 +1,18 @@
 import React, { useEffect, useState } from "react";
 import { db } from "../firebase";
-import { collection, addDoc, deleteDoc, doc, onSnapshot, serverTimestamp } from "../firebase";
+import { collection, addDoc, deleteDoc, doc, onSnapshot, serverTimestamp, updateDocs, deleteDocs } from "../firebase";
 import { useBranch } from "../context/BranchContext";
 import { useCollection } from "../hooks/useCollection";
+import { useBulkSelect } from "../hooks/useBulkSelect";
 import ListToolbar from "../components/UI/ListToolbar";
 import Pagination from "../components/UI/Pagination";
+import BulkBar, { RowCheckbox, HeaderCheckbox } from "../components/UI/BulkBar";
+import BulkEditModal from "../components/UI/BulkEditModal";
+import { bulkResultMessage } from "../utils/bulk";
+import { logActivity } from "../utils/auditLog";
 import { exportToCSV, exportToPDF } from "../utils/exportUtils";
 import toast from "react-hot-toast";
-import { Plus, X, ArrowUpCircle, ArrowDownCircle, Trash2, Download, FileText } from "lucide-react";
+import { Plus, X, ArrowUpCircle, ArrowDownCircle, Trash2, Download, FileText, Pencil } from "lucide-react";
 
 const CATEGORIES = ["Fee Collection", "Salary Payment", "Rent", "Utilities", "Supplies", "Maintenance", "Bank Deposit", "Bank Withdrawal", "Other"];
 const emptyLine = { account: "", description: "", category: "", amount: "", type: "cash_out" };
@@ -66,6 +71,12 @@ export default function Payments() {
 
   useEffect(() => { setPage(1); }, [search, filterType, filterCategory, filterDateFrom, filterDateTo, pageSize, activeBranch]);
 
+  // multi-select for bulk actions
+  const bulk = useBulkSelect(filtered.map(p => p.id));
+  const pagedIds = paged.map(p => p.id);
+  const [showBulkEdit, setShowBulkEdit] = useState(false);
+  const [bulkBusy, setBulkBusy] = useState(false);
+
   const bankCashAccounts = accounts.filter(a => a.subType === "Bank & Cash" || a.type === "Assets");
 
   const totalIn = filtered.filter(p => p.type === "cash_in").reduce((s, p) => s + Number(p.amount), 0);
@@ -75,6 +86,7 @@ export default function Payments() {
     e.preventDefault();
     await addDoc(collection(db, "payments"), { ...form, createdAt: serverTimestamp() });
     toast.success("Payment recorded");
+    logActivity("recorded", "Payments", `${form.type === "cash_in" ? "Cash in" : "Cash out"} Rs. ${Number(form.amount || 0).toLocaleString()} — ${form.account}${form.description ? ` (${form.description})` : ""}`);
     setShowModal(false);
     setForm({ type: "cash_in", account: "", description: "", amount: "", date: "", reference: "", branchId: "", category: "" });
   };
@@ -87,15 +99,50 @@ export default function Payments() {
       addDoc(collection(db, "payments"), { ...line, date: bulkDate, reference: bulkRef, createdAt: serverTimestamp() })
     ));
     toast.success(`${valid.length} payments recorded`);
+    logActivity("recorded", "Payments", `${valid.length} payments (bulk entry)`);
     setShowModal(false);
     setBulkLines([{ ...emptyLine }, { ...emptyLine }]);
     setBulkDate(""); setBulkRef("");
   };
 
-  const handleDelete = async (id) => {
-    if (!window.confirm("Delete this payment? This cannot be undone.")) return;
-    try { await deleteDoc(doc(db, "payments", id)); toast.success("Payment deleted"); }
+  const handleDelete = async (p) => {
+    if (!window.confirm("Delete this payment? Account balances will change. You can restore it from Trash.")) return;
+    try {
+      await deleteDoc(doc(db, "payments", p.id));
+      toast.success("Payment moved to Trash");
+      logActivity("deleted", "Payments", `${p.type === "cash_in" ? "Cash in" : "Cash out"} Rs. ${Number(p.amount || 0).toLocaleString()} — ${p.account}${p.description ? ` (${p.description})` : ""}`);
+    }
     catch { toast.error("Error deleting"); }
+  };
+
+  const handleBulkDelete = async () => {
+    const ids = [...bulk.selected];
+    if (ids.length === 0) return;
+    if (!window.confirm(`Delete ${ids.length} payment${ids.length === 1 ? "" : "s"}? Account balances will change accordingly. You can restore them from Trash.`)) return;
+    setBulkBusy(true);
+    try {
+      await deleteDocs("payments", ids);
+      toast.success(bulkResultMessage(ids.length, 0, "moved to Trash", "payments"));
+      logActivity("deleted", "Payments", `${ids.length} payments (bulk)`);
+      bulk.clear();
+    } catch (err) {
+      toast.error(err?.message || "Bulk delete failed");
+    } finally { setBulkBusy(false); }
+  };
+
+  const handleBulkEditApply = async (changes) => {
+    setBulkBusy(true);
+    try {
+      const n = bulk.count;
+      if (changes.branchId === "main") changes.branchId = "";
+      await updateDocs("payments", [...bulk.selected], { ...changes, updatedAt: serverTimestamp() });
+      toast.success(`${n} payment${n === 1 ? "" : "s"} updated`);
+      logActivity("updated", "Payments", `${n} payments (bulk): ${Object.keys(changes).join(", ")}`);
+      setShowBulkEdit(false);
+      bulk.clear();
+    } catch (err) {
+      toast.error(err?.message || "Bulk update failed");
+    } finally { setBulkBusy(false); }
   };
 
   const updateBulkLine = (idx, field, value) =>
@@ -183,11 +230,16 @@ export default function Payments() {
       {isMobile ? (
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           {paged.map(p => (
-            <div key={p.id} style={{ background: "white", borderRadius: 12, padding: 16, border: "1px solid var(--border)" }}>
+            <div key={p.id} style={{ background: "white", borderRadius: 12, padding: 16, border: bulk.isSelected(p.id) ? "1.5px solid var(--primary)" : "1px solid var(--border)" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
-                <div>
-                  <div style={{ fontWeight: 600, fontSize: 15 }}>{p.description}</div>
-                  <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>{p.date} · {p.account}</div>
+                <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+                  <div style={{ paddingTop: 3 }}>
+                    <RowCheckbox checked={bulk.isSelected(p.id)} onChange={() => bulk.toggle(p.id)} label={`Select payment ${p.description || p.id}`} />
+                  </div>
+                  <div>
+                    <div style={{ fontWeight: 600, fontSize: 15 }}>{p.description}</div>
+                    <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>{p.date} · {p.account}</div>
+                  </div>
                 </div>
                 <span style={{ padding: "3px 10px", borderRadius: 20, fontSize: 12, fontWeight: 600, background: p.type === "cash_in" ? "#ecfdf5" : "#fef2f2", color: p.type === "cash_in" ? "#10b981" : "#ef4444", flexShrink: 0, marginLeft: 8 }}>
                   {p.type === "cash_in" ? "In" : "Out"}
@@ -199,7 +251,7 @@ export default function Payments() {
                   <div style={{ fontSize: 18, fontWeight: 700, color: p.type === "cash_in" ? "#10b981" : "#ef4444" }}>
                     {p.type === "cash_in" ? "+" : "-"}Rs. {Number(p.amount).toLocaleString()}
                   </div>
-                  <button onClick={() => handleDelete(p.id)} style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "6px 9px", borderRadius: 6, cursor: "pointer" }}><Trash2 size={13} /></button>
+                  <button onClick={() => handleDelete(p)} style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "6px 9px", borderRadius: 6, cursor: "pointer" }}><Trash2 size={13} /></button>
                 </div>
               </div>
             </div>
@@ -213,6 +265,9 @@ export default function Payments() {
             <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 600 }}>
               <thead>
                 <tr style={{ background: "#f8fafc" }}>
+                  <th style={{ padding: "11px 6px 11px 14px", width: 34 }}>
+                    <HeaderCheckbox checked={bulk.pageChecked(pagedIds)} indeterminate={bulk.pageIndeterminate(pagedIds)} onChange={() => bulk.togglePage(pagedIds)} />
+                  </th>
                   {["Date", "Type", "Account", "Category", "Description", "Reference", "Amount"].map(h => (
                     <th key={h} style={{ padding: "11px 14px", textAlign: "left", fontSize: 11, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", whiteSpace: "nowrap" }}>{h}</th>
                   ))}
@@ -221,7 +276,10 @@ export default function Payments() {
               </thead>
               <tbody>
                 {paged.map(p => (
-                  <tr key={p.id} style={{ borderTop: "1px solid var(--border)" }}>
+                  <tr key={p.id} style={{ borderTop: "1px solid var(--border)", background: bulk.isSelected(p.id) ? "var(--primary-light)" : undefined }}>
+                    <td style={{ padding: "11px 6px 11px 14px" }}>
+                      <RowCheckbox checked={bulk.isSelected(p.id)} onChange={() => bulk.toggle(p.id)} label={`Select payment ${p.description || p.id}`} />
+                    </td>
                     <td style={{ padding: "11px 14px", fontSize: 13, whiteSpace: "nowrap" }}>{p.date}</td>
                     <td style={{ padding: "11px 14px" }}>
                       <span style={{ padding: "3px 10px", borderRadius: 20, fontSize: 11, fontWeight: 600, background: p.type === "cash_in" ? "#ecfdf5" : "#fef2f2", color: p.type === "cash_in" ? "#10b981" : "#ef4444", whiteSpace: "nowrap" }}>
@@ -236,7 +294,7 @@ export default function Payments() {
                       {p.type === "cash_in" ? "+" : "-"}Rs. {Number(p.amount).toLocaleString()}
                     </td>
                     <td style={{ padding: "11px 14px", textAlign: "right" }}>
-                      <button onClick={() => handleDelete(p.id)} style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "7px 9px", borderRadius: 8, cursor: "pointer" }}><Trash2 size={14} /></button>
+                      <button onClick={() => handleDelete(p)} style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "7px 9px", borderRadius: 8, cursor: "pointer" }}><Trash2 size={14} /></button>
                     </td>
                   </tr>
                 ))}
@@ -251,6 +309,37 @@ export default function Payments() {
         page={safePage} pageCount={pageCount} total={total} pageSize={pageSize}
         onPage={setPage} onPageSize={setPageSize}
       />
+
+      {/* Bulk actions bar */}
+      <BulkBar
+        count={bulk.count}
+        total={filtered.length}
+        noun="payments"
+        busy={bulkBusy}
+        onSelectAll={() => bulk.selectAll(filtered.map(p => p.id))}
+        onClear={bulk.clear}
+        actions={[
+          { label: "Edit", icon: Pencil, onClick: () => setShowBulkEdit(true) },
+          { label: "Delete", icon: Trash2, variant: "danger", onClick: handleBulkDelete },
+        ]}
+      />
+
+      {/* Bulk edit modal */}
+      {showBulkEdit && (
+        <BulkEditModal
+          title={`Edit ${bulk.count} payment${bulk.count === 1 ? "" : "s"}`}
+          note="Tick a field to change it on every selected payment. Changing the account or date moves those amounts between account balances and periods."
+          busy={bulkBusy}
+          onClose={() => setShowBulkEdit(false)}
+          onApply={handleBulkEditApply}
+          fields={[
+            { key: "date", label: "Date", type: "date" },
+            { key: "category", label: "Category", type: "select", options: CATEGORIES.map(c => ({ value: c, label: c })) },
+            { key: "account", label: "Account", type: "select", options: bankCashAccounts.map(a => ({ value: a.name, label: a.name })) },
+            { key: "branchId", label: "Branch", type: "select", options: [{ value: "main", label: "Main" }, ...branches.map(b => ({ value: b.id, label: b.name }))] },
+          ]}
+        />
+      )}
 
       {/* Modal */}
       {showModal && (

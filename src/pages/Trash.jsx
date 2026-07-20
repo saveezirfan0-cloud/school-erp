@@ -1,6 +1,10 @@
 import React, { useState, useEffect } from "react";
-import { db, trashCollection, doc, onSnapshot, restoreDoc, hardDeleteDoc, emptyTrash } from "../firebase";
+import { db, trashCollection, doc, onSnapshot, restoreDoc, hardDeleteDoc, emptyTrash, restoreDocs, hardDeleteDocs } from "../firebase";
 import { useUser } from "../context/UserContext";
+import { useBulkSelect } from "../hooks/useBulkSelect";
+import BulkBar, { RowCheckbox, HeaderCheckbox } from "../components/UI/BulkBar";
+import { bulkResultMessage } from "../utils/bulk";
+import { logActivity } from "../utils/auditLog";
 import toast from "react-hot-toast";
 import { Trash2, RotateCcw, X, AlertTriangle } from "lucide-react";
 
@@ -37,21 +41,64 @@ export default function Trash() {
     return unsub;
   }, [active]);
 
-  const handleRestore = async (id) => {
-    try { await restoreDoc(doc(db, active, id)); toast.success("Restored"); }
+  const handleRestore = async (r) => {
+    try {
+      await restoreDoc(doc(db, active, r.id));
+      toast.success("Restored");
+      logActivity("restored", "Trash", `${source.label}: ${r[source.primary] || r.id}`);
+    }
     catch (e) { toast.error(e?.message || "Error restoring"); }
   };
 
-  const handleDeleteForever = async (id) => {
+  const handleDeleteForever = async (r) => {
     if (!window.confirm("Permanently delete this record? This cannot be undone.")) return;
-    try { await hardDeleteDoc(doc(db, active, id)); toast.success("Deleted permanently"); }
+    try {
+      await hardDeleteDoc(doc(db, active, r.id));
+      toast.success("Deleted permanently");
+      logActivity("deleted forever", "Trash", `${source.label}: ${r[source.primary] || r.id}`);
+    }
     catch (e) { toast.error(e?.message || "Error deleting"); }
+  };
+
+  // multi-select for bulk restore / permanent delete. Switching tabs
+  // changes the visible ids, so stale selections prune automatically.
+  const bulk = useBulkSelect(rows.map((r) => r.id));
+  const visibleIds = rows.map((r) => r.id);
+  const [bulkBusy, setBulkBusy] = useState(false);
+
+  const handleBulkRestore = async () => {
+    const ids = [...bulk.selected];
+    if (ids.length === 0) return;
+    setBulkBusy(true);
+    try {
+      await restoreDocs(active, ids);
+      toast.success(bulkResultMessage(ids.length, 0, "restored", source.label.toLowerCase()));
+      logActivity("restored", "Trash", `${ids.length} ${source.label.toLowerCase()} (bulk)`);
+      bulk.clear();
+    } catch (e) {
+      toast.error(e?.message || "Bulk restore failed");
+    } finally { setBulkBusy(false); }
+  };
+
+  const handleBulkDeleteForever = async () => {
+    const ids = [...bulk.selected];
+    if (ids.length === 0) return;
+    if (!window.confirm(`Permanently delete ${ids.length} ${source.label.toLowerCase()}? This cannot be undone.`)) return;
+    setBulkBusy(true);
+    try {
+      await hardDeleteDocs(active, ids);
+      toast.success(bulkResultMessage(ids.length, 0, "deleted permanently", source.label.toLowerCase()));
+      logActivity("deleted forever", "Trash", `${ids.length} ${source.label.toLowerCase()} (bulk)`);
+      bulk.clear();
+    } catch (e) {
+      toast.error(e?.message || "Bulk delete failed");
+    } finally { setBulkBusy(false); }
   };
 
   const handleEmpty = async () => {
     if (!rows.length) return;
     if (!window.confirm(`Permanently delete all ${rows.length} ${source.label.toLowerCase()} in Trash? This cannot be undone.`)) return;
-    try { await emptyTrash(active); toast.success("Trash emptied"); }
+    try { await emptyTrash(active); toast.success("Trash emptied"); logActivity("emptied trash", "Trash", `${rows.length} ${source.label.toLowerCase()} deleted forever`); }
     catch (e) { toast.error(e?.message || "Error emptying trash"); }
   };
 
@@ -91,29 +138,52 @@ export default function Trash() {
             <div>No {source.label.toLowerCase()} in Trash</div>
           </div>
         ) : (
-          rows.map((r) => (
-            <div key={r.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 16px", borderTop: "1px solid var(--border)", gap: 10 }}>
-              <div style={{ minWidth: 0 }}>
-                <div style={{ fontWeight: 600, fontSize: 14, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r[source.primary] || "—"}</div>
-                <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
-                  {source.secondary(r)}
-                  {r.deletedAt && <span> • deleted {new Date(r.deletedAt).toLocaleDateString()}</span>}
+          <>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 16px", background: "#f8fafc" }}>
+              <HeaderCheckbox checked={bulk.pageChecked(visibleIds)} indeterminate={bulk.pageIndeterminate(visibleIds)} onChange={() => bulk.togglePage(visibleIds)} />
+              <span style={{ fontSize: 12, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase" }}>Select all</span>
+            </div>
+            {rows.map((r) => (
+            <div key={r.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 16px", borderTop: "1px solid var(--border)", gap: 10, background: bulk.isSelected(r.id) ? "var(--primary-light)" : undefined }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
+                <RowCheckbox checked={bulk.isSelected(r.id)} onChange={() => bulk.toggle(r.id)} label={`Select ${r[source.primary] || "record"}`} />
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontWeight: 600, fontSize: 14, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r[source.primary] || "—"}</div>
+                  <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                    {source.secondary(r)}
+                    {r.deletedAt && <span> • deleted {new Date(r.deletedAt).toLocaleDateString()}</span>}
+                  </div>
                 </div>
               </div>
               <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
-                <button onClick={() => handleRestore(r.id)} title="Restore"
+                <button onClick={() => handleRestore(r)} title="Restore"
                   style={{ display: "flex", alignItems: "center", gap: 5, border: "1px solid var(--border)", background: "white", color: "#16a34a", padding: "7px 11px", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 600 }}>
                   <RotateCcw size={14} /> Restore
                 </button>
-                <button onClick={() => handleDeleteForever(r.id)} title="Delete forever"
+                <button onClick={() => handleDeleteForever(r)} title="Delete forever"
                   style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "7px 9px", borderRadius: 8, cursor: "pointer" }}>
                   <X size={16} />
                 </button>
               </div>
             </div>
-          ))
+            ))}
+          </>
         )}
       </div>
+
+      {/* Bulk actions bar */}
+      <BulkBar
+        count={bulk.count}
+        total={rows.length}
+        noun={source.label.toLowerCase()}
+        busy={bulkBusy}
+        onSelectAll={() => bulk.selectAll(rows.map((r) => r.id))}
+        onClear={bulk.clear}
+        actions={[
+          { label: "Restore", icon: RotateCcw, variant: "success", onClick: handleBulkRestore },
+          { label: "Delete Forever", icon: Trash2, variant: "danger", onClick: handleBulkDeleteForever },
+        ]}
+      />
 
       <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 12 }}>
         Deleted records are kept here until you restore them or permanently delete them. Permanent deletion cannot be undone.
