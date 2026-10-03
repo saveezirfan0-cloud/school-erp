@@ -176,7 +176,7 @@ export default function Employees() {
               </div>
               <div style={{ display: "flex", gap: 6 }}>
                 <button onClick={() => { setForm(emp); setEditing(emp.id); setShowModal(true); }} style={{ border: "none", background: "var(--primary-light)", color: "var(--primary)", padding: "6px 8px", borderRadius: 6, cursor: "pointer" }}><Edit2 size={13} /></button>
-                <button onClick={() => handleDeleteOne(emp)} style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "6px 8px", borderRadius: 6, cursor: "pointer" }}><Trash2 size={13} /></button>
+                {can("canDeleteEmployees") && <button onClick={() => handleDeleteOne(emp)} style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "6px 8px", borderRadius: 6, cursor: "pointer" }}><Trash2 size={13} /></button>}
               </div>
             </div>
             <div style={{ marginTop: 12 }}>
@@ -209,7 +209,7 @@ export default function Employees() {
         onClear={bulk.clear}
         actions={[
           { label: "Edit", icon: Edit2, onClick: () => setShowBulkEdit(true) },
-          { label: "Delete", icon: Trash2, variant: "danger", onClick: handleBulkDelete },
+          ...(can("canDeleteEmployees") ? [{ label: "Delete", icon: Trash2, variant: "danger", onClick: handleBulkDelete }] : []),
         ]}
       />
 

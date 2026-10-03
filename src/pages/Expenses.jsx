@@ -310,10 +310,10 @@ export default function Expenses() {
                     <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>{exp.date}</div>
                   </div>
                 </div>
-                <button onClick={() => handleDelete(exp)}
+                {can("canDeleteExpenses") && <button onClick={() => handleDelete(exp)}
                   style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "7px 9px", borderRadius: 8, cursor: "pointer", flexShrink: 0 }}>
                   <Trash2 size={14} />
-                </button>
+                </button>}
               </div>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -372,10 +372,10 @@ export default function Expenses() {
                       Rs. {Number(exp.amount).toLocaleString()}
                     </td>
                     <td style={{ padding: "11px 14px" }}>
-                      <button onClick={() => handleDelete(exp)}
+                      {can("canDeleteExpenses") && <button onClick={() => handleDelete(exp)}
                         style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "6px 10px", borderRadius: 6, cursor: "pointer" }}>
                         <Trash2 size={13} />
-                      </button>
+                      </button>}
                     </td>
                   </tr>
                 ))}
@@ -403,7 +403,7 @@ export default function Expenses() {
         onClear={bulk.clear}
         actions={[
           { label: "Edit", icon: Pencil, onClick: () => setShowBulkEdit(true) },
-          { label: "Delete", icon: Trash2, variant: "danger", onClick: handleBulkDelete },
+          ...(can("canDeleteExpenses") ? [{ label: "Delete", icon: Trash2, variant: "danger", onClick: handleBulkDelete }] : []),
         ]}
       />
 

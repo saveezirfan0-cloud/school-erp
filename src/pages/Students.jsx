@@ -189,7 +189,7 @@ export default function Students() {
                 <div style={{ display: "flex", gap: 6 }}>
                   <button onClick={() => navigate(`/students/${s.id}/ledger`)} title="Ledger" style={{ border: "none", background: "#eff6ff", color: "#2563eb", padding: "7px 9px", borderRadius: 8, cursor: "pointer" }}><Receipt size={14} /></button>
                   <button onClick={() => { setForm(s); setEditing(s.id); setShowModal(true); }} style={{ border: "none", background: "var(--primary-light)", color: "var(--primary)", padding: "7px 9px", borderRadius: 8, cursor: "pointer" }}><Edit2 size={14} /></button>
-                  <button onClick={() => handleDelete(s)} style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "7px 9px", borderRadius: 8, cursor: "pointer" }}><Trash2 size={14} /></button>
+                  {can("canDeleteStudents") && <button onClick={() => handleDelete(s)} style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "7px 9px", borderRadius: 8, cursor: "pointer" }}><Trash2 size={14} /></button>}
                 </div>
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
@@ -242,7 +242,7 @@ export default function Students() {
                       <div style={{ display: "flex", gap: 6 }}>
                         <button onClick={() => navigate(`/students/${s.id}/ledger`)} title="Ledger" style={{ border: "none", background: "#eff6ff", color: "#2563eb", padding: "6px 9px", borderRadius: 6, cursor: "pointer" }}><Receipt size={13} /></button>
                         <button onClick={() => { setForm(s); setEditing(s.id); setShowModal(true); }} style={{ border: "none", background: "var(--primary-light)", color: "var(--primary)", padding: "6px 9px", borderRadius: 6, cursor: "pointer" }}><Edit2 size={13} /></button>
-                        <button onClick={() => handleDelete(s)} style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "6px 9px", borderRadius: 6, cursor: "pointer" }}><Trash2 size={13} /></button>
+                        {can("canDeleteStudents") && <button onClick={() => handleDelete(s)} style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "6px 9px", borderRadius: 6, cursor: "pointer" }}><Trash2 size={13} /></button>}
                       </div>
                     </td>
                   </tr>
@@ -269,7 +269,7 @@ export default function Students() {
         onClear={bulk.clear}
         actions={[
           { label: "Edit", icon: Edit2, onClick: () => setShowBulkEdit(true) },
-          { label: "Delete", icon: Trash2, variant: "danger", onClick: handleBulkDelete },
+          ...(can("canDeleteStudents") ? [{ label: "Delete", icon: Trash2, variant: "danger", onClick: handleBulkDelete }] : []),
         ]}
       />
 

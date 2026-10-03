@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import { useUser } from "../context/UserContext";
 import { db } from "../firebase";
 import { collection, addDoc, deleteDoc, doc, onSnapshot, serverTimestamp, updateDocs, deleteDocs } from "../firebase";
 import { parsePositiveAmount, todayLocal, isIsoDate, formatMoney } from "../utils/money";
@@ -17,6 +18,7 @@ import { Plus, X, Trash2, Pencil } from "lucide-react";
 const makeEmpty = () => ({ date: todayLocal(), reference: "", description: "", debitAccountId: "", creditAccountId: "", amount: "", notes: "" });
 
 export default function Journals() {
+  const { can } = useUser();
   const [journals, setJournals] = useState([]);
   const { accounts } = useAccounts();
   const { busy: submitting, run: runSubmit } = useSubmitLock();
@@ -151,7 +153,7 @@ export default function Journals() {
                 <td style={{ padding: "12px 16px", fontSize: 14, fontWeight: 700 }}>Rs. {formatMoney(j.amount)}</td>
                 <td style={{ padding: "12px 16px", fontSize: 13, color: "var(--text-muted)" }}>{j.notes}</td>
                 <td style={{ padding: "12px 16px", textAlign: "right" }}>
-                  <button onClick={() => handleDelete(j)} style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "7px 9px", borderRadius: 8, cursor: "pointer" }}><Trash2 size={14} /></button>
+                  {can("canDeleteJournals") && <button onClick={() => handleDelete(j)} style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "7px 9px", borderRadius: 8, cursor: "pointer" }}><Trash2 size={14} /></button>}
                 </td>
               </tr>
             ))}
@@ -170,7 +172,7 @@ export default function Journals() {
         onClear={bulk.clear}
         actions={[
           { label: "Edit", icon: Pencil, onClick: () => setShowBulkEdit(true) },
-          { label: "Delete", icon: Trash2, variant: "danger", onClick: handleBulkDelete },
+          ...(can("canDeleteJournals") ? [{ label: "Delete", icon: Trash2, variant: "danger", onClick: handleBulkDelete }] : []),
         ]}
       />
 

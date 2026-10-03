@@ -588,10 +588,10 @@ export default function Fees() {
                   style={{ flex: 1, border: "none", background: "var(--primary-light)", color: "var(--primary)", padding: "10px", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 600 }}>
                   View
                 </button>
-                <button onClick={() => handleDelete(inv)} title="Delete invoice"
+                {can("canDeleteFees") && <button onClick={() => handleDelete(inv)} title="Delete invoice"
                   style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "10px 12px", borderRadius: 8, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
                   <Trash2 size={15} />
-                </button>
+                </button>}
               </div>
             </div>
           ))}
@@ -647,7 +647,7 @@ export default function Fees() {
                         )}
                         <button onClick={() => sendReminder(inv)} style={{ border: "none", background: "#f0fdf4", color: "#16a34a", padding: "5px 9px", borderRadius: 6, cursor: "pointer", fontSize: 11 }}>Remind</button>
                         <button onClick={() => setSelectedInvoice(inv)} style={{ border: "none", background: "var(--primary-light)", color: "var(--primary)", padding: "5px 9px", borderRadius: 6, cursor: "pointer", fontSize: 11 }}>View</button>
-                        <button onClick={() => handleDelete(inv)} title="Delete invoice" style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "5px 8px", borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center" }}><Trash2 size={13} /></button>
+                        {can("canDeleteFees") && <button onClick={() => handleDelete(inv)} title="Delete invoice" style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "5px 8px", borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center" }}><Trash2 size={13} /></button>}
                       </div>
                     </td>
                   </tr>
@@ -675,7 +675,7 @@ export default function Fees() {
         actions={[
           { label: "Edit", icon: Pencil, onClick: () => setShowBulkEdit(true) },
           { label: "Mark Paid", icon: CheckCircle, variant: "success", onClick: () => { setBulkPayAccount(defaultAccountId()); setBulkPayDate(todayLocal()); setBulkPayWhatsApp(false); setBulkPayModal(true); } },
-          { label: "Delete", icon: Trash2, variant: "danger", onClick: handleBulkDelete },
+          ...(can("canDeleteFees") ? [{ label: "Delete", icon: Trash2, variant: "danger", onClick: handleBulkDelete }] : []),
         ]}
       />
 

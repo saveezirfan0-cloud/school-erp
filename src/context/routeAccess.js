@@ -30,4 +30,8 @@ export const DELETE_PERMISSIONS = [
   "canDeleteStudents",
   "canDeleteEmployees",
   "canDeleteExpenses",
+  "canDeleteFees",
+  "canDeletePayslips",
+  "canDeletePayments",
+  "canDeleteJournals",
 ];

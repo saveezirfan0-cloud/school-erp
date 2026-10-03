@@ -333,10 +333,10 @@ export default function Payslips() {
                     style={{ border: "none", background: "var(--primary-light)", color: "var(--primary)", padding: "7px 10px", borderRadius: 8, cursor: "pointer", display: "flex", alignItems: "center", gap: 4, fontSize: 12 }}>
                     <Printer size={13} /> Print
                   </button>
-                  <button onClick={() => handleDelete(p)} title="Delete"
+                  {can("canDeletePayslips") && <button onClick={() => handleDelete(p)} title="Delete"
                     style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "7px 9px", borderRadius: 8, cursor: "pointer" }}>
                     <Trash2 size={13} />
-                  </button>
+                  </button>}
                 </div>
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
@@ -395,10 +395,10 @@ export default function Payslips() {
                           style={{ border: "none", background: "var(--primary-light)", color: "var(--primary)", padding: "6px 10px", borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", gap: 4, fontSize: 12 }}>
                           <Printer size={13} /> Print
                         </button>
-                        <button onClick={() => handleDelete(p)} title="Delete payslip"
+                        {can("canDeletePayslips") && <button onClick={() => handleDelete(p)} title="Delete payslip"
                           style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "6px 9px", borderRadius: 6, cursor: "pointer" }}>
                           <Trash2 size={13} />
-                        </button>
+                        </button>}
                       </div>
                     </td>
                   </tr>
@@ -421,7 +421,7 @@ export default function Payslips() {
         actions={[
           { label: "Edit", icon: Pencil, onClick: () => setShowBulkEdit(true) },
           { label: "Pay Salaries", icon: Banknote, variant: "success", onClick: () => { setBulkPayAccount(pickDefaultAccountId(postable)); setBulkPayDate(todayLocal()); setBulkPayOpen(true); } },
-          { label: "Delete", icon: Trash2, variant: "danger", onClick: handleBulkDelete },
+          ...(can("canDeletePayslips") ? [{ label: "Delete", icon: Trash2, variant: "danger", onClick: handleBulkDelete }] : []),
         ]}
       />
 
