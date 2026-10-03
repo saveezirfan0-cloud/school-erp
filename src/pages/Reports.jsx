@@ -3,6 +3,7 @@ import { db } from "../firebase";
 import { collection, getDocs } from "../firebase";
 import { useBranch } from "../context/BranchContext";
 import { toDate } from "../utils/dates";
+import { matchesBranch } from "../utils/branchFilter";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line } from "recharts";
 
 export default function Reports() {
@@ -19,9 +20,11 @@ export default function Reports() {
         getDocs(collection(db, "accounts")),
       ]);
 
-      const invoices = invoicesSnap.docs.map(d => d.data());
-      const expenses = expSnap.docs.map(d => d.data());
-      const payslips = payslipsSnap.docs.map(d => d.data());
+      // Scope to the active workspace / branch filter. Chart of accounts is
+      // organisation-wide, so it is not filtered.
+      const invoices = invoicesSnap.docs.map(d => d.data()).filter(i => matchesBranch(i, activeBranch));
+      const expenses = expSnap.docs.map(d => d.data()).filter(e => matchesBranch(e, activeBranch));
+      const payslips = payslipsSnap.docs.map(d => d.data()).filter(p => matchesBranch(p, activeBranch));
       const accounts = accountsSnap.docs.map(d => d.data());
 
       // Collected = actual money received (paid_amount), not the

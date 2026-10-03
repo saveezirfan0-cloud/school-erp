@@ -105,6 +105,31 @@ const SOFT_DELETE_TABLES = new Set([
   "payslips", "accounts", "journals", "branches", "reminder_logs",
 ]);
 
+// ---- Historical data scope ----
+//
+// Records imported from the old Manager.io books are tagged
+// `extra.historical = true`. They are hidden from every list read by default
+// so current-year screens and totals (Dashboard, Reports, Bank & Cash balances,
+// pending fees...) are unaffected. Turning the "History" toggle on in the
+// navbar includes them everywhere.
+const HISTORY_TABLES = new Set([
+  "students", "employees", "invoices", "expenses", "payments", "payslips", "journals",
+]);
+const HISTORY_KEY = "showHistorical";
+
+export function isHistoryVisible() {
+  try { return localStorage.getItem(HISTORY_KEY) === "1"; } catch { return false; }
+}
+
+// Persist the choice and reload so every open listener re-fetches with the new scope.
+export function setHistoryVisible(on) {
+  try { localStorage.setItem(HISTORY_KEY, on ? "1" : "0"); } catch { /* storage blocked */ }
+  window.location.reload();
+}
+
+const hiddenByHistory = (table, row) =>
+  HISTORY_TABLES.has(table) && !isHistoryVisible() && row?.extra?.historical === true;
+
 // ---- Reference objects (mirror Firestore's CollectionReference / DocumentReference) ----
 class CollectionRef {
   constructor(name) {
@@ -203,6 +228,10 @@ function applyQuery(builder, ref) {
     else builder = builder.is("deleted_at", null);
   }
   for (const w of ref._where || []) builder = builder.eq(w.col, w.value);
+  // Hide imported historical rows unless the History toggle is on.
+  if (HISTORY_TABLES.has(ref.table) && !isHistoryVisible()) {
+    builder = builder.or("extra->>historical.is.null,extra->>historical.neq.true");
+  }
   if (ref._order) builder = builder.order(ref._order.col, { ascending: ref._order.ascending });
   if (ref._limit != null) builder = builder.limit(ref._limit);
   return builder;
@@ -496,6 +525,7 @@ export function onSnapshot(ref, onNext, onError) {
         const soft = SOFT_DELETE_TABLES.has(ref.table);
         const belongs = (row) => {
           if (!matchesWhere(row)) return false;
+          if (hiddenByHistory(ref.table, row)) return false;
           if (!soft) return true;
           const isTrashed = row && row.deleted_at != null;
           return ref._trashed ? isTrashed : !isTrashed;
