@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { db, collection, onSnapshot, doc, updateDoc } from "../firebase";
+import { db, collection, onSnapshot, updateDocs } from "../firebase";
 import { useUser } from "../context/UserContext";
 import { PERMISSIONS } from "../context/UserContext";
 import toast from "react-hot-toast";
@@ -78,7 +78,7 @@ export default function AccessOverview() {
     // optimistic
     setSelected({ ...selected, pagePermissions: overrides });
     try {
-      await updateDoc(doc(db, "users", selected.id), { pagePermissions: overrides });
+      await updateDocs("users", [selected.id], { pagePermissions: overrides });
     } catch (e) {
       toast.error(e?.message || "Couldn't save");
     }
