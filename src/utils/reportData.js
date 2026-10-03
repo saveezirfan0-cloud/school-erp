@@ -15,6 +15,8 @@
 
 import { toDate } from "./dates";
 import { matchesBranch } from "./branchFilter";
+// Same definitions of "collected" / "outstanding" as Dashboard and Fees & Invoices.
+import { invoiceCollected, invoiceOutstanding, invoicePaymentDate } from "./invoiceTotals";
 
 export const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 const MONTH_SHORT = MONTH_NAMES.map(m => m.slice(0, 3));
@@ -64,7 +66,7 @@ export const recordDate = {
     return parseDay(inv.date) || parseDay(inv.dueDate) || parseDay(inv.createdAt);
   },
   invoiceCollected(inv) {
-    return parseDay(inv.paidDate) || parseDay(inv.updatedAt) || parseDay(inv.createdAt);
+    return parseDay(inv.paidDate) || invoicePaymentDate(inv);
   },
   expense(e) {
     return parseDay(e.date) || parseDay(e.createdAt);
@@ -249,16 +251,11 @@ export const keyFor = (date, g) => bucketKey(bucketStart(date, g), g);
 const norm = (s) => (s || "").toString().trim().replace(/\s+/g, " ");
 const uncategorised = (s, fallback) => norm(s) || fallback;
 
-export function outstandingOf(inv) {
-  if (inv.status === "paid") return 0;
-  return Math.max(0, num(inv.amount) - num(inv.paidAmount) - num(inv.concessionAmount));
-}
-
 // pending / partial / paid, plus "overdue" for anything unpaid past its
 // due date (the app never writes an overdue status itself).
 export function effectiveStatus(inv, today = new Date()) {
   if (inv.status === "paid") return "paid";
-  if (outstandingOf(inv) <= 0) return "paid";
+  if (invoiceOutstanding(inv) <= 0) return "paid";
   const due = parseDay(inv.dueDate);
   if (due && endOfDay(due) < today) return "overdue";
   return inv.status === "partial" ? "partial" : "pending";
@@ -281,11 +278,11 @@ export function prepareData(raw) {
     return {
       ...i,
       _billedOn: recordDate.invoiceBilled(i),
-      _collectedOn: num(i.paidAmount) > 0 || i.status === "paid" ? recordDate.invoiceCollected(i) : null,
+      _collectedOn: invoiceCollected(i) > 0 ? recordDate.invoiceCollected(i) : null,
       _amount: num(i.amount),
-      _paid: num(i.paidAmount),
+      _paid: invoiceCollected(i),
       _concession: num(i.concessionAmount),
-      _outstanding: outstandingOf(i),
+      _outstanding: invoiceOutstanding(i),
       _grade: norm(st?.grade) || "Unassigned",
       _student: norm(i.studentName) || norm(st?.name) || "Unknown student",
       _studentCode: st?.studentId || "",

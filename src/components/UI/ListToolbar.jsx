@@ -5,10 +5,12 @@
 
 import React from "react";
 import { Search, X, ArrowUpDown } from "lucide-react";
+import MultiSelect from "./MultiSelect";
 
 export default function ListToolbar({
   search, onSearch, searchPlaceholder = "Search...",
-  filters = [],        // [{ key, value, onChange, options:[{value,label}], placeholder }]
+  filters = [],        // [{ key, value, onChange, options:[{value,label}], placeholder, multi? }]
+                         // multi: true renders a tick-several dropdown; value is then an array
   sort = null,         // { field, dir, onSortField, onToggleDir, options:[{value,label}] }
   onClear,
   active = false,      // whether Clear should show
@@ -33,7 +35,9 @@ export default function ListToolbar({
         </div>
       )}
 
-      {filters.map((f) => (
+      {filters.map((f) => f.multi ? (
+        <MultiSelect key={f.key} values={f.value} onChange={f.onChange} options={f.options} placeholder={f.placeholder || "All"} />
+      ) : (
         <select key={f.key} value={f.value} onChange={(e) => f.onChange(e.target.value)} style={inputStyle}>
           <option value="">{f.placeholder || "All"}</option>
           {f.options.map((o) => (

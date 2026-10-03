@@ -18,6 +18,7 @@ const mockTables = {
   payslips: [{ id: "p1", role: "Teacher", netPay: 300, month, year: TODAY.getFullYear(), status: "pending", branchId: "b1" }],
   payments: [{ id: "x1", type: "cash_in", account: "Cash", amount: 1000, category: "Fee Collection", date: iso(TODAY), branchId: "b1" }],
   students: [{ id: "s1", name: "Ali", studentId: "Z1", grade: "Grade 5", branchId: "b1" }, { id: "s2", name: "Sara", studentId: "Z2", grade: "Grade 6" }],
+  journals: [],
   accounts: [{ id: "a1", code: "1000", name: "Cash", type: "Assets", subType: "Bank & Cash", balance: 100 }, { id: "a2", code: "2000", name: "Loan", type: "Liabilities", balance: 50 }],
 };
 

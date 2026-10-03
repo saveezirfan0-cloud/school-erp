@@ -10,7 +10,12 @@
 //     onChange={setStudentId}
 //     options={students.map(s => ({ value: s.id, label: `${s.name} (${s.studentId})`, sublabel: s.grade }))}
 //     placeholder="Search student..."
+//     rememberKey="fees.student"   // optional: remember the last pick
 //   />
+//
+// With `rememberKey`, the last option picked is saved in localStorage and
+// pre-selected the next time the control opens empty (e.g. a fresh form).
+// Clearing the field with the X forgets it.
 
 import React, { useState, useRef, useEffect } from "react";
 import { ChevronDown, Search, Check, X } from "lucide-react";
@@ -23,6 +28,7 @@ export default function SearchableSelect({
   emptyText = "No matches",
   allowClear = true,
   disabled = false,
+  rememberKey = null,
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -30,7 +36,31 @@ export default function SearchableSelect({
   const rootRef = useRef(null);
   const inputRef = useRef(null);
 
+  const storageKey = rememberKey ? `searchSelect:${rememberKey}` : null;
+  const restored = useRef(false);
+
   const selected = options.find((o) => String(o.value) === String(value));
+
+  // Pre-select the remembered choice once, as soon as it is in the options
+  // (options often arrive after mount). Never fights a value the form set,
+  // and never re-applies after the user clears it.
+  useEffect(() => {
+    if (!storageKey || restored.current || disabled) return;
+    if (value) { restored.current = true; return; }
+    if (options.length === 0) return;
+    let saved = null;
+    try { saved = localStorage.getItem(storageKey); } catch { /* storage unavailable */ }
+    restored.current = true;
+    if (saved && options.some((o) => String(o.value) === saved)) onChange(saved);
+  }, [storageKey, options, value, disabled]);
+
+  const remember = (val) => {
+    if (!storageKey) return;
+    try {
+      if (val === "" || val == null) localStorage.removeItem(storageKey);
+      else localStorage.setItem(storageKey, String(val));
+    } catch { /* storage unavailable */ }
+  };
 
   // Close on outside click.
   useEffect(() => {
@@ -58,6 +88,7 @@ export default function SearchableSelect({
 
   const pick = (opt) => {
     onChange(opt.value);
+    remember(opt.value);
     setOpen(false);
     setQuery("");
   };
@@ -86,7 +117,7 @@ export default function SearchableSelect({
         <span style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
           {allowClear && selected && !disabled && (
             <X size={15} style={{ color: "var(--text-muted)" }}
-              onClick={(e) => { e.stopPropagation(); onChange(""); }} />
+              onClick={(e) => { e.stopPropagation(); onChange(""); remember(""); }} />
           )}
           <ChevronDown size={16} style={{ color: "var(--text-muted)", transform: open ? "rotate(180deg)" : "none", transition: "transform .15s" }} />
         </span>

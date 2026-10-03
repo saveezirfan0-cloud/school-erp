@@ -106,6 +106,19 @@ describe("dates and ranges", () => {
   });
 });
 
+describe("shared invoice totals", () => {
+  test("a paid invoice with no recorded paidAmount counts as collected in full, less concession", () => {
+    const legacy = prepareData({ invoices: [
+      { id: "L1", studentId: "s1", status: "paid", amount: 1000, concessionAmount: 100, month: "March", year: 2026, paidDate: "2026-03-02" },
+      { id: "L2", studentId: "s1", status: "paid", amount: 500, month: "March", year: 2026, paidDate: "2026-03-03" },
+    ] });
+    const f = computeFinancials(legacy, { range: ALL, branch: "all" });
+    expect(f.collected).toBe(900 + 500);
+    expect(f.pending).toBe(0);
+    expect(legacy.invoices[0]._outstanding).toBe(0);
+  });
+});
+
 describe("invoice helpers", () => {
   test("effectiveStatus derives overdue from the due date", () => {
     const inv = (o) => ({ amount: 100, paidAmount: 0, ...o });

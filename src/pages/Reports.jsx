@@ -11,6 +11,7 @@ import {
   computeFinancials, buildSeries, branchBreakdown, computeCashFlow, computeBalanceSheet,
   filterFeeRows, summarizeFees, buildHighlights, change, formatRs, formatPct,
 } from "../utils/reportData";
+import HajiSahabReport from "../components/reports/HajiSahabReport";
 import ReportFilters, { Field, Select, controlStyle } from "../components/Reports/ReportFilters";
 import { Card, Delta, KpiCard, KpiGrid, Highlights, BarList, DataTable, compact, moneyTip, cardStyle } from "../components/Reports/ReportParts";
 
@@ -21,6 +22,7 @@ const TABS = [
   { id: "bs", label: "Balance Sheet" },
   { id: "cf", label: "Cash Flow" },
   { id: "fees", label: "Fee Collection" },
+  { id: "hs", label: "Haji Sahab Report" },
 ];
 const STATUS_OPTIONS = [
   { value: "paid", label: "Paid" }, { value: "partial", label: "Partially paid" },
@@ -41,7 +43,7 @@ export default function Reports() {
     setLoading(true);
     setError("");
     try {
-      const names = ["invoices", "expenses", "payslips", "payments", "students", "accounts"];
+      const names = ["invoices", "expenses", "payslips", "payments", "students", "accounts", "journals"];
       const snaps = await Promise.all(names.map(n => getAllDocs(collection(db, n))));
       const next = {};
       names.forEach((n, i) => { next[n] = snaps[i].docs.map(d => ({ id: d.id, ...d.data() })); });
@@ -167,7 +169,7 @@ export default function Reports() {
         ))}
       </div>
 
-      <ReportFilters
+      {activeTab !== "hs" && <ReportFilters
         branchOptions={branchOptions} branch={branch} onBranch={setBranch}
         preset={preset} onPreset={setPreset} custom={custom} onCustom={setCustom}
         periodLabel={activeTab === "bs" ? "As at (end of period)" : "Period"}
@@ -187,7 +189,7 @@ export default function Reports() {
             </Field>
           </>
         )}
-      </ReportFilters>
+      </ReportFilters>}
 
       {error && (
         <div style={{ ...cardStyle, padding: 16, marginBottom: 24, borderColor: "#fecaca", background: "#fef2f2", color: "#991b1b", fontSize: 14 }}>
@@ -203,6 +205,7 @@ export default function Reports() {
       )}
       {raw && activeTab === "bs" && <BalanceSheet sheet={sheet} />}
       {raw && activeTab === "cf" && <CashFlow cash={cash} branchLabelOf={branchLabelOf} />}
+      {raw && activeTab === "hs" && <HajiSahabReport raw={raw} branches={branches} activeBranch={activeBranch} />}
       {raw && activeTab === "fees" && (
         <FeeCollection fees={fees} prevFees={prevFees}
           highlights={buildHighlights({ cur: fin, prev: null, fees, branches: null, only: "fees" })} />
