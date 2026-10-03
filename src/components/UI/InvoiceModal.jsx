@@ -1,5 +1,5 @@
 import React, { useRef } from "react";
-import { X, Printer } from "lucide-react";
+import { X, Printer, Pencil } from "lucide-react";
 import { formatDate } from "../../utils/dates";
 import { invoiceCollected, invoiceConcession, invoiceOutstanding } from "../../utils/invoiceTotals";
 
@@ -21,7 +21,8 @@ function statusOf(inv, balance, paid) {
 //             caller has already computed them from the payment ledger
 //             (student profile); otherwise derived from the invoice itself.
 //   payments  optional live payments for this invoice, listed on the document
-export default function InvoiceModal({ invoice, student, figures, payments = [], onClose }) {
+//   onEdit    optional; shows an Edit button when provided
+export default function InvoiceModal({ invoice, student, figures, payments = [], onEdit, onClose }) {
   const printRef = useRef();
   if (!invoice) return null;
 
@@ -71,6 +72,11 @@ export default function InvoiceModal({ invoice, student, figures, payments = [],
             <button onClick={handlePrint} style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 14px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600, fontSize: 13 }}>
               <Printer size={14} /> Print / Save PDF
             </button>
+            {onEdit && (
+              <button onClick={onEdit} style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 14px", background: "white", color: "var(--primary)", border: "1px solid var(--primary)", borderRadius: 8, cursor: "pointer", fontWeight: 600, fontSize: 13 }}>
+                <Pencil size={14} /> Edit
+              </button>
+            )}
             <button onClick={onClose} aria-label="Close" style={{ border: "none", background: "none", cursor: "pointer" }}><X size={20} /></button>
           </div>
         </div>

@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { db, addDoc, updateDoc, deleteDoc, doc, collection, serverTimestamp, updateDocs, deleteDocs } from "../firebase";
+import { db, supabase, addDoc, updateDoc, deleteDoc, doc, collection, serverTimestamp, updateDocs, deleteDocs } from "../firebase";
 import { useBranch } from "../context/BranchContext";
 import { useCollection } from "../hooks/useCollection";
 import { useBulkSelect } from "../hooks/useBulkSelect";
@@ -14,10 +14,21 @@ import { bulkResultMessage } from "../utils/bulk";
 import { logActivity } from "../utils/auditLog";
 import { exportToCSV, exportToPDF } from "../utils/exportUtils";
 import toast from "react-hot-toast";
-import { Plus, Users, Edit2, Trash2, X, Download, FileText, Receipt } from "lucide-react";
+import { Plus, Users, Edit2, Trash2, X, Download, FileText, Receipt, CalendarCheck } from "lucide-react";
 import { useNavigate } from "react-router-dom";
+import { useUser } from "../context/UserContext";
+import RollCallModal from "../components/Profile/RollCallModal";
 
 const emptyStudent = { name: "", studentId: "", grade: "", parentName: "", parentPhone: "", email: "", branchId: "", monthlyFee: "", address: "", dob: "", recurringFee: false };
+
+// Invoices copy the student's branch when they are created. When a student
+// moves branch, carry their invoices along so branch-scoped fees/dashboards
+// stay correct. Best effort: the dashboard also resolves branch via the student.
+async function syncInvoiceBranch(studentIds, branchId) {
+  if (!studentIds.length) return;
+  const { error } = await supabase.from("invoices").update({ branch_id: branchId || "" }).in("student_id", studentIds);
+  if (error) console.error("Could not update invoice branch:", error);
+}
 
 function useIsMobile() {
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
@@ -33,6 +44,8 @@ export default function Students() {
   const { branches, activeBranch } = useBranch();
   const isMobile = useIsMobile();
   const navigate = useNavigate();
+  const { can } = useUser();
+  const [showRollCall, setShowRollCall] = useState(false);
 
   const [search, setSearch] = useState("");
   // Multi-select class filter (Hifz, Class 1, ...). Remembered between visits.
@@ -76,7 +89,9 @@ export default function Students() {
     e.preventDefault();
     try {
       if (editing) {
+        const before = rows.find((r) => r.id === editing);
         await updateDoc(doc(db, "students", editing), { ...form, updatedAt: serverTimestamp() });
+        if (before && (before.branchId || "") !== (form.branchId || "")) await syncInvoiceBranch([editing], form.branchId);
         toast.success("Student updated");
         logActivity("updated", "Students", `${form.name || "Unnamed"}${form.studentId ? ` (${form.studentId})` : ""}`);
       } else {
@@ -119,6 +134,7 @@ export default function Students() {
       const n = bulk.count;
       if (changes.branchId === "main") changes.branchId = "";
       await updateDocs("students", [...bulk.selected], { ...changes, updatedAt: serverTimestamp() });
+      if ("branchId" in changes) await syncInvoiceBranch([...bulk.selected], changes.branchId);
       toast.success(`${n} student${n === 1 ? "" : "s"} updated`);
       logActivity("updated", "Students", `${n} students (bulk): ${Object.keys(changes).join(", ")}`);
       setShowBulkEdit(false);
@@ -150,6 +166,11 @@ export default function Students() {
             style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 14px", background: "white", color: "var(--primary)", border: "1px solid var(--primary)", borderRadius: 8, cursor: "pointer", fontWeight: 600, fontSize: 13 }}>
             <Users size={15} /> Bulk Add
           </button>
+          {can("canEditStudents") && (
+            <button onClick={() => setShowRollCall(true)} style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13 }}>
+              <CalendarCheck size={14} /> Attendance
+            </button>
+          )}
           <button onClick={() => { setForm(emptyStudent); setEditing(null); setShowModal(true); }}
             style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 16px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600, fontSize: 13 }}>
             <Plus size={15} /> Add Student
@@ -267,6 +288,15 @@ export default function Students() {
         page={safePage} pageCount={pageCount} total={total} pageSize={pageSize}
         onPage={setPage} onPageSize={setPageSize}
       />
+
+      {showRollCall && (
+        <RollCallModal
+          subjectType="student" noun="students"
+          scopeLabel={filterGrades.length ? filterGrades.join(", ") : "all classes in the current list"}
+          people={filtered.map((s) => ({ id: s.id, name: s.name, sub: [s.studentId, s.grade].filter(Boolean).join(" • "), branchId: s.branchId }))}
+          onClose={() => setShowRollCall(false)}
+        />
+      )}
 
       {/* Bulk actions bar */}
       <BulkBar

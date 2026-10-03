@@ -5,6 +5,7 @@ import { useBranch } from "../context/BranchContext";
 import { matchesBranch } from "../utils/branchFilter";
 import Pagination from "../components/UI/Pagination";
 import SearchableSelect from "../components/UI/SearchableSelect";
+import InvoiceEditModal from "../components/UI/InvoiceEditModal";
 import MultiSelect from "../components/UI/MultiSelect";
 import { studentName, studentOptionLabel } from "../utils/studentLabel";
 import { useBulkSelect } from "../hooks/useBulkSelect";
@@ -52,6 +53,7 @@ export default function Fees() {
   const [showBulk, setShowBulk] = useState(false);
   const [showRecurring, setShowRecurring] = useState(false);
   const [selectedInvoice, setSelectedInvoice] = useState(null);
+  const [editInvoice, setEditInvoice] = useState(null);
   const [form, setForm] = useState({ studentId: "", month: "", year: new Date().getFullYear(), dueDate: "", notes: "", directPayment: false });
   const [lineItems, setLineItems] = useState(DEFAULT_LINE_ITEMS);
   const [filterStatus, setFilterStatus] = useState("");
@@ -564,6 +566,10 @@ export default function Fees() {
                   style={{ flex: 1, border: "none", background: "var(--primary-light)", color: "var(--primary)", padding: "10px", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 600 }}>
                   View
                 </button>
+                <button onClick={() => setEditInvoice(inv)} title="Edit invoice"
+                  style={{ border: "none", background: "#f1f5f9", color: "#475569", padding: "10px 12px", borderRadius: 8, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  <Pencil size={15} />
+                </button>
                 <button onClick={() => handleDelete(inv)} title="Delete invoice"
                   style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "10px 12px", borderRadius: 8, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
                   <Trash2 size={15} />
@@ -619,6 +625,7 @@ export default function Fees() {
                         )}
                         <button onClick={() => sendReminder(inv)} style={{ border: "none", background: "#f0fdf4", color: "#16a34a", padding: "5px 9px", borderRadius: 6, cursor: "pointer", fontSize: 11 }}>Remind</button>
                         <button onClick={() => setSelectedInvoice(inv)} style={{ border: "none", background: "var(--primary-light)", color: "var(--primary)", padding: "5px 9px", borderRadius: 6, cursor: "pointer", fontSize: 11 }}>View</button>
+                        <button onClick={() => setEditInvoice(inv)} title="Edit invoice" style={{ border: "none", background: "#f1f5f9", color: "#475569", padding: "5px 8px", borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center" }}><Pencil size={13} /></button>
                         <button onClick={() => handleDelete(inv)} title="Delete invoice" style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "5px 8px", borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center" }}><Trash2 size={13} /></button>
                       </div>
                     </td>
@@ -1006,8 +1013,13 @@ export default function Fees() {
       <InvoiceModal
         invoice={selectedInvoice}
         student={students.find(st => st.id === selectedInvoice?.studentId)}
+        onEdit={() => { setEditInvoice(selectedInvoice); setSelectedInvoice(null); }}
         onClose={() => setSelectedInvoice(null)}
       />
+
+      {editInvoice && (
+        <InvoiceEditModal invoice={editInvoice} branches={branches} isMobile={isMobile} onClose={() => setEditInvoice(null)} />
+      )}
     </div>
   );
 }
