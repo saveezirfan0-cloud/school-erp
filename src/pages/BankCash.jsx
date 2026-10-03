@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { db } from "../firebase";
 import { collection, onSnapshot } from "../firebase";
+import { paymentInAccount } from "../utils/accounting";
 import { useNavigate } from "react-router-dom";
 import { Landmark, TrendingUp, TrendingDown, ArrowRight } from "lucide-react";
 
@@ -19,15 +20,15 @@ export default function BankCash() {
     return () => { u1(); u2(); };
   }, []);
 
-  const getAccountBalance = (accountName) => {
-    const opening = accounts.find(a => a.name === accountName)?.balance || 0;
-    const txns = payments.filter(p => p.account === accountName);
+  const getAccountBalance = (acc) => {
+    const opening = acc.balance || 0;
+    const txns = payments.filter(p => paymentInAccount(p, acc));
     const inflow = txns.filter(p => p.type === "cash_in").reduce((s, p) => s + Number(p.amount), 0);
     const outflow = txns.filter(p => p.type === "cash_out").reduce((s, p) => s + Number(p.amount), 0);
     return Number(opening) + inflow - outflow;
   };
 
-  const totalBalance = accounts.reduce((s, a) => s + getAccountBalance(a.name), 0);
+  const totalBalance = accounts.reduce((s, a) => s + getAccountBalance(a), 0);
 
   return (
     <div>
@@ -48,8 +49,8 @@ export default function BankCash() {
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16 }}>
         {accounts.map(acc => {
-          const balance = getAccountBalance(acc.name);
-          const txns = payments.filter(p => p.account === acc.name);
+          const balance = getAccountBalance(acc);
+          const txns = payments.filter(p => paymentInAccount(p, acc));
           const inflow = txns.filter(p => p.type === "cash_in").reduce((s, p) => s + Number(p.amount), 0);
           const outflow = txns.filter(p => p.type === "cash_out").reduce((s, p) => s + Number(p.amount), 0);
           return (
