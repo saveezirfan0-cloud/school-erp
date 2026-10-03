@@ -41,8 +41,15 @@ jest.mock("../context/BranchContext", () => {
   return { useBranch: () => ({ activeBranch: "all", branches }) };
 });
 jest.mock("../context/UserContext", () => ({
-  useUser: () => ({ hajiLayout: null, saveHajiLayout: async () => {}, can: () => true }),
+  useUser: () => ({
+    hajiPrefs: { presets: undefined, legacyLayout: null, active: null }, saveHajiPrefs: async () => {},
+    can: () => true, isAdmin: true, userProfile: { name: "Test" },
+  }),
 }));
+jest.mock("../hooks/useReportDocs", () => ({
+  useReportDocs: () => ({ docs: [], available: false, loading: false, reload: async () => {} }),
+}));
+jest.mock("../lib/reportDocs", () => ({ saveReportDoc: async () => {}, deleteReportDoc: async () => {} }));
 jest.mock("recharts", () => {
   const Stub = ({ children }) => <div>{children}</div>;
   return new Proxy({}, { get: () => Stub });

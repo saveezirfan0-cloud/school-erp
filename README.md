@@ -36,6 +36,10 @@ Run in the SQL Editor, in order:
 4. `supabase/budgets.sql` — budgets table + RLS
    (needed for Reports → Budget vs Actual; the rest of Reports works without it)
 
+Optional (Reports → Haji Sahab Report): run `supabase/report_docs.sql`
+to enable **shared report presets** and **Close month** snapshots. The
+report works without it (personal presets are saved on the user profile).
+
 Then:
 - Disable signups: Authentication → Sign In/Providers → Email → off
 - Deploy `supabase/functions/create-user/index.ts` as an Edge Function

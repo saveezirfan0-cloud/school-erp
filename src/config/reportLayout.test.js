@@ -5,7 +5,7 @@ import {
 
 const branches = [{ name: "Baneen", amount: 100 }];
 const statement = {
-  year: 2026, month: 9, openingBalance: 1000,
+  year: 2026, month: 9, from: "2026-09-01", to: "2026-09-30", openingBalance: 1000,
   income: {
     groups: [
       { key: "fees", label: "Fee Income", total: 700, heads: [{ label: "Tuition Fee", amount: 700, branches }] },
@@ -93,7 +93,7 @@ test("manual entries: one month or every month, add and remove", () => {
   expect(out.totalExpense).toBe(530);
   expect(out.income.groups.find((g) => g.key === "donations").heads[0].manual).toBe(true);
 
-  out = applyLayout({ ...statement, month: 10 }, l); // October: only the every-month line
+  out = applyLayout({ ...statement, month: 10, from: "2026-10-01", to: "2026-10-31" }, l); // October: only the every-month line
   expect(out.totalIncome).toBe(1000);
   expect(out.totalExpense).toBe(530);
 
@@ -106,4 +106,12 @@ test("undoing every override returns to the default layout", () => {
   l = patchSection(l, "income:fees", { label: "", hidden: false });
   expect(isDefaultLayout(l)).toBe(true);
   expect(isDefaultLayout(setOption(l, "shareBars", false))).toBe(false);
+});
+
+test("over a quarter, every-month lines count once per month and a one-month line counts once", () => {
+  let l = addManualEntry(defaultLayout(), { side: "income", group: "other", label: "Rent received", amount: 100, month: "" });
+  l = addManualEntry(l, { side: "income", group: "other", label: "One-off", amount: 50, month: "2026-08" });
+  l = addManualEntry(l, { side: "income", group: "other", label: "Outside", amount: 999, month: "2026-12" });
+  const q3 = applyLayout({ ...statement, from: "2026-07-01", to: "2026-09-30" }, l);
+  expect(q3.totalIncome).toBe(1000 + 300 + 50);
 });

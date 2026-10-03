@@ -17,7 +17,7 @@ import {
 } from "../utils/reportData";
 import { computeBudget } from "../utils/budgetData";
 import { buildStatements, printStatements } from "../utils/studentStatement";
-import HajiSahabReport from "../components/reports/HajiSahabReport";
+import HajiSahabReport from "../components/hajiSahab/HajiSahabReport";
 import ReportFilters, { Field, Select, controlStyle } from "../components/Reports/ReportFilters";
 import BudgetTab from "../components/Reports/BudgetTab";
 import ClassDrilldown from "../components/Reports/ClassDrilldown";

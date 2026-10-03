@@ -312,20 +312,26 @@ export function UserProvider({ children }) {
     else await deleteDoc(ref);
   }, []);
 
-  // Personal layout of the Haji Sahab report (null = default). Saved the same
-  // way as the menu layout, on the user's own profile row.
-  const hajiLayout = userProfile?.hajiLayout || null;
-  const saveHajiLayout = useCallback(async (layout) => {
+  // Haji Sahab report preferences, saved on the user's own profile row like
+  // the menu layout: personal presets plus which preset is active. (Older
+  // accounts only have a single `hajiLayout`, which personalPresets() surfaces.)
+  const hajiPrefs = useMemo(() => ({
+    presets: userProfile?.hajiPresets,
+    legacyLayout: userProfile?.hajiLayout,
+    active: userProfile?.hajiActive || null,
+  }), [userProfile?.hajiPresets, userProfile?.hajiLayout, userProfile?.hajiActive]);
+  const saveHajiPrefs = useCallback(async ({ presets, active }) => {
     if (!userProfile?.id) return;
-    const previous = userProfile.hajiLayout ?? null;
-    setUserProfile((p) => (p ? { ...p, hajiLayout: layout } : p));
+    const previous = { hajiPresets: userProfile.hajiPresets, hajiActive: userProfile.hajiActive };
+    const next = { hajiPresets: presets, hajiActive: active ?? null };
+    setUserProfile((p) => (p ? { ...p, ...next } : p));
     try {
-      await updateDocs("users", [userProfile.id], { hajiLayout: layout });
+      await updateDocs("users", [userProfile.id], next);
     } catch (e) {
-      setUserProfile((p) => (p ? { ...p, hajiLayout: previous } : p));
+      setUserProfile((p) => (p ? { ...p, ...previous } : p));
       throw e;
     }
-  }, [userProfile?.id, userProfile?.hajiLayout]);
+  }, [userProfile?.id, userProfile?.hajiPresets, userProfile?.hajiActive]);
 
   // If branch_manager, restrict to their assigned branch
   const assignedBranchId = (role === "branch_manager" || role === "teacher") ? userProfile?.branchId : null;
@@ -347,9 +353,9 @@ export function UserProvider({ children }) {
     saveRoleMenuDefault,
     menuPrefs,
     saveMenuPrefs,
-    hajiLayout,
-    saveHajiLayout,
-  }), [userProfile, loadingProfile, role, permissions, customRolePerms, can, isAdmin, assignedBranchId, menuLayout, ownMenuLayout, roleMenuLayout, roleMenuDefaults, saveMenuLayout, saveRoleMenuDefault, menuPrefs, saveMenuPrefs, hajiLayout, saveHajiLayout]);
+    hajiPrefs,
+    saveHajiPrefs,
+  }), [userProfile, loadingProfile, role, permissions, customRolePerms, can, isAdmin, assignedBranchId, menuLayout, ownMenuLayout, roleMenuLayout, roleMenuDefaults, saveMenuLayout, saveRoleMenuDefault, menuPrefs, saveMenuPrefs, hajiPrefs, saveHajiPrefs]);
 
   return (
     <UserContext.Provider value={value}>

@@ -62,14 +62,17 @@ function makeClassifier(chart, subtypeMap, rules) {
 function makeSection(groups, classify) {
   const byGroup = new Map(groups.map((g) => [g.key, new Map()]));
   return {
-    add(head, branch, amount, forcedGroup) {
+    // `item` describes the record behind the amount ({ date, text, source })
+    // so a head can be drilled into.
+    add(head, branch, amount, forcedGroup, item = {}) {
       if (!amount) return;
       const key = forcedGroup || classify(head);
       const heads = byGroup.get(key) || byGroup.get("other");
       const id = head.toLowerCase();
-      const entry = heads.get(id) || { label: head, amount: 0, branches: new Map() };
+      const entry = heads.get(id) || { label: head, amount: 0, branches: new Map(), items: [] };
       entry.amount += amount;
       entry.branches.set(branch, (entry.branches.get(branch) || 0) + amount);
+      entry.items.push({ date: item.date || "", text: item.text || head, source: item.source || "", branch, amount });
       heads.set(id, entry);
     },
     result() {
@@ -82,6 +85,9 @@ function makeSection(groups, classify) {
               branches: [...h.branches.entries()]
                 .map(([name, amount]) => ({ name, amount: Math.round(amount) }))
                 .sort((a, b) => b.amount - a.amount),
+              items: h.items
+                .map((i) => ({ ...i, amount: Math.round(i.amount) }))
+                .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : b.amount - a.amount)),
             }))
             .filter((h) => h.amount !== 0)
             .sort((a, b) => b.amount - a.amount);
@@ -111,8 +117,15 @@ function makeSection(groups, classify) {
 export function buildMonthlyStatement({
   year, month, invoices = [], expenses = [], payslips = [], payments = [], journals = [],
   accounts = [], branches = [], inScope = () => true, includeAccountOpening = true,
+  from: fromOverride, to: toOverride, sources = null, account = "",
 }) {
-  const { from, to } = monthRange(year, month);
+  // A custom range (quarter, custom dates…) overrides the calendar month.
+  const { from, to } = fromOverride && toOverride ? { from: fromOverride, to: toOverride } : monthRange(year, month);
+  // Filters: which kinds of record to include, and which Bank & Cash account
+  // money moved through. `sources` is null (everything) or a list of
+  // "fees" | "payments" | "expenses" | "payroll" | "journals".
+  const use = (kind) => !sources || sources.includes(kind);
+  const accOk = (name) => !account || clean(name, "") === account;
   const inMonth = (value) => {
     const d = ymd(value);
     return d !== "" && d >= from && d <= to;
@@ -126,52 +139,60 @@ export function buildMonthlyStatement({
   const expenseSection = makeSection(EXPENSE_GROUPS, makeClassifier(chartOf("Expenses"), EXPENSE_SUBTYPE_GROUP, EXPENSE_RULES));
 
   // ---- Income ----
-  invoices.filter(inScope).forEach((inv) => {
+  (use("fees") ? invoices : []).filter(inScope).filter((inv) => accOk(inv.paidAccount)).forEach((inv) => {
     // Same definition of "collected" and its date as Dashboard / Reports / Fees.
     const paid = invoiceCollected(inv);
-    if (!paid || !inMonth(invoicePaymentDate(inv))) return;
+    const payDate = ymd(invoicePaymentDate(inv));
+    if (!paid || !inMonth(payDate)) return;
+    const who = clean(inv.studentName, "Fee invoice") + (inv.month ? ` — ${inv.month}` : "");
     const items = Array.isArray(inv.lineItems) && inv.lineItems.length ? inv.lineItems : null;
     const total = items ? items.reduce((s, li) => s + num(li.amount), 0) : 0;
     if (!items || !total) {
-      incomeSection.add("Tuition Fee", branchOf(inv), paid, "fees");
+      incomeSection.add("Tuition Fee", branchOf(inv), paid, "fees", { date: payDate, text: who, source: "Fee invoice" });
       return;
     }
     // Split what was actually received across the line items pro rata, so a
     // part-paid invoice still lands in the right heads.
     items.forEach((li) => {
       const head = clean(li.customDescription || li.description, "Tuition Fee");
-      incomeSection.add(head, branchOf(inv), (paid * num(li.amount)) / total, "fees");
+      incomeSection.add(head, branchOf(inv), (paid * num(li.amount)) / total, "fees", { date: payDate, text: who, source: "Fee invoice" });
     });
   });
 
-  payments.filter(inScope).forEach((p) => {
+  (use("payments") ? payments : []).filter(inScope).forEach((p) => {
+    if (!accOk(p.account)) return;
     if (!isLedgerIncome(p) || !inMonth(p.date)) return;
-    incomeSection.add(clean(p.category, "Miscellaneous"), branchOf(p), num(p.amount));
+    incomeSection.add(clean(p.category, "Miscellaneous"), branchOf(p), num(p.amount), undefined,
+      { date: ymd(p.date), text: clean(p.description || p.reference, clean(p.category, "Payment")), source: `Payment · ${clean(p.account, "")}` });
   });
 
   // ---- Expenses ----
-  expenses.filter(inScope).forEach((e) => {
-    if (!inMonth(e.date)) return;
-    expenseSection.add(clean(e.category, "Other"), branchOf(e), num(e.amount));
+  (use("expenses") ? expenses : []).filter(inScope).forEach((e) => {
+    if (!inMonth(e.date) || !accOk(e.paidAccount)) return;
+    expenseSection.add(clean(e.category, "Other"), branchOf(e), num(e.amount), undefined,
+      { date: ymd(e.date), text: clean(e.description, clean(e.category, "Expense")), source: "Expense" });
   });
 
-  payslips.filter(inScope).forEach((s) => {
-    if (s.status !== "paid" || !inMonth(s.paidDate)) return;
-    expenseSection.add("Staff Salaries (payroll)", branchOf(s), num(s.netPay), "salaries");
+  (use("payroll") ? payslips : []).filter(inScope).forEach((s) => {
+    if (s.status !== "paid" || !inMonth(s.paidDate) || !accOk(s.paidAccount)) return;
+    expenseSection.add("Staff Salaries (payroll)", branchOf(s), num(s.netPay), "salaries",
+      { date: ymd(s.paidDate), text: clean(s.employeeName, "Payslip") + (s.month ? ` — ${s.month} ${s.year || ""}`.trimEnd() : ""), source: "Payslip" });
   });
 
   // ---- Journals: money booked straight to an Income / Expense account ----
   const typeByName = new Map(accounts.map((a) => [clean(a.name, "").toLowerCase(), a.type]));
-  journals.filter(inScope).forEach((j) => {
+  (use("journals") ? journals : []).filter(inScope).forEach((j) => {
     // Auto-posted journals (paid expenses, fee collections, salaries) mirror
     // rows already counted above; counting them again would double the figures.
     if (isAutoJournal(j)) return;
     if (!inMonth(j.date)) return;
+    if (account && clean(j.debitAccount, "") !== account && clean(j.creditAccount, "") !== account) return;
     const amount = num(j.amount);
     const debit = clean(j.debitAccount, "");
     const credit = clean(j.creditAccount, "");
-    if (typeByName.get(debit.toLowerCase()) === "Expenses") expenseSection.add(debit, branchOf(j), amount);
-    if (typeByName.get(credit.toLowerCase()) === "Income") incomeSection.add(credit, branchOf(j), amount);
+    const item = { date: ymd(j.date), text: clean(j.description || j.reference, "Journal entry"), source: "Journal" };
+    if (typeByName.get(debit.toLowerCase()) === "Expenses") expenseSection.add(debit, branchOf(j), amount, undefined, item);
+    if (typeByName.get(credit.toLowerCase()) === "Income") incomeSection.add(credit, branchOf(j), amount, undefined, item);
   });
 
   const income = incomeSection.result();
@@ -180,7 +201,7 @@ export function buildMonthlyStatement({
   // ---- Bank & Cash accounts: opening, movement in the month, closing ----
   const scopedPayments = payments.filter(inScope);
   const cashAccounts = accounts
-    .filter((a) => a.subType === "Bank & Cash")
+    .filter((a) => a.subType === "Bank & Cash" && (!account || a.name === account))
     .map((a) => {
       const mine = scopedPayments.filter((p) => paymentInAccount(p, a) && ymd(p.date) !== "");
       const signed = (p) => (p.type === "cash_in" ? num(p.amount) : -num(p.amount));
@@ -201,7 +222,7 @@ export function buildMonthlyStatement({
 
   const openingBalance = cashAccounts.reduce((s, a) => s + a.opening, 0);
   return {
-    year, month, from, to,
+    year: Number(from.slice(0, 4)), month: Number(from.slice(5, 7)), from, to,
     openingBalance,
     income,
     expense,
@@ -226,6 +247,60 @@ export function statementPeriodLabel(year, month) {
   return `1st ${monthName(month)} to ${last}${suffix} ${monthName(month)} ${year}`;
 }
 
+// ---- ranges ----
+
+const lastDayOf = (y, m) => new Date(y, m, 0).getDate();
+const isoDate = (d) => `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`;
+const parseIso = (s) => new Date(Date.UTC(Number(s.slice(0, 4)), Number(s.slice(5, 7)) - 1, Number(s.slice(8, 10))));
+
+// "YYYY-MM" for every calendar month the range touches.
+export function monthsBetween(from, to) {
+  const out = [];
+  let y = Number(from.slice(0, 4));
+  let m = Number(from.slice(5, 7));
+  const endY = Number(to.slice(0, 4));
+  const endM = Number(to.slice(5, 7));
+  while (y < endY || (y === endY && m <= endM)) {
+    out.push(`${y}-${pad(m)}`);
+    m += 1;
+    if (m > 12) { m = 1; y += 1; }
+  }
+  return out;
+}
+
+// True when the range is whole calendar months (1st to the last day).
+export function isWholeMonths(from, to) {
+  return from.slice(8, 10) === "01" && Number(to.slice(8, 10)) === lastDayOf(Number(to.slice(0, 4)), Number(to.slice(5, 7)));
+}
+
+export const isSingleMonth = (from, to) => isWholeMonths(from, to) && from.slice(0, 7) === to.slice(0, 7);
+
+// The period just before `from..to`, of the same length: whole months step back
+// by whole months; any other range by the same number of days.
+export function previousRange(from, to) {
+  if (isWholeMonths(from, to)) {
+    const k = monthsBetween(from, to).length;
+    const idx = Number(from.slice(0, 4)) * 12 + (Number(from.slice(5, 7)) - 1) - k;
+    const y = Math.floor(idx / 12);
+    const m = (idx % 12) + 1;
+    return { from: `${y}-${pad(m)}-01`, to: isoDate(new Date(Date.UTC(Number(from.slice(0, 4)), Number(from.slice(5, 7)) - 1, 0))) };
+  }
+  const days = Math.round((parseIso(to) - parseIso(from)) / 86400000) + 1;
+  const prevTo = new Date(parseIso(from).getTime() - 86400000);
+  return { from: isoDate(new Date(prevTo.getTime() - (days - 1) * 86400000)), to: isoDate(prevTo) };
+}
+
+const SHORT = (s) => `${Number(s.slice(8, 10))} ${monthName(Number(s.slice(5, 7))).slice(0, 3)} ${s.slice(0, 4)}`;
+
+// "1st September to 30th September 2026" for a month, "1 Jul 2026 to 30 Sep 2026" otherwise.
+export function rangeLabel(from, to) {
+  if (isSingleMonth(from, to)) return statementPeriodLabel(Number(from.slice(0, 4)), Number(from.slice(5, 7)));
+  return `${SHORT(from)} to ${SHORT(to)}`;
+}
+
+// "−Rs. 38,600" for a negative figure (a plain "Rs. -38,600" reads badly).
+export const fmtMoney = (n) => `${Number(n) < 0 ? "−" : ""}Rs. ${fmtNum(Math.abs(Number(n) || 0))}`;
+
 // Percentage change vs a previous figure; null when there is nothing to compare.
 export function percentChange(current, previous) {
   if (!previous) return null;
@@ -247,83 +322,4 @@ export function statementCsvRows(s) {
   push("Expense", s.expense);
   rows.push(["Closing Balance", "", "", "", s.closingBalance]);
   return rows;
-}
-
-const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-
-function sectionTable(title, section, tone, emptyText, options) {
-  const body = section.groups.length === 0
-    ? `<tr><td colspan="2" class="empty">${esc(emptyText)}</td></tr>`
-    : section.groups.map((g) => `
-        <tr class="g"><td>${esc(g.label)}${g.excluded ? ' <span class="tag">not counted in total</span>' : ""}</td><td class="n">${fmtNum(g.total)}</td></tr>
-        ${g.heads.map((h) => `
-        <tr><td class="h">${esc(h.label)}${options.branchSplit !== false && h.branches.length > 1 ? `<span class="br">${h.branches.map((b) => `${esc(b.name)} ${fmtNum(b.amount)}`).join(" · ")}</span>` : ""}</td><td class="n">${fmtNum(h.amount)}</td></tr>`).join("")}`).join("");
-  const notes = [
-    section.hiddenAmount ? `Rs. ${fmtNum(section.hiddenAmount)} hidden by report layout` : "",
-    section.excludedAmount ? `Rs. ${fmtNum(section.excludedAmount)} shown but not counted` : "",
-  ].filter(Boolean);
-  return `<h3 class="sec ${tone}">${esc(title)}</h3>
-  <table>${body}<tr class="total ${tone}"><td>Total ${esc(title)}</td><td class="n">Rs. ${fmtNum(section.total)}</td></tr></table>
-  ${notes.length ? `<div class="note">${esc(notes.join(" · "))}</div>` : ""}`;
-}
-
-// Opens a print window in the app's theme; "Save as PDF" in the print dialog
-// produces the PDF. Printing waits for the logo so it is not missing.
-export function printMonthlyStatement(s, { orgName = "Zohra Majeed Islamic Institute", scopeLabel = "" } = {}) {
-  const w = window.open("", "_blank");
-  if (!w) return false;
-  const options = s.options || {};
-  const kpi = (label, value, cls = "") => `<div class="kpi ${cls}"><div class="k">${esc(label)}</div><div class="v">Rs. ${fmtNum(value)}</div></div>`;
-  const accounts = options.accounts === false || s.cashAccounts.length === 0 ? "" : `
-  <h3 class="sec">Bank &amp; Cash accounts</h3>
-  <table>
-    <tr class="g"><td>Account</td><td class="n">Opening</td><td class="n">In</td><td class="n">Out</td><td class="n">Closing</td></tr>
-    ${s.cashAccounts.map((a) => `<tr><td class="h">${esc(a.name)}</td><td class="n">${fmtNum(a.opening)}</td><td class="n">${fmtNum(a.moneyIn)}</td><td class="n">${fmtNum(a.moneyOut)}</td><td class="n">${fmtNum(a.closing)}</td></tr>`).join("")}
-  </table>`;
-  w.document.write(`<html><head><title>Haji Sahab Report — ${esc(monthName(s.month))} ${s.year}</title>
-  <style>
-    @page { size: A4; margin: 12mm; }
-    * { box-sizing: border-box; }
-    body { font-family: Inter, Arial, Helvetica, sans-serif; color: #1e293b; margin: 0; font-size: 12px;
-           -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-    .band { background: #4a1520; color: #fff; border-radius: 10px; padding: 14px 18px; display: flex; align-items: center; gap: 14px; margin-bottom: 12px; }
-    .band img { width: 46px; height: 46px; object-fit: contain; background: #fff; border-radius: 8px; padding: 3px; }
-    .band .org { font-size: 16px; font-weight: 700; }
-    .band .sub { font-size: 11px; opacity: .8; margin-top: 3px; }
-    .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 4px; }
-    .kpi { border: 1px solid #e2e8f0; border-radius: 8px; padding: 8px 10px; background: #f8fafc; }
-    .kpi .k { font-size: 10px; color: #64748b; text-transform: uppercase; letter-spacing: .5px; }
-    .kpi .v { font-size: 14px; font-weight: 700; margin-top: 3px; }
-    .kpi.in .v { color: #047857; } .kpi.out .v { color: #b91c1c; } .kpi.close { background: #f5eaec; border-color: #e8cfd4; } .kpi.close .v { color: #7a2535; }
-    h3.sec { font-size: 13px; margin: 14px 0 6px; color: #7a2535; }
-    table { width: 100%; border-collapse: collapse; }
-    td { padding: 5px 9px; border-bottom: 1px solid #e2e8f0; vertical-align: top; }
-    td.n { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
-    td.h { padding-left: 22px; }
-    .br { display: block; font-size: 10px; color: #64748b; margin-top: 1px; }
-    tr.g td { background: #f5eaec; font-weight: 700; color: #4a1520; }
-    tr.total td { font-weight: 700; font-size: 13px; border-bottom: none; color: #fff; background: #7a2535; }
-    tr.total.in td { background: #047857; } tr.total.out td { background: #b91c1c; }
-    .tag { font-size: 9px; font-weight: 600; color: #92400e; background: #fffbeb; border: 1px solid #fde68a; border-radius: 10px; padding: 1px 6px; margin-left: 6px; }
-    .note { font-size: 10px; color: #64748b; margin-top: 4px; }
-    td.empty { color: #64748b; text-align: center; padding: 12px; }
-    tr { page-break-inside: avoid; }
-    .foot { margin-top: 14px; font-size: 10px; color: #94a3b8; text-align: center; }
-  </style></head><body>
-  <div class="band">
-    <img src="${esc(window.location.origin)}/zmi_logo.png" alt="" />
-    <div><div class="org">${esc(orgName)}</div>
-    <div class="sub">Monthly Statement · ${esc(statementPeriodLabel(s.year, s.month))}${scopeLabel ? ` · ${esc(scopeLabel)}` : ""}</div></div>
-  </div>
-  <div class="kpis">
-    ${kpi("Opening balance", s.openingBalance)}${kpi("Total income", s.totalIncome, "in")}${kpi("Total expense", s.totalExpense, "out")}${kpi("Closing balance", s.closingBalance, "close")}
-  </div>
-  ${sectionTable("Income", s.income, "in", "No income recorded this month", options)}
-  ${sectionTable("Expense", s.expense, "out", "No expenses recorded this month", options)}
-  ${accounts}
-  <div class="foot">Generated ${esc(new Date().toLocaleDateString("en-GB"))} — ZMI School Management System</div>
-  <script>window.onload = function () { window.focus(); window.print(); };</script>
-  </body></html>`);
-  w.document.close();
-  return true;
 }
