@@ -28,16 +28,35 @@ Optional (WhatsApp reminders): `REACT_APP_WHATSAPP_API_URL`,
 > secret (`SERVICE_ROLE_KEY`). Never put it in a `REACT_APP_` variable.
 
 ## Backend setup (Supabase dashboard)
-Run in the SQL Editor, in order:
-1. `supabase/schema.sql` — creates the tables
-2. `supabase/security.sql` — enables Row-Level Security policies
 
-Then:
+### SQL order (Supabase SQL Editor)
+
+**New database**, run these in this order, once:
+1. `supabase/schema.sql` creates the tables (and turns RLS on with no policies, so it is closed until step 4)
+2. `supabase/accounting.sql` ledger columns (reversals, paid amounts)
+3. `supabase/trash.sql` the `deleted_at` columns the app filters on
+4. `supabase/security.sql` baseline role and branch policies
+5. `supabase/realtime.sql` live updates (never publishes `users` or `audit_log`)
+6. `supabase/migrations/0001` to `0012`, in number order (hardening: policies, keys,
+   audit triggers, money functions, storage). Then create your first admin (see the runbook).
+
+**Existing database**: do **not** re-run steps 1 to 5. Take a backup first, then apply the files in
+`supabase/migrations/` in order, following `supabase/migrations/README.md`. It has the
+pre-flight checklist, what each file changes, which ones must wait for an app change
+(`0011`, `0012`), legacy-data check queries, rollback notes and backup advice.
+
+Never paste an old copy of `schema.sql` over a live database: the old version re-created an
+allow-all policy. The current one cannot. `supabase/legacy/` holds old one-off scripts that must not be run.
+
+### Then
+
 - Disable signups: Authentication → Sign In/Providers → Email → off
 - Deploy `supabase/functions/create-user/index.ts` as an Edge Function
   named `create-user`, and set its secrets `SERVICE_ROLE_KEY` and
   `PROJECT_URL`
-- Create a `receipts` storage bucket (public) for receipt uploads
+- Create a `receipts` storage bucket for receipt uploads (public for now;
+  `supabase/migrations/0012_storage_receipts.sql` creates it if missing and adds size,
+  type and branch-folder rules; making it private with signed URLs is an optional later step)
 
 ## Run locally
 ```
