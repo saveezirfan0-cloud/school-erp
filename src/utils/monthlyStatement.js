@@ -18,7 +18,9 @@
 
 import { toDate } from "./dates";
 import { paymentInAccount } from "./paymentAccount";
+import { isAutoJournal } from "./autoJournals";
 import { invoiceCollected, invoicePaymentDate } from "./invoiceTotals";
+import { isLedgerIncome } from "./ledgerIncome";
 import {
   INCOME_GROUPS, EXPENSE_GROUPS, INCOME_SUBTYPE_GROUP, EXPENSE_SUBTYPE_GROUP,
   INCOME_RULES, EXPENSE_RULES,
@@ -46,9 +48,6 @@ function branchName(branchId, branches) {
   if (!branchId || branchId === "main") return "Main";
   return branches.find((b) => b.id === branchId)?.name || "Main";
 }
-
-// Payments that are transfers between our own accounts, not income.
-const TRANSFER_CATEGORIES = ["Bank Deposit", "Bank Withdrawal"];
 
 // Picks the section for a head: chart-of-accounts sub-type, then keywords.
 function makeClassifier(chart, subtypeMap, rules) {
@@ -146,10 +145,7 @@ export function buildMonthlyStatement({
   });
 
   payments.filter(inScope).forEach((p) => {
-    if (p.type !== "cash_in" || p.reversed === true || p.reversalOf) return;
-    if (p.source === "invoice" || p.source === "expense" || p.source === "payslip") return;
-    if (TRANSFER_CATEGORIES.includes(p.category)) return;
-    if (!inMonth(p.date)) return;
+    if (!isLedgerIncome(p) || !inMonth(p.date)) return;
     incomeSection.add(clean(p.category, "Miscellaneous"), branchOf(p), num(p.amount));
   });
 
@@ -167,9 +163,9 @@ export function buildMonthlyStatement({
   // ---- Journals: money booked straight to an Income / Expense account ----
   const typeByName = new Map(accounts.map((a) => [clean(a.name, "").toLowerCase(), a.type]));
   journals.filter(inScope).forEach((j) => {
-    // Expense journals are auto-posted from the expenses table, which is
-    // already counted above; counting them again would double the expense.
-    if (j.source === "expense") return;
+    // Auto-posted journals (paid expenses, fee collections, salaries) mirror
+    // rows already counted above; counting them again would double the figures.
+    if (isAutoJournal(j)) return;
     if (!inMonth(j.date)) return;
     const amount = num(j.amount);
     const debit = clean(j.debitAccount, "");
