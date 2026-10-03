@@ -23,7 +23,8 @@ export function useDocument(name, id) {
   return state;
 }
 
-// Rows of `name` where every `filters` field equals its value.
+// Rows of `name` where every `filters` field equals its value (or, for an
+// array value, is one of them).
 // `enabled=false` skips the subscription (e.g. no permission to read it).
 // Filter fields must be real columns (student_id, employee_id, ...).
 export function useRelated(name, filters, enabled = true) {
@@ -33,7 +34,7 @@ export function useRelated(name, filters, enabled = true) {
   useEffect(() => {
     if (!enabled) { setRows([]); setLoading(false); return undefined; }
     setLoading(true);
-    const clauses = Object.entries(JSON.parse(key)).map(([f, v]) => where(f, "==", v));
+    const clauses = Object.entries(JSON.parse(key)).map(([f, v]) => where(f, Array.isArray(v) ? "in" : "==", v));
     return onSnapshot(
       query(collection(db, name), ...clauses),
       (snap) => { setRows(snap.docs.map((d) => ({ id: d.id, ...d.data() }))); setLoading(false); },
