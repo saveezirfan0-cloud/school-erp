@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { db, addDoc, updateDoc, deleteDoc, doc, collection, serverTimestamp, updateDocs, deleteDocs } from "../firebase";
 import { useBranch } from "../context/BranchContext";
+import { useUser } from "../context/UserContext";
 import { useCollection } from "../hooks/useCollection";
 import { useBulkSelect } from "../hooks/useBulkSelect";
 import ListToolbar from "../components/UI/ListToolbar";
@@ -11,7 +12,7 @@ import { bulkResultMessage } from "../utils/bulk";
 import { logActivity } from "../utils/auditLog";
 import { exportToCSV, exportToPDF } from "../utils/exportUtils";
 import toast from "react-hot-toast";
-import { Plus, Edit2, Trash2, X, Download, FileText, Receipt } from "lucide-react";
+import { Plus, Edit2, Trash2, X, Download, FileText, Receipt, GraduationCap } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 
 const emptyStudent = { name: "", studentId: "", grade: "", parentName: "", parentPhone: "", email: "", branchId: "", monthlyFee: "", address: "", dob: "", recurringFee: false };
@@ -28,6 +29,8 @@ function useIsMobile() {
 
 export default function Students() {
   const { branches, activeBranch } = useBranch();
+  const { can } = useUser();
+  const canSeeAcademics = can("canViewAttendance") || can("canViewExams") || can("canViewLearning");
   const isMobile = useIsMobile();
   const navigate = useNavigate();
 
@@ -186,6 +189,7 @@ export default function Students() {
                 </div>
                 <div style={{ display: "flex", gap: 6 }}>
                   <button onClick={() => navigate(`/students/${s.id}/ledger`)} title="Ledger" style={{ border: "none", background: "#eff6ff", color: "#2563eb", padding: "7px 9px", borderRadius: 8, cursor: "pointer" }}><Receipt size={14} /></button>
+                  {canSeeAcademics && <button onClick={() => navigate(`/students/${s.id}/academics`)} title="Academics" aria-label="Academics" style={{ border: "none", background: "#ecfdf5", color: "#059669", padding: "7px 9px", borderRadius: 8, cursor: "pointer" }}><GraduationCap size={14} /></button>}
                   <button onClick={() => { setForm(s); setEditing(s.id); setShowModal(true); }} style={{ border: "none", background: "var(--primary-light)", color: "var(--primary)", padding: "7px 9px", borderRadius: 8, cursor: "pointer" }}><Edit2 size={14} /></button>
                   <button onClick={() => handleDelete(s)} style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "7px 9px", borderRadius: 8, cursor: "pointer" }}><Trash2 size={14} /></button>
                 </div>
@@ -239,6 +243,7 @@ export default function Students() {
                     <td style={{ padding: "11px 14px" }}>
                       <div style={{ display: "flex", gap: 6 }}>
                         <button onClick={() => navigate(`/students/${s.id}/ledger`)} title="Ledger" style={{ border: "none", background: "#eff6ff", color: "#2563eb", padding: "6px 9px", borderRadius: 6, cursor: "pointer" }}><Receipt size={13} /></button>
+                        {canSeeAcademics && <button onClick={() => navigate(`/students/${s.id}/academics`)} title="Academics" aria-label="Academics" style={{ border: "none", background: "#ecfdf5", color: "#059669", padding: "6px 9px", borderRadius: 6, cursor: "pointer" }}><GraduationCap size={13} /></button>}
                         <button onClick={() => { setForm(s); setEditing(s.id); setShowModal(true); }} style={{ border: "none", background: "var(--primary-light)", color: "var(--primary)", padding: "6px 9px", borderRadius: 6, cursor: "pointer" }}><Edit2 size={13} /></button>
                         <button onClick={() => handleDelete(s)} style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "6px 9px", borderRadius: 6, cursor: "pointer" }}><Trash2 size={13} /></button>
                       </div>

@@ -6,6 +6,7 @@ import { matchesBranch } from "../utils/branchFilter";
 import { toMillis, toDate } from "../utils/dates";
 import { Users, Receipt, TrendingDown, TrendingUp, UserCheck, Building2 } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line } from "recharts";
+import AcademicsWidget from "../components/AcademicsWidget";
 
 export default function Dashboard() {
   const { activeBranch, branches } = useBranch();
@@ -111,6 +112,8 @@ export default function Dashboard() {
           </div>
         ))}
       </div>
+
+      <AcademicsWidget />
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: 16, marginBottom: 20 }}>
         <div style={{ background: "white", borderRadius: 12, padding: "20px 16px", border: "1px solid var(--border)" }}>
