@@ -1,6 +1,9 @@
 import React, { useEffect, useState } from "react";
 import { db } from "../firebase";
 import { collection, addDoc, deleteDoc, doc, onSnapshot, serverTimestamp, updateDocs, deleteDocs } from "../firebase";
+import { parsePositiveAmount, todayLocal, isIsoDate, formatMoney } from "../utils/money";
+import { useAccounts } from "../utils/useAccounts";
+import { useSubmitLock } from "../utils/useSubmitLock";
 import { useBulkSelect } from "../hooks/useBulkSelect";
 import BulkBar, { RowCheckbox, HeaderCheckbox } from "../components/UI/BulkBar";
 import BulkEditModal from "../components/UI/BulkEditModal";
@@ -9,34 +12,56 @@ import { logActivity } from "../utils/auditLog";
 import toast from "react-hot-toast";
 import { Plus, X, Trash2, Pencil } from "lucide-react";
 
-const empty = { date: "", reference: "", description: "", debitAccount: "", creditAccount: "", amount: "", notes: "" };
+// Accounts are referenced by id (debitAccountId / creditAccountId) so renaming an
+// account never orphans a journal; the names are kept alongside for older readers.
+const makeEmpty = () => ({ date: todayLocal(), reference: "", description: "", debitAccountId: "", creditAccountId: "", amount: "", notes: "" });
 
 export default function Journals() {
   const [journals, setJournals] = useState([]);
-  const [accounts, setAccounts] = useState([]);
+  const { accounts } = useAccounts();
+  const { busy: submitting, run: runSubmit } = useSubmitLock();
   const [showModal, setShowModal] = useState(false);
-  const [form, setForm] = useState(empty);
+  const [form, setForm] = useState(makeEmpty());
   const [showBulkEdit, setShowBulkEdit] = useState(false);
   const [bulkBusy, setBulkBusy] = useState(false);
 
   useEffect(() => {
     const u1 = onSnapshot(collection(db, "journals"), snap => setJournals(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => new Date(b.date) - new Date(a.date))));
-    const u2 = onSnapshot(collection(db, "accounts"), snap => setAccounts(snap.docs.map(d => ({ id: d.id, ...d.data() }))));
-    return () => { u1(); u2(); };
+    return () => { u1(); };
   }, []);
 
   // multi-select for bulk actions
   const bulk = useBulkSelect(journals.map(j => j.id));
   const visibleIds = journals.map(j => j.id);
 
-  const handleSubmit = async (e) => {
+  // Shown name: the account's CURRENT name when its id is known, else the stored name.
+  const accountLabel = (id, storedName) => accounts.find(a => a.id === id)?.name || storedName || "—";
+
+  const handleSubmit = (e) => {
     e.preventDefault();
-    if (form.debitAccount === form.creditAccount) return toast.error("Debit and credit accounts must be different");
-    await addDoc(collection(db, "journals"), { ...form, createdAt: serverTimestamp() });
-    toast.success("Journal entry saved");
-    logActivity("created", "Journals", `${form.reference || "Journal"} — ${form.description} · Rs. ${Number(form.amount || 0).toLocaleString()}`);
-    setShowModal(false);
-    setForm(empty);
+    return runSubmit(async () => {
+      const dr = accounts.find(a => a.id === form.debitAccountId);
+      const cr = accounts.find(a => a.id === form.creditAccountId);
+      if (!dr || !cr) return toast.error("Choose both a debit and a credit account");
+      if (dr.id === cr.id) return toast.error("Debit and credit accounts must be different");
+      const amt = parsePositiveAmount(form.amount);
+      if (!amt.ok) return toast.error(amt.error);
+      if (!isIsoDate(form.date)) return toast.error("Enter a valid date");
+      try {
+        await addDoc(collection(db, "journals"), {
+          date: form.date, reference: form.reference, description: form.description, notes: form.notes,
+          debitAccount: dr.name, creditAccount: cr.name,
+          debitAccountId: dr.id, creditAccountId: cr.id,
+          amount: amt.value, createdAt: serverTimestamp(),
+        });
+        toast.success("Journal entry saved");
+        logActivity("created", "Journals", `${form.reference || "Journal"} — ${form.description} · Rs. ${formatMoney(amt.value)}`);
+        setShowModal(false);
+        setForm(makeEmpty());
+      } catch (err) {
+        toast.error(err?.message || "Could not save the journal entry");
+      }
+    });
   };
 
   const handleDelete = async (j) => {
@@ -85,7 +110,7 @@ export default function Journals() {
           <h2 style={{ fontSize: 22, fontWeight: 700 }}>Journal Entries</h2>
           <p style={{ color: "var(--text-muted)", fontSize: 14, marginTop: 2 }}>Double-entry bookkeeping records</p>
         </div>
-        <button onClick={() => setShowModal(true)}
+        <button onClick={() => { setForm(makeEmpty()); setShowModal(true); }}
           style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 18px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600 }}>
           <Plus size={16} /> New Journal Entry
         </button>
@@ -115,15 +140,15 @@ export default function Journals() {
                 <td style={{ padding: "12px 16px", fontSize: 13, fontWeight: 500 }}>{j.description}</td>
                 <td style={{ padding: "12px 16px" }}>
                   <span style={{ padding: "3px 10px", borderRadius: 6, fontSize: 12, background: "#ecfdf5", color: "#10b981", fontWeight: 600 }}>
-                    DR: {j.debitAccount}
+                    DR: {accountLabel(j.debitAccountId, j.debitAccount)}
                   </span>
                 </td>
                 <td style={{ padding: "12px 16px" }}>
                   <span style={{ padding: "3px 10px", borderRadius: 6, fontSize: 12, background: "#fef2f2", color: "#ef4444", fontWeight: 600 }}>
-                    CR: {j.creditAccount}
+                    CR: {accountLabel(j.creditAccountId, j.creditAccount)}
                   </span>
                 </td>
-                <td style={{ padding: "12px 16px", fontSize: 14, fontWeight: 700 }}>Rs. {Number(j.amount).toLocaleString()}</td>
+                <td style={{ padding: "12px 16px", fontSize: 14, fontWeight: 700 }}>Rs. {formatMoney(j.amount)}</td>
                 <td style={{ padding: "12px 16px", fontSize: 13, color: "var(--text-muted)" }}>{j.notes}</td>
                 <td style={{ padding: "12px 16px", textAlign: "right" }}>
                   <button onClick={() => handleDelete(j)} style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "7px 9px", borderRadius: 8, cursor: "pointer" }}><Trash2 size={14} /></button>
@@ -192,10 +217,10 @@ export default function Journals() {
                 <div style={{ background: "#f0fdf4", borderRadius: 10, padding: 16, border: "1px solid #bbf7d0" }}>
                   <div style={{ fontSize: 12, fontWeight: 700, color: "#10b981", marginBottom: 10, textTransform: "uppercase" }}>Debit (Dr)</div>
                   <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 6 }}>Account</label>
-                  <select value={form.debitAccount} onChange={e => setForm(p => ({ ...p, debitAccount: e.target.value }))} required
+                  <select value={form.debitAccountId} onChange={e => setForm(p => ({ ...p, debitAccountId: e.target.value }))} required
                     style={{ width: "100%", padding: "9px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14, background: "white" }}>
                     <option value="">Select account</option>
-                    {accounts.map(a => <option key={a.id} value={a.name}>{a.code} — {a.name}</option>)}
+                    {accounts.map(a => <option key={a.id} value={a.id}>{a.code} — {a.name}</option>)}
                   </select>
                 </div>
 
@@ -203,16 +228,16 @@ export default function Journals() {
                 <div style={{ background: "#fef2f2", borderRadius: 10, padding: 16, border: "1px solid #fecaca" }}>
                   <div style={{ fontSize: 12, fontWeight: 700, color: "#ef4444", marginBottom: 10, textTransform: "uppercase" }}>Credit (Cr)</div>
                   <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 6 }}>Account</label>
-                  <select value={form.creditAccount} onChange={e => setForm(p => ({ ...p, creditAccount: e.target.value }))} required
+                  <select value={form.creditAccountId} onChange={e => setForm(p => ({ ...p, creditAccountId: e.target.value }))} required
                     style={{ width: "100%", padding: "9px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14, background: "white" }}>
                     <option value="">Select account</option>
-                    {accounts.map(a => <option key={a.id} value={a.name}>{a.code} — {a.name}</option>)}
+                    {accounts.map(a => <option key={a.id} value={a.id}>{a.code} — {a.name}</option>)}
                   </select>
                 </div>
 
                 <div>
                   <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 6 }}>Amount (Rs.)</label>
-                  <input type="number" value={form.amount} onChange={e => setForm(p => ({ ...p, amount: e.target.value }))} required
+                  <input type="number" min="0.01" step="0.01" value={form.amount} onChange={e => setForm(p => ({ ...p, amount: e.target.value }))} required
                     style={{ width: "100%", padding: "9px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14 }} />
                 </div>
                 <div>
@@ -223,14 +248,14 @@ export default function Journals() {
               </div>
 
               <div style={{ marginTop: 16, padding: 12, background: "#f8fafc", borderRadius: 8, fontSize: 13, display: "flex", justifyContent: "space-between" }}>
-                <span style={{ color: "#10b981" }}>DR: {form.debitAccount || "—"}</span>
-                <span style={{ fontWeight: 700 }}>Rs. {Number(form.amount || 0).toLocaleString()}</span>
-                <span style={{ color: "#ef4444" }}>CR: {form.creditAccount || "—"}</span>
+                <span style={{ color: "#10b981" }}>DR: {accountLabel(form.debitAccountId, "")}</span>
+                <span style={{ fontWeight: 700 }}>Rs. {formatMoney(form.amount || 0)}</span>
+                <span style={{ color: "#ef4444" }}>CR: {accountLabel(form.creditAccountId, "")}</span>
               </div>
 
               <div style={{ display: "flex", gap: 12, marginTop: 24, justifyContent: "flex-end" }}>
                 <button type="button" onClick={() => setShowModal(false)} style={{ padding: "10px 20px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer" }}>Cancel</button>
-                <button type="submit" style={{ padding: "10px 20px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600 }}>Post Entry</button>
+                <button type="submit" disabled={submitting} style={{ padding: "10px 20px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: submitting ? "not-allowed" : "pointer", opacity: submitting ? 0.7 : 1, fontWeight: 600 }}>{submitting ? "Posting..." : "Post Entry"}</button>
               </div>
             </form>
           </div>
