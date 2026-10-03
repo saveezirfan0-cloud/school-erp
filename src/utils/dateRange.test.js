@@ -12,6 +12,8 @@ describe("fiscal / calendar years", () => {
     expect(resolveRange({ mode: "calendar", year: 2026 })).toEqual({ from: "2026-01-01", to: "2026-12-31" });
     expect(resolveRange({ mode: "month" }, new Date(2026, 1, 10))).toEqual({ from: "2026-02-01", to: "2026-02-28" });
     expect(resolveRange({ mode: "lastMonth" }, new Date(2026, 0, 10))).toEqual({ from: "2025-12-01", to: "2025-12-31" });
+    expect(resolveRange({ mode: "last30" }, new Date(2026, 9, 3))).toEqual({ from: "2026-09-04", to: "2026-10-03" });
+    expect(resolveRange({ mode: "quarter" }, new Date(2026, 9, 3))).toEqual({ from: "2026-10-01", to: "2026-12-31" });
     expect(resolveRange({ mode: "custom", from: "2026-08-01", to: "" })).toEqual({ from: "2026-08-01", to: null });
     expect(resolveRange({ mode: "all" })).toEqual({ from: null, to: null });
   });
