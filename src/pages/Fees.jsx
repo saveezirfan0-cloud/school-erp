@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { db } from "../firebase";
 import { collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot, serverTimestamp, updateDocs, deleteDocs } from "../firebase";
 import { useBranch } from "../context/BranchContext";
+import { matchesBranch } from "../utils/branchFilter";
 import Pagination from "../components/UI/Pagination";
 import SearchableSelect from "../components/UI/SearchableSelect";
 import { useBulkSelect } from "../hooks/useBulkSelect";
@@ -88,7 +89,7 @@ export default function Fees() {
   useEffect(() => { setPage(1); }, [filterStatus, filterMonth, filterBranch, filterStudent, pageSize, activeBranch]);
 
   const filtered = invoices.filter(inv => {
-    const matchBranch = (activeBranch === "all" || inv.branchId === activeBranch) && (!filterBranch || inv.branchId === filterBranch);
+    const matchBranch = matchesBranch(inv, activeBranch) && (!filterBranch || inv.branchId === filterBranch);
     const matchStatus = !filterStatus || inv.status === filterStatus;
     const matchMonth = !filterMonth || inv.month === filterMonth;
     const matchStudent = !filterStudent || inv.studentName?.toLowerCase().includes(filterStudent.toLowerCase());
