@@ -1,5 +1,6 @@
 import React, { useEffect } from "react";
-import { X } from "lucide-react";
+import { X, Download } from "lucide-react";
+import { exportToCSV } from "../../utils/exportUtils";
 
 // Generic popup used by clickable dashboard metrics.
 //   columns: [{ key, label, align?, render?(row) }]
@@ -11,6 +12,19 @@ export default function DetailModal({ title, subtitle, columns, rows, footer, on
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
+  // Plain-text value of a cell for CSV: column.text, else the rendered value
+  // when it is plain text/number, else the raw field.
+  const csvCell = (c, r) => {
+    if (c.text) return c.text(r);
+    if (c.render) { const v = c.render(r); if (typeof v === "string" || typeof v === "number") return v; }
+    return r[c.key];
+  };
+  const exportCsv = () => exportToCSV(
+    title.toLowerCase().replace(/[^a-z0-9]+/g, "-"),
+    columns.map(c => c.label),
+    rows.map(r => columns.map(c => csvCell(c, r)))
+  );
+
   return (
     <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.5)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
       <div onClick={(e) => e.stopPropagation()} role="dialog" aria-label={title}
@@ -20,7 +34,13 @@ export default function DetailModal({ title, subtitle, columns, rows, footer, on
             <h3 style={{ fontSize: 16, fontWeight: 700 }}>{title}</h3>
             {subtitle && <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>{subtitle}</p>}
           </div>
-          <button onClick={onClose} aria-label="Close" style={{ border: "none", background: "none", cursor: "pointer", padding: 4 }}><X size={20} /></button>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <button onClick={exportCsv} disabled={rows.length === 0} title="Download as CSV"
+              style={{ display: "flex", alignItems: "center", gap: 5, padding: "6px 10px", border: "1px solid var(--border)", borderRadius: 8, background: "white", cursor: rows.length ? "pointer" : "not-allowed", fontSize: 12, opacity: rows.length ? 1 : 0.5 }}>
+              <Download size={13} /> CSV
+            </button>
+            <button onClick={onClose} aria-label="Close" style={{ border: "none", background: "none", cursor: "pointer", padding: 4 }}><X size={20} /></button>
+          </div>
         </div>
         <div style={{ overflow: "auto", flex: 1 }}>
           <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 480 }}>
