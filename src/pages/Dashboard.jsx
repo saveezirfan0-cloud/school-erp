@@ -3,7 +3,8 @@ import { db } from "../firebase";
 import { collection, getDocs } from "../firebase";
 import { useBranch } from "../context/BranchContext";
 import { matchesBranch } from "../utils/branchFilter";
-import { toMillis, toDate } from "../utils/dates";
+import { toMillis } from "../utils/dates";
+import { summarizeInvoices, collectedByMonth } from "../utils/invoiceTotals";
 import { Users, Receipt, TrendingDown, TrendingUp, UserCheck, Building2 } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line } from "recharts";
 
@@ -18,11 +19,12 @@ export default function Dashboard() {
     const fetchStats = async () => {
       setLoading(true);
       try {
-        const [studentsSnap, employeesSnap, feesSnap, expSnap, branchSnap] = await Promise.all([
+        const [studentsSnap, employeesSnap, feesSnap, expSnap, payslipsSnap, branchSnap] = await Promise.all([
           getDocs(collection(db, "students")),
           getDocs(collection(db, "employees")),
           getDocs(collection(db, "invoices")),
           getDocs(collection(db, "expenses")),
+          getDocs(collection(db, "payslips")),
           getDocs(collection(db, "branches")),
         ]);
 
@@ -30,15 +32,19 @@ export default function Dashboard() {
         let fees = feesSnap.docs.map(d => ({ id: d.id, ...d.data() }));
         let expenses = expSnap.docs.map(d => ({ id: d.id, ...d.data() }));
         let employees = employeesSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+        let payslips = payslipsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
 
         students = students.filter(s => matchesBranch(s, activeBranch));
         fees = fees.filter(f => matchesBranch(f, activeBranch));
         expenses = expenses.filter(e => matchesBranch(e, activeBranch));
         employees = employees.filter(e => matchesBranch(e, activeBranch));
+        payslips = payslips.filter(p => matchesBranch(p, activeBranch));
 
-        const collected = fees.filter(f => f.status === "paid").reduce((s, f) => s + Number(f.amount || 0), 0);
-        const pending = fees.filter(f => f.status === "pending").reduce((s, f) => s + Number(f.amount || 0), 0);
-        const totalExp = expenses.reduce((s, e) => s + Number(e.amount || 0), 0);
+        // Same formulas as Reports and Fees & Invoices (see utils/invoiceTotals).
+        const { collected, pending } = summarizeInvoices(fees);
+        // Total expenses = operating expenses + payroll, matching the P&L report.
+        const salaries = payslips.reduce((s, p) => s + Number(p.netPay || 0), 0);
+        const totalExp = expenses.reduce((s, e) => s + Number(e.amount || 0), 0) + salaries;
 
         setStats({ students: students.length, employees: employees.length, feesCollected: collected, expenses: totalExp, pending, branches: branchSnap.size });
 
@@ -46,9 +52,10 @@ export default function Dashboard() {
         setRecentInvoices(recent);
 
         const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+        const feesByMonth = collectedByMonth(fees);
         const monthly = months.map((month, i) => ({
           month,
-          fees: fees.filter(f => f.status === "paid" && (toDate(f.paidDate) || toDate(f.createdAt) || new Date()).getMonth() === i).reduce((s, f) => s + Number(f.amount || 0), 0),
+          fees: feesByMonth[i],
           expenses: expenses.filter(e => new Date(e.date || Date.now()).getMonth() === i).reduce((s, e) => s + Number(e.amount || 0), 0),
         }));
         setChartData(monthly);
