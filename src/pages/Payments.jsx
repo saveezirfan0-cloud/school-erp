@@ -11,10 +11,11 @@ import BulkEditModal from "../components/UI/BulkEditModal";
 import { bulkResultMessage } from "../utils/bulk";
 import { logActivity } from "../utils/auditLog";
 import { exportToCSV, exportToPDF } from "../utils/exportUtils";
+import { EXTRA_PAYMENT_CATEGORIES } from "../config/statementHeads";
 import toast from "react-hot-toast";
 import { Plus, X, ArrowUpCircle, ArrowDownCircle, Trash2, Download, FileText, Pencil } from "lucide-react";
 
-const CATEGORIES = ["Fee Collection", "Salary Payment", "Rent", "Utilities", "Supplies", "Maintenance", "Bank Deposit", "Bank Withdrawal", "Other"];
+const CATEGORIES = ["Fee Collection", "Salary Payment", "Rent", "Utilities", "Supplies", "Maintenance", "Bank Deposit", "Bank Withdrawal", "Other", ...EXTRA_PAYMENT_CATEGORIES];
 const emptyLine = { account: "", description: "", category: "", amount: "", type: "cash_out" };
 
 function useIsMobile() {

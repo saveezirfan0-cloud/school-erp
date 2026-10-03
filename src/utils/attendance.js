@@ -275,8 +275,21 @@ export function rosterCounts(students, draft, savedByStudent) {
   return counts;
 }
 
+// The `attendance` table is shared with employee attendance and keyed by
+// (subject_type, subject_id, date). These helpers translate between that shape
+// and the student-centric rows the pages here work with.
+export const ATTENDANCE_CONFLICT = ["subjectType", "subjectId", "date"];
+
+// Student rows only, each exposing `studentId` (= subjectId) for lookups.
+export function studentAttendanceRows(rows) {
+  return (rows || [])
+    .filter((r) => r && r.subjectType === "student")
+    .map((r) => ({ ...r, studentId: r.subjectId }));
+}
+
 // Rows to upsert: only students touched in `draft` that end up with a valid
-// status. Complete rows (the upsert replaces the whole row).
+// status. Complete rows (the upsert replaces the whole row). `grade`, `note`
+// and `markedBy` are not real columns, so they are kept in the row's `extra`.
 export function buildMarkRows({ students, draft, savedByStudent, date, markedBy }) {
   const rows = [];
   for (const s of students || []) {
@@ -284,7 +297,8 @@ export function buildMarkRows({ students, draft, savedByStudent, date, markedBy 
     const { status, note } = effectiveEntry(draft[s.id], savedByStudent?.[s.id]);
     if (!status) continue;
     rows.push({
-      studentId: s.id,
+      subjectType: "student",
+      subjectId: s.id,
       date,
       status,
       grade: String(s.grade ?? "").trim(),

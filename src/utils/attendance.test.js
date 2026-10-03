@@ -3,7 +3,7 @@ import {
   buildStudentReport, overallPercent, dailyClassSummary, gradeLabel, gradeOptions,
   parseISODate, toISODate, addDays, startOfMonth, endOfMonth, isInRange,
   normaliseRange, presetRange, effectiveEntry, rosterCounts, buildMarkRows,
-  escapeHtml, UNASSIGNED,
+  escapeHtml, UNASSIGNED, studentAttendanceRows, ATTENDANCE_CONFLICT,
 } from "./attendance";
 
 const row = (studentId, date, status, grade = "5") => ({ studentId, date, status, grade });
@@ -203,8 +203,8 @@ describe("marking helpers", () => {
       markedBy: "t@school.pk",
     });
     expect(rows).toEqual([
-      { studentId: "a", date: "2026-10-03", status: "absent", grade: "5", note: "back soon", markedBy: "t@school.pk", branchId: "br1" },
-      { studentId: "b", date: "2026-10-03", status: "present", grade: "", note: "hi", markedBy: "t@school.pk", branchId: "" },
+      { subjectType: "student", subjectId: "a", date: "2026-10-03", status: "absent", grade: "5", note: "back soon", markedBy: "t@school.pk", branchId: "br1" },
+      { subjectType: "student", subjectId: "b", date: "2026-10-03", status: "present", grade: "", note: "hi", markedBy: "t@school.pk", branchId: "" },
     ]); // c has a note but no status -> skipped
   });
 
@@ -218,4 +218,31 @@ describe("marking helpers", () => {
 test("escapeHtml", () => {
   expect(escapeHtml('<b>"A&B"</b>')).toBe("&lt;b&gt;&quot;A&amp;B&quot;&lt;/b&gt;");
   expect(escapeHtml(null)).toBe("");
+});
+
+describe("shared attendance table adapter", () => {
+  test("keeps student rows only and exposes studentId from subjectId", () => {
+    const out = studentAttendanceRows([
+      { id: "1", subjectType: "student", subjectId: "s1", date: "2026-10-03", status: "present" },
+      { id: "2", subjectType: "employee", subjectId: "e1", date: "2026-10-03", status: "absent" },
+      null,
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({ id: "1", studentId: "s1", subjectId: "s1", status: "present" });
+  });
+
+  test("handles missing input", () => {
+    expect(studentAttendanceRows(undefined)).toEqual([]);
+  });
+
+  test("conflict key matches the table's unique index (subject_type, subject_id, date)", () => {
+    expect(ATTENDANCE_CONFLICT).toEqual(["subjectType", "subjectId", "date"]);
+  });
+
+  test("an employee's row on the same day does not leak into student summaries", () => {
+    const rows = studentAttendanceRows([
+      { subjectType: "employee", subjectId: "s1", date: "d", status: "absent" },
+    ]);
+    expect(summarisePerStudent(rows)).toEqual(summarisePerStudent([]));
+  });
 });

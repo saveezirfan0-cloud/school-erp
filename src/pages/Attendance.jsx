@@ -11,6 +11,7 @@ import {
   buildStudentReport, overallPercent, dailyClassSummary, formatPercent,
   todayISO, presetRange, normaliseRange, isInRange,
   effectiveEntry, rosterCounts, buildMarkRows, escapeHtml,
+  ATTENDANCE_CONFLICT, studentAttendanceRows,
 } from "../utils/attendance";
 import toast from "react-hot-toast";
 import { CheckCheck, Download, FileText, Save, AlertTriangle } from "lucide-react";
@@ -152,8 +153,8 @@ function MarkTab({ students, attendanceRows, loading, canEdit, isMobile, markedB
     if (rows.length === 0) { toast.error("Nothing to save — mark at least one student"); return; }
     setSaving(true);
     try {
-      await upsertDocs("attendance", rows, ["studentId", "date"]);
-      const isUpdate = rows.some((r) => savedByStudent[r.studentId]);
+      await upsertDocs("attendance", rows, ATTENDANCE_CONFLICT);
+      const isUpdate = rows.some((r) => savedByStudent[r.subjectId]);
       const c = rows.reduce((a, r) => ({ ...a, [r.status]: (a[r.status] || 0) + 1 }), {});
       toast.success(`Attendance saved for ${rows.length} student${rows.length === 1 ? "" : "s"}`);
       logActivity(isUpdate ? "updated" : "created", "Attendance",
@@ -552,7 +553,9 @@ export default function Attendance() {
   // roster is already branch-scoped and every lookup goes through studentId,
   // so a student who later moves branch keeps their history.
   const { filtered: students, loading: studentsLoading } = useCollection("students", { activeBranch, sortBy: "name" });
-  const { rows: attendanceRows, loading: attLoading } = useCollection("attendance", { activeBranch, branchScoped: false });
+  const { rows: allAttendance, loading: attLoading } = useCollection("attendance", { activeBranch, branchScoped: false });
+  // The table also holds employee attendance; this page only deals with students.
+  const attendanceRows = useMemo(() => studentAttendanceRows(allAttendance), [allAttendance]);
 
   const branchName = activeBranch === "all" ? "All branches"
     : activeBranch === "main" ? "Main Office"

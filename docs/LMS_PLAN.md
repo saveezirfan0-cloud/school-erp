@@ -15,7 +15,7 @@ the same way as the rest of the app.
 
 | Piece | Where |
 |---|---|
-| Tables, indexes, RLS, realtime, Trash columns | `supabase/lms.sql` (run after schema/security/trash/realtime) |
+| Tables, indexes, RLS, realtime, Trash columns | `supabase/lms.sql` (run after schema/security/attendance/trash/realtime) |
 | `teacher` role + permissions in `has_perm` | `supabase/security.sql`, `supabase/lms.sql` |
 | Client permissions + role | `src/context/UserContext.jsx`, perm catalogs in `Users.jsx` / `AccessOverview.jsx` |
 | Collections registered in the shim | `src/firebase.js` (`TABLE_MAP`, `COLUMNS`, `SOFT_DELETE_TABLES`) |
@@ -42,7 +42,7 @@ document **`id`** (uuid), *not* the human "Student ID" field — same as
 | Collection | Key fields | Unique on |
 |---|---|---|
 | `subjects` | name, code, grade, teacher, branchId | — |
-| `attendance` | studentId, date, status (`present`/`absent`/`late`/`leave`), grade, note, markedBy, branchId | studentId + date |
+| `attendance` (shared with employee attendance, `supabase/attendance.sql`) | subjectType (`student`), subjectId (student doc id), date, status (`present`/`absent`/`late`/`leave`), branchId; `grade`, `note`, `markedBy` in `extra` | subjectType + subjectId + date |
 | `exams` | name, term, examType (`test`/`quiz`/`midterm`/`final`/`other`), grade, date, totalMarks, published, branchId | — |
 | `examResults` | examId, studentId, subjectId, marksObtained, maxMarks, absent, remarks, branchId | examId + studentId + subjectId |
 | `assignments` | title, description, subjectId, grade, assignedDate, dueDate, maxMarks, attachmentUrl, branchId | — |

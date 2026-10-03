@@ -3,9 +3,15 @@
 -- Run AFTER schema.sql, security.sql, trash.sql and realtime.sql.
 -- Safe to re-run.
 --
--- Adds: subjects, attendance, exams, exam_results, assignments,
---       submissions, materials, plus the `teacher` role and the
---       academic permissions (canView/EditAttendance, Exams, Learning).
+-- Adds: subjects, exams, exam_results, assignments, submissions,
+--       materials, plus the `teacher` role and the academic permissions
+--       (canView/EditAttendance, Exams, Learning).
+--
+-- ATTENDANCE uses the shared table from supabase/attendance.sql (one row
+-- per student OR employee per day, keyed by subject_type + subject_id +
+-- date). Run attendance.sql first; this file only widens its RLS so roles
+-- with canView/EditAttendance (e.g. teachers) can read and mark student
+-- attendance without needing canEditStudents.
 --
 -- Same conventions as the rest of the schema: real columns for
 -- fields the app queries/filters on, everything else in `extra`
@@ -86,28 +92,6 @@ create table if not exists public.subjects (
   created_at  timestamptz default now(),
   updated_at  timestamptz default now()
 );
-
--- ============================================================
--- ATTENDANCE  (one row per student per day)
--- status: present | absent | late | leave
--- ============================================================
-create table if not exists public.attendance (
-  id          uuid primary key default gen_random_uuid(),
-  student_id  text not null,   -- students.id (uuid as text, like invoices.student_id)
-  date        text not null,   -- yyyy-MM-dd
-  status      text not null default 'present',
-  grade       text,            -- denormalised from the student at marking time
-  note        text,
-  marked_by   text,            -- user email
-  branch_id   text,
-  extra       jsonb default '{}'::jsonb,
-  created_at  timestamptz default now(),
-  updated_at  timestamptz default now()
-);
-create unique index if not exists uq_attendance_student_date
-  on public.attendance (student_id, date);
-create index if not exists idx_attendance_date  on public.attendance (date);
-create index if not exists idx_attendance_grade on public.attendance (grade, date);
 
 -- ============================================================
 -- EXAMS  (a test / term exam for a class)
@@ -213,7 +197,7 @@ do $$
 declare t text;
 begin
   foreach t in array array[
-    'subjects','attendance','exams','exam_results','assignments','submissions','materials'
+    'subjects','exams','exam_results','assignments','submissions','materials'
   ] loop
     execute format(
       'drop trigger if exists trg_%1$s_updated on public.%1$s;
@@ -239,7 +223,7 @@ do $$
 declare t text;
 begin
   foreach t in array array[
-    'subjects','attendance','exams','exam_results','assignments','submissions','materials'
+    'subjects','exams','exam_results','assignments','submissions','materials'
   ] loop
     execute format('alter table public.%I replica identity full;', t);
     begin
@@ -264,7 +248,6 @@ begin
     array['assignments',  'canViewLearning',   'canEditLearning'],
     array['submissions',  'canViewLearning',   'canEditLearning'],
     array['materials',    'canViewLearning',   'canEditLearning'],
-    array['attendance',   'canViewAttendance', 'canEditAttendance'],
     array['exams',        'canViewExams',      'canEditExams'],
     array['exam_results', 'canViewExams',      'canEditExams']
   ] loop
@@ -298,3 +281,55 @@ begin
       t || '_delete', t, e);
   end loop;
 end $$;
+
+-- ---------- attendance (shared table from attendance.sql) ----------
+-- Same policies as attendance.sql, except student rows are also open to
+-- canView/EditAttendance. Employee rows are unchanged (employee perms).
+do $$
+begin
+  if to_regclass('public.attendance') is null then
+    raise exception 'public.attendance not found - run supabase/attendance.sql first';
+  end if;
+end $$;
+
+drop policy if exists attendance_select on public.attendance;
+create policy attendance_select on public.attendance for select to authenticated
+  using (
+    public.branch_visible(branch_id) and (
+      (subject_type = 'student'  and (public.has_perm('canViewStudents') or public.has_perm('canViewAttendance'))) or
+      (subject_type = 'employee' and public.has_perm('canViewEmployees'))
+    )
+  );
+
+drop policy if exists attendance_insert on public.attendance;
+create policy attendance_insert on public.attendance for insert to authenticated
+  with check (
+    public.branch_visible(branch_id) and (
+      (subject_type = 'student'  and (public.has_perm('canEditStudents') or public.has_perm('canEditAttendance'))) or
+      (subject_type = 'employee' and public.has_perm('canEditEmployees'))
+    )
+  );
+
+drop policy if exists attendance_update on public.attendance;
+create policy attendance_update on public.attendance for update to authenticated
+  using (
+    public.branch_visible(branch_id) and (
+      (subject_type = 'student'  and (public.has_perm('canEditStudents') or public.has_perm('canEditAttendance'))) or
+      (subject_type = 'employee' and public.has_perm('canEditEmployees'))
+    )
+  )
+  with check (
+    public.branch_visible(branch_id) and (
+      (subject_type = 'student'  and (public.has_perm('canEditStudents') or public.has_perm('canEditAttendance'))) or
+      (subject_type = 'employee' and public.has_perm('canEditEmployees'))
+    )
+  );
+
+drop policy if exists attendance_delete on public.attendance;
+create policy attendance_delete on public.attendance for delete to authenticated
+  using (
+    public.branch_visible(branch_id) and (
+      (subject_type = 'student'  and (public.has_perm('canEditStudents') or public.has_perm('canEditAttendance'))) or
+      (subject_type = 'employee' and public.has_perm('canEditEmployees'))
+    )
+  );

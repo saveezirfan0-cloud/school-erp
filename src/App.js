@@ -14,8 +14,10 @@ import Login from "./pages/Login";
 
 const Dashboard = lazy(() => import("./pages/Dashboard"));
 const Students = lazy(() => import("./pages/Students"));
+const StudentProfile = lazy(() => import("./pages/StudentProfile"));
 const StudentLedger = lazy(() => import("./pages/StudentLedger"));
 const Employees = lazy(() => import("./pages/Employees"));
+const EmployeeProfile = lazy(() => import("./pages/EmployeeProfile"));
 const Fees = lazy(() => import("./pages/Fees"));
 const Expenses = lazy(() => import("./pages/Expenses"));
 const QuickPayment = lazy(() => import("./pages/QuickPayment"));
@@ -112,6 +114,11 @@ export default function App() {
                     <Students />
                   </PrivateRoute>
                 } />
+                <Route path="students/:id" element={
+                  <PrivateRoute permission="canViewStudents">
+                    <StudentProfile />
+                  </PrivateRoute>
+                } />
                 <Route path="students/:id/ledger" element={
                   <PrivateRoute permission="canViewStudents">
                     <StudentLedger />
@@ -155,6 +162,11 @@ export default function App() {
                 <Route path="employees" element={
                   <PrivateRoute permission="canViewEmployees">
                     <Employees />
+                  </PrivateRoute>
+                } />
+                <Route path="employees/:id" element={
+                  <PrivateRoute permission="canViewEmployees">
+                    <EmployeeProfile />
                   </PrivateRoute>
                 } />
                 <Route path="fees" element={

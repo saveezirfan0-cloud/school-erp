@@ -5,6 +5,7 @@ import { useUser } from "../context/UserContext";
 import { useCollection } from "../hooks/useCollection";
 import { attendanceToday, formatDay, homeworkDueSoon } from "../utils/studentAcademics";
 import { todayStr } from "../utils/learning";
+import { studentAttendanceRows } from "../utils/attendance";
 import { CalendarCheck, ClipboardList, GraduationCap } from "lucide-react";
 
 const cardStyle = { background: "white", borderRadius: 12, padding: "16px 20px", border: "1px solid var(--border)", marginBottom: 20 };
@@ -23,9 +24,11 @@ function Tile({ label, value, color }) {
 // it lives in its own component and only subscribes when allowed.
 function AttendancePart({ activeBranch, withClasses }) {
   const attendance = useCollection("attendance", { activeBranch });
+  // The table also holds employee attendance; the widget counts students only.
+  const rows = useMemo(() => studentAttendanceRows(attendance.filtered), [attendance.filtered]);
   return withClasses
-    ? <AttendanceWithClasses activeBranch={activeBranch} rows={attendance.filtered} loading={attendance.loading} />
-    : <AttendanceTiles rows={attendance.filtered} students={undefined} loading={attendance.loading} />;
+    ? <AttendanceWithClasses activeBranch={activeBranch} rows={rows} loading={attendance.loading} />
+    : <AttendanceTiles rows={rows} students={undefined} loading={attendance.loading} />;
 }
 
 function AttendanceWithClasses({ activeBranch, rows, loading }) {

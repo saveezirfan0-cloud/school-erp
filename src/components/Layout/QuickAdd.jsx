@@ -36,7 +36,6 @@ export default function QuickAdd() {
     setSaving(true);
     try {
       if (kind === "student") {
-        if (!student.name.trim()) { toast.error("Name is required"); setSaving(false); return; }
         await addDoc(collection(db, "students"), { ...student, createdAt: serverTimestamp() });
         toast.success("Student added");
       } else {
@@ -108,8 +107,8 @@ export default function QuickAdd() {
               {kind === "student" ? (
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
                   <div style={{ gridColumn: "1 / -1" }}>
-                    <label style={label}>Full Name *</label>
-                    <input style={field} value={student.name} onChange={(e) => setStudent(p => ({ ...p, name: e.target.value }))} required />
+                    <label style={label}>Full Name</label>
+                    <input style={field} value={student.name} onChange={(e) => setStudent(p => ({ ...p, name: e.target.value }))} />
                   </div>
                   <div>
                     <label style={label}>Student ID</label>

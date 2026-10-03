@@ -4,7 +4,8 @@ import { db, doc, getDoc } from "../firebase";
 import { useBranch } from "../context/BranchContext";
 import { useUser } from "../context/UserContext";
 import { useCollection } from "../hooks/useCollection";
-import { DEFAULT_THRESHOLD, STATUS_LABELS, formatPercent, isLowAttendance, todayISO } from "../utils/attendance";
+import { useRelated } from "../hooks/useProfileData";
+import { DEFAULT_THRESHOLD, STATUS_LABELS, formatPercent, isLowAttendance, studentAttendanceRows, todayISO } from "../utils/attendance";
 import { gradeFor, trendFor } from "../utils/grading";
 import { SUBMISSION_STATUS_LABELS } from "../utils/learning";
 import {
@@ -89,8 +90,8 @@ function Pill({ bg, fg, children }) {
 
 function AttendanceSection({ studentId }) {
   const isMobile = useIsMobile();
-  const { loading, rows } = useCollection("attendance", { filters: { studentId } });
-  const mine = useMemo(() => rowsForStudent(rows, studentId), [rows, studentId]);
+  const { loading, rows } = useRelated("attendance", { subjectType: "student", subjectId: studentId });
+  const mine = useMemo(() => rowsForStudent(studentAttendanceRows(rows), studentId), [rows, studentId]);
   const overview = useMemo(() => attendanceOverview(mine), [mine]);
   const months = useMemo(() => monthlyAttendance(mine), [mine]);
   const absences = useMemo(() => recentAbsences(mine, 8), [mine]);
