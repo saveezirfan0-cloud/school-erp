@@ -154,3 +154,63 @@ export async function reverseSourcePayments(source, sourceId) {
   }
   return toReverse.length;
 }
+
+// ---- Double-entry journals for expenses ----
+//
+// A paid expense is also booked as a journal entry: debit the expense account
+// from the chart, credit the bank/cash account it was paid from. The entry is
+// tagged source "expense" + sourceId (stored in the journal's `extra` jsonb) so
+// it can be traced, retargeted and removed with its expense. Reports that read
+// expenses directly (monthlyStatement) skip these entries to avoid counting an
+// expense twice. Unpaid expenses post nothing: the books are cash-basis, with
+// no accounts-payable account to credit.
+
+export async function postExpenseJournal({
+  expenseId, expenseAccount, payAccount, amount, date, description, branchId = "",
+}) {
+  if (!expenseId || !expenseAccount?.name || !payAccount?.name) return null;
+  if (!amount || Number(amount) <= 0) return null;
+  return addDoc(collection(db, "journals"), {
+    date: date || new Date().toISOString().slice(0, 10),
+    reference: "EXP-" + String(expenseId).slice(0, 8),
+    description: description || "Expense",
+    debitAccount: expenseAccount.name,
+    creditAccount: payAccount.name,
+    amount: Number(amount),
+    notes: "Auto-posted from Expenses",
+    branchId,
+    source: "expense",
+    sourceId: expenseId,
+    createdAt: serverTimestamp(),
+  });
+}
+
+// Move an expense's journals to Trash (used when the expense is deleted).
+export async function deleteExpenseJournals(expenseIds) {
+  const ids = [].concat(expenseIds).filter(Boolean);
+  if (!ids.length) return;
+  const { error } = await supabase
+    .from("journals")
+    .update({ deleted_at: new Date().toISOString() })
+    .eq("extra->>source", "expense")
+    .in("extra->>sourceId", ids)
+    .is("deleted_at", null);
+  if (error) throw error;
+}
+
+// Keep existing expense journals in step with a bulk edit of their expenses:
+// `accountName` re-points the debit side, `date` moves the entry.
+export async function syncExpenseJournals(expenseIds, { accountName, date } = {}) {
+  const ids = [].concat(expenseIds).filter(Boolean);
+  const patch = {};
+  if (accountName) patch.debit_account = accountName;
+  if (date) patch.date = date;
+  if (!ids.length || !Object.keys(patch).length) return;
+  const { error } = await supabase
+    .from("journals")
+    .update(patch)
+    .eq("extra->>source", "expense")
+    .in("extra->>sourceId", ids)
+    .is("deleted_at", null);
+  if (error) throw error;
+}
