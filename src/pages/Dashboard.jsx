@@ -4,6 +4,7 @@ import { collection, getDocs } from "../firebase";
 import { useBranch } from "../context/BranchContext";
 import { effectiveBranchId, matchesBranch } from "../utils/branchFilter";
 import { toMillis } from "../utils/dates";
+import { invoiceCollected, invoiceOutstanding } from "../utils/invoiceTotals";
 import { buildBuckets, bucketKey, defaultPeriod, inRange, resolveRange, describePeriod, toYMD } from "../utils/dateRange";
 import DateRangeFilter from "../components/UI/DateRangeFilter";
 import DetailModal from "../components/UI/DetailModal";
@@ -24,7 +25,7 @@ const sum = (rows, key) => rows.reduce((s, r) => s + Number(r[key] || 0), 0);
 
 export default function Dashboard() {
   const { activeBranch, setActiveBranch, branches } = useBranch();
-  const [raw, setRaw] = useState({ students: [], employees: [], invoices: [], expenses: [] });
+  const [raw, setRaw] = useState({ students: [], employees: [], invoices: [], expenses: [], payslips: [] });
   const [loading, setLoading] = useState(true);
   const [period, setPeriod] = useState(loadPeriod);
   const [detail, setDetail] = useState(null); // key of the open popup
@@ -37,14 +38,15 @@ export default function Dashboard() {
     const fetchAll = async () => {
       setLoading(true);
       try {
-        const [studentsSnap, employeesSnap, invSnap, expSnap] = await Promise.all([
+        const [studentsSnap, employeesSnap, invSnap, expSnap, payslipsSnap] = await Promise.all([
           getDocs(collection(db, "students")),
           getDocs(collection(db, "employees")),
           getDocs(collection(db, "invoices")),
           getDocs(collection(db, "expenses")),
+          getDocs(collection(db, "payslips")),
         ]);
         const read = (snap) => snap.docs.map(d => ({ id: d.id, ...d.data() }));
-        setRaw({ students: read(studentsSnap), employees: read(employeesSnap), invoices: read(invSnap), expenses: read(expSnap) });
+        setRaw({ students: read(studentsSnap), employees: read(employeesSnap), invoices: read(invSnap), expenses: read(expSnap), payslips: read(payslipsSnap) });
       } catch (err) { console.error("Dashboard error:", err); }
       setLoading(false);
     };
@@ -60,22 +62,26 @@ export default function Dashboard() {
   const all = useMemo(() => {
     const studentsById = new Map(raw.students.map(s => [s.id, s]));
 
-    const invoices = raw.invoices.map(i => {
-      const amount = Number(i.amount || 0);
-      const paidAmount = Number(i.paidAmount || 0);
-      // Money actually received; older "paid" invoices may lack paidAmount.
-      const received = paidAmount > 0 ? paidAmount : (i.status === "paid" ? amount : 0);
-      const open = i.status === "pending" || i.status === "partial";
-      return {
-        ...i,
-        _branch: effectiveBranchId(i, studentsById),
-        _received: received,
-        _outstanding: open ? Math.max(0, amount - paidAmount - Number(i.concessionAmount || 0)) : 0,
-        _paidOn: toYMD(i.paidDate || i.createdAt),
-        _raisedOn: toYMD(i.createdAt),
-      };
-    });
-    const expenses = raw.expenses.map(e => ({ ...e, _branch: !e.branchId || e.branchId === "main" ? "" : e.branchId, _on: toYMD(e.date || e.createdAt) }));
+    // Money rules live in utils/invoiceTotals so the Dashboard, Reports and
+    // Fees pages always agree.
+    const invoices = raw.invoices.map(i => ({
+      ...i,
+      _branch: effectiveBranchId(i, studentsById),
+      _received: invoiceCollected(i),
+      _outstanding: invoiceOutstanding(i),
+      _paidOn: toYMD(i.paidDate || i.createdAt),
+      _raisedOn: toYMD(i.createdAt),
+    }));
+    const branchKey = (r) => (!r.branchId || r.branchId === "main" ? "" : r.branchId);
+    // Total expenses = operating expenses + payroll (matches the P&L report).
+    const expenses = [
+      ...raw.expenses.map(e => ({ ...e, _branch: branchKey(e), _on: toYMD(e.date || e.createdAt) })),
+      ...raw.payslips.map(p => ({
+        id: `payslip-${p.id}`, _branch: branchKey(p), _on: toYMD(p.paidDate || p.date || p.createdAt),
+        description: `Salary — ${p.employeeName || "employee"} (${p.month || ""} ${p.year || ""})`.trim(),
+        category: "Salaries", amount: Number(p.netPay || 0),
+      })),
+    ];
     const students = raw.students.map(s => ({ ...s, _branch: !s.branchId || s.branchId === "main" ? "" : s.branchId }));
     const employees = raw.employees.map(e => ({ ...e, _branch: !e.branchId || e.branchId === "main" ? "" : e.branchId }));
 
@@ -146,7 +152,7 @@ export default function Dashboard() {
     { key: "employees", label: "Employees", value: scope.employees.length, icon: UserCheck, color: "#2a8c7a", bg: "#e6f4f1", hint: "Current headcount" },
     { key: "collected", label: "Fees Collected", value: rs(collected), icon: TrendingUp, color: "#10b981", bg: "#ecfdf5" },
     { key: "pending", label: "Pending Fees", value: rs(pendingAmt), icon: Receipt, color: "#f59e0b", bg: "#fffbeb" },
-    { key: "expenses", label: "Total Expenses", value: rs(totalExp), icon: TrendingDown, color: "#ef4444", bg: "#fef2f2" },
+    { key: "expenses", label: "Total Expenses", value: rs(totalExp), icon: TrendingDown, color: "#ef4444", bg: "#fef2f2", hint: "Operating + payroll" },
     // Branch count only makes sense across all branches; a single-branch
     // dashboard shows its own unpaid-invoice count instead.
     isAll
@@ -256,7 +262,7 @@ export default function Dashboard() {
         <div>
           <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 4, textTransform: "uppercase", letterSpacing: 1 }}>Net {netSurplus >= 0 ? "Surplus" : "Deficit"}</div>
           <div style={{ fontSize: 28, fontWeight: 700 }}>{rs(Math.abs(netSurplus))}</div>
-          <div style={{ fontSize: 12, opacity: 0.65, marginTop: 4 }}>Fees collected minus expenses · {periodText}</div>
+          <div style={{ fontSize: 12, opacity: 0.65, marginTop: 4 }}>Fees collected minus expenses &amp; payroll · {periodText}</div>
         </div>
         <div style={{ textAlign: "right" }}>
           <div style={{ fontSize: 12, opacity: 0.65, marginBottom: 4 }}>Collection rate</div>
