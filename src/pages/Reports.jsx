@@ -11,7 +11,7 @@ import {
   computeFinancials, buildSeries, branchBreakdown, computeCashFlow, computeBalanceSheet,
   filterFeeRows, summarizeFees, buildHighlights, change, formatRs, formatPct,
 } from "../utils/reportData";
-import HajiSahabReport from "../components/reports/HajiSahabReport";
+import HajiSahabReport from "../components/hajiSahab/HajiSahabReport";
 import ReportFilters, { Field, Select, controlStyle } from "../components/Reports/ReportFilters";
 import { Card, Delta, KpiCard, KpiGrid, Highlights, BarList, DataTable, compact, moneyTip, cardStyle } from "../components/Reports/ReportParts";
 

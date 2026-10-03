@@ -1,4 +1,7 @@
-import { buildMonthlyStatement, statementPeriodLabel, percentChange, statementCsvRows } from "./monthlyStatement";
+import {
+  buildMonthlyStatement, statementPeriodLabel, percentChange, statementCsvRows,
+  monthsBetween, isSingleMonth, previousRange, rangeLabel, fmtMoney,
+} from "./monthlyStatement";
 
 const branches = [{ id: "b1", name: "Baneen" }, { id: "b2", name: "Banaat" }];
 const accounts = [
@@ -148,4 +151,51 @@ test("helpers", () => {
   const rows = statementCsvRows(buildMonthlyStatement(base));
   expect(rows[0]).toEqual(["Opening Balance", "", "", "", 1150]);
   expect(rows.at(-1)[0]).toBe("Closing Balance");
+});
+
+test("a custom range replaces the calendar month", () => {
+  const s = buildMonthlyStatement({ ...base, from: "2026-08-25", to: "2026-09-12", payments: [], invoices: [] });
+  // expenses on 09-02, 09-03, 09-04 are inside; 10-01 is outside
+  expect(s.totalExpense).toBe(300 + 100 + 40 + 400);
+  expect(s.month).toBe(8);
+  expect(s.from).toBe("2026-08-25");
+});
+
+test("source filter keeps only the chosen kinds of record", () => {
+  const onlyExpenses = buildMonthlyStatement({ ...base, sources: ["expenses"] });
+  expect(onlyExpenses.totalIncome).toBe(0);
+  expect(onlyExpenses.totalExpense).toBe(440); // no payroll
+  const feesAndPayroll = buildMonthlyStatement({ ...base, sources: ["fees", "payroll"] });
+  expect(feesAndPayroll.totalIncome).toBe(1500);
+  expect(feesAndPayroll.totalExpense).toBe(400);
+});
+
+test("account filter keeps money that moved through that account", () => {
+  const s = buildMonthlyStatement({
+    ...base,
+    accounts: [...accounts, { name: "Meezan", subType: "Bank & Cash", type: "Assets", balance: 0 }],
+    invoices: [{ branchId: "b1", paidAmount: 300, paidAccount: "Meezan", paidDate: "2026-09-10", lineItems: [] },
+               { branchId: "b1", paidAmount: 700, paidAccount: "Cash", paidDate: "2026-09-10", lineItems: [] }],
+    expenses: [{ branchId: "b1", category: "Rent", amount: 50, date: "2026-09-02", paidAccount: "Meezan" },
+               { branchId: "b1", category: "Rent", amount: 80, date: "2026-09-02", paidAccount: "Cash" }],
+    payslips: [], payments: [], account: "Meezan",
+  });
+  expect(s.totalIncome).toBe(300);
+  expect(s.totalExpense).toBe(50);
+  expect(s.cashAccounts.map((a) => a.name)).toEqual([]); // Meezan has no movements in this fixture
+});
+
+test("range helpers", () => {
+  expect(monthsBetween("2026-07-01", "2026-09-30")).toEqual(["2026-07", "2026-08", "2026-09"]);
+  expect(monthsBetween("2026-11-15", "2027-01-02")).toEqual(["2026-11", "2026-12", "2027-01"]);
+  expect(isSingleMonth("2026-09-01", "2026-09-30")).toBe(true);
+  expect(isSingleMonth("2026-09-01", "2026-10-31")).toBe(false);
+  expect(previousRange("2026-09-01", "2026-09-30")).toEqual({ from: "2026-08-01", to: "2026-08-31" });
+  expect(previousRange("2026-01-01", "2026-01-31")).toEqual({ from: "2025-12-01", to: "2025-12-31" });
+  expect(previousRange("2026-07-01", "2026-09-30")).toEqual({ from: "2026-04-01", to: "2026-06-30" });
+  expect(previousRange("2026-09-11", "2026-09-20")).toEqual({ from: "2026-09-01", to: "2026-09-10" });
+  expect(rangeLabel("2026-09-01", "2026-09-30")).toBe("1st September to 30th September 2026");
+  expect(rangeLabel("2026-07-01", "2026-09-30")).toBe("1 Jul 2026 to 30 Sep 2026");
+  expect(fmtMoney(-38600)).toBe("−Rs. 38,600");
+  expect(fmtMoney(1200)).toBe("Rs. 1,200");
 });
