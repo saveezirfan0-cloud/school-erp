@@ -20,8 +20,6 @@ const payments = [
   { id: "p2", type: "cash_in", account: "Cash", amount: 3000, source: "invoice", sourceId: "B", date: "2026-10-02" },
   { id: "p3", type: "cash_in", account: "Cash", amount: 2500, source: "invoice", sourceId: "D", date: "2026-10-04" },
 ];
-const accounts = [{ id: "acc1", code: "1001", name: "Cash", type: "Assets", subType: "Bank & Cash", balance: 0 }];
-
 describe("ACC-04: one definition of collected / pending", () => {
   // The formulas the screens used before, kept here to show the drift.
   const legacyDashboardCollected = invoices.filter((i) => i.status === "paid").reduce((s, i) => s + i.amount, 0);

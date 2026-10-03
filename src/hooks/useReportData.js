@@ -35,7 +35,6 @@ export function useReportData(names, enabled = true) {
       setState({ data, loading: false, errors, capped });
     });
     return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, enabled, nonce]);
 
   const reload = useCallback(() => setNonce((n) => n + 1), []);
