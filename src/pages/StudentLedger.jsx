@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { db, collection, onSnapshot, doc, getDoc } from "../firebase";
-import { toMillis, formatDate } from "../utils/dates";
+import { toMillis, formatDate, localISODate } from "../utils/dates";
+import { summarizeInvoices } from "../utils/fees";
 import { ArrowLeft, FileText, TrendingUp, Wallet } from "lucide-react";
 
 // Per-student financial history: every invoice raised, every payment
@@ -29,16 +30,9 @@ export default function StudentLedger() {
     return () => { u1(); u2(); };
   }, [id]);
 
-  // Payments linked to THIS student's invoices.
-  const invoiceIds = new Set(invoices.map((i) => i.id));
-  const studentPayments = payments.filter((p) => invoiceIds.has(p.sourceId));
-
-  const totalBilled = invoices.reduce((s, i) => s + Number(i.amount || 0), 0);
-  // net received = cash_in minus any reversals (cash_out tied to invoices)
-  const totalReceived = studentPayments
-    .filter((p) => !p.reversed)
-    .reduce((s, p) => s + (p.type === "cash_in" ? Number(p.amount) : -Number(p.amount)), 0);
-  const balance = totalBilled - totalReceived;
+  // Same money rules as the student profile's Fees tab (see utils/fees.js).
+  const { billed: totalBilled, received: totalReceived, concession: totalConcession, balance, payments: studentPayments } =
+    summarizeInvoices(invoices, payments, localISODate());
 
   // Build a combined, dated timeline of invoices and payments.
   const events = [
@@ -77,6 +71,7 @@ export default function StudentLedger() {
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 20 }}>
         {card("Total Billed", totalBilled, "var(--primary)", FileText)}
         {card("Total Received", totalReceived, "#10b981", TrendingUp)}
+        {totalConcession > 0 && card("Concession", totalConcession, "#2563eb", FileText)}
         {card("Balance Due", balance, balance > 0 ? "#ef4444" : "#10b981", Wallet)}
       </div>
 
@@ -102,7 +97,7 @@ export default function StudentLedger() {
         )}
       </div>
       <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 10 }}>
-        Invoices add to what's billed; payments reduce the balance. Reversed payments are shown struck through and don't count.
+        Invoices add to what's billed; payments reduce the balance. Reversed payments (and their reversal entries) are shown for the record but don't count. Concessions forgive part of an invoice's balance.
       </p>
     </div>
   );

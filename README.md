@@ -31,6 +31,8 @@ Optional (WhatsApp reminders): `REACT_APP_WHATSAPP_API_URL`,
 Run in the SQL Editor, in order:
 1. `supabase/schema.sql` — creates the tables
 2. `supabase/security.sql` — enables Row-Level Security policies
+3. `supabase/attendance.sql` — attendance table + RLS + realtime
+   (needed for the Attendance tab on student / employee profiles)
 
 Then:
 - Disable signups: Authentication → Sign In/Providers → Email → off

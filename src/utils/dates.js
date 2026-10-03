@@ -35,3 +35,24 @@ export function formatTime(value, locale = "en-GB", opts = { hour: "2-digit", mi
   const d = toDate(value);
   return d ? d.toLocaleTimeString(locale, opts) : "";
 }
+
+// Local-calendar "YYYY-MM-DD" (toISOString() would shift the day for
+// anyone east/west of UTC — wrong for attendance, which is per local day).
+export function localISODate(d = new Date()) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+// Time elapsed since a "YYYY-MM-DD" date, e.g. "2 yrs 3 mos".
+export function durationSince(dateStr) {
+  const d = dateStr && new Date(dateStr);
+  if (!d || Number.isNaN(d.getTime())) return "—";
+  const now = new Date();
+  let months = (now.getFullYear() - d.getFullYear()) * 12 + now.getMonth() - d.getMonth();
+  if (now.getDate() < d.getDate()) months--;
+  if (months < 0) return "Not started yet";
+  const y = Math.floor(months / 12), m = months % 12;
+  return [y && `${y} yr${y === 1 ? "" : "s"}`, (m || !y) && `${m} mo${m === 1 ? "" : "s"}`].filter(Boolean).join(" ");
+}
