@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import { useUser } from "../context/UserContext";
 import { db, addDoc, updateDoc, deleteDoc, doc, collection, serverTimestamp, updateDocs, deleteDocs } from "../firebase";
 import { useBranch } from "../context/BranchContext";
 import { useCollection } from "../hooks/useCollection";
@@ -27,6 +28,7 @@ function useIsMobile() {
 }
 
 export default function Students() {
+  const { can } = useUser();
   const { branches, activeBranch } = useBranch();
   const isMobile = useIsMobile();
   const navigate = useNavigate();
@@ -137,8 +139,8 @@ export default function Students() {
         <h2 style={{ fontSize: 20, fontWeight: 700 }}>Students <span style={{ fontSize: 13, fontWeight: 400, color: "var(--text-muted)" }}>({total})</span></h2>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           {!isMobile && <>
-            <button onClick={handleCSV} style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13 }}><Download size={14} /> CSV</button>
-            <button onClick={handlePDF} style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13 }}><FileText size={14} /> PDF</button>
+            {can("canExport") && <button onClick={handleCSV} style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13 }}><Download size={14} /> CSV</button>}
+            {can("canExport") && <button onClick={handlePDF} style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13 }}><FileText size={14} /> PDF</button>}
           </>}
           <button onClick={() => { setForm(emptyStudent); setEditing(null); setShowModal(true); }}
             style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 16px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600, fontSize: 13 }}>

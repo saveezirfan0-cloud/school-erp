@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import { useUser } from "../context/UserContext";
 import { db } from "../firebase";
 import { collection, deleteDoc, doc, onSnapshot, serverTimestamp, updateDocs, deleteDocs } from "../firebase";
 import { matchesBranch } from "../utils/branchFilter";
@@ -32,6 +33,7 @@ function useIsMobile() {
 }
 
 export default function Expenses() {
+  const { can } = useUser();
   const { branches, activeBranch } = useBranch();
   const isMobile = useIsMobile();
   const [expenses, setExpenses] = useState([]);
@@ -246,12 +248,12 @@ export default function Expenses() {
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           {!isMobile && (
             <>
-              <button onClick={handleCSV} style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13 }}>
+              {can("canExport") && <button onClick={handleCSV} style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13 }}>
                 <Download size={14} /> CSV
-              </button>
-              <button onClick={handlePDF} style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13 }}>
+              </button>}
+              {can("canExport") && <button onClick={handlePDF} style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13 }}>
                 <FileText size={14} /> PDF
-              </button>
+              </button>}
             </>
           )}
           <button onClick={openModal}

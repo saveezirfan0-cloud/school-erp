@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import { useUser } from "../context/UserContext";
 import { db } from "../firebase";
 import { doc, getDoc, serverTimestamp, updateDocs } from "../firebase";
 import { useBranch } from "../context/BranchContext";
@@ -46,6 +47,7 @@ function useIsMobile() {
 }
 
 export default function Payments() {
+  const { can } = useUser();
   const { branches, activeBranch } = useBranch();
   const isMobile = useIsMobile();
   const { accounts, postable, problem: accountsProblem, status: accountsStatus } = useAccounts();
@@ -247,8 +249,8 @@ export default function Payments() {
         <h2 style={{ fontSize: 20, fontWeight: 700 }}>Cash & Bank Payments</h2>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           {!isMobile && <>
-            <button onClick={handleCSV} style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13 }}><Download size={14} /> CSV</button>
-            <button onClick={handlePDF} style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13 }}><FileText size={14} /> PDF</button>
+            {can("canExport") && <button onClick={handleCSV} style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13 }}><Download size={14} /> CSV</button>}
+            {can("canExport") && <button onClick={handlePDF} style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13 }}><FileText size={14} /> PDF</button>}
           </>}
           <button onClick={openModal}
             style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 18px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600 }}>
