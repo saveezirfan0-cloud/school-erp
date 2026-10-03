@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { db } from "../firebase";
-import { collection, addDoc, deleteDoc, doc, onSnapshot, serverTimestamp, updateDocs, deleteDocs } from "../firebase";
+import { doc, getDoc, serverTimestamp, updateDocs } from "../firebase";
 import { useBranch } from "../context/BranchContext";
 import { useCollection } from "../hooks/useCollection";
 import { useBulkSelect } from "../hooks/useBulkSelect";
@@ -8,14 +8,32 @@ import ListToolbar from "../components/UI/ListToolbar";
 import Pagination from "../components/UI/Pagination";
 import BulkBar, { RowCheckbox, HeaderCheckbox } from "../components/UI/BulkBar";
 import BulkEditModal from "../components/UI/BulkEditModal";
-import { bulkResultMessage } from "../utils/bulk";
+import { runBulk, bulkResultMessage } from "../utils/bulk";
 import { logActivity } from "../utils/auditLog";
+import { postManualPayment, reversePayment, isReversalRow, isPostedBySource, pickDefaultAccountId, rememberAccountChoice } from "../utils/accounting";
+import { parsePositiveAmount, sumMoney, todayLocal, isIsoDate, formatMoney } from "../utils/money";
+import { useAccounts } from "../utils/useAccounts";
+import { useSubmitLock } from "../utils/useSubmitLock";
+import { receiptFromPayment, buildReceiptHtml, openPrintWindow } from "../utils/invoiceGenerator";
 import { exportToCSV, exportToPDF } from "../utils/exportUtils";
 import toast from "react-hot-toast";
-import { Plus, X, ArrowUpCircle, ArrowDownCircle, Trash2, Download, FileText, Pencil } from "lucide-react";
+import { Plus, X, ArrowUpCircle, ArrowDownCircle, Undo2, Download, FileText, Pencil, Printer, Trash2 } from "lucide-react";
 
 const CATEGORIES = ["Fee Collection", "Salary Payment", "Rent", "Utilities", "Supplies", "Maintenance", "Bank Deposit", "Bank Withdrawal", "Other"];
-const emptyLine = { account: "", description: "", category: "", amount: "", type: "cash_out" };
+const emptyLine = { accountId: "", description: "", category: "", amount: "", type: "cash_out" };
+const emptyForm = () => ({ type: "cash_in", accountId: "", description: "", amount: "", date: todayLocal(), reference: "", branchId: "", category: "" });
+
+// A payment can be reversed directly only when it is a manual entry that
+// is neither already reversed nor itself a reversal. Rows created by an
+// invoice / expense / payslip are changed through that document, so the
+// document and the ledger never disagree (ACC-02).
+const reverseBlockReason = (p) => {
+  if (isReversalRow(p)) return "This is a reversal entry and cannot be reversed again.";
+  if (p.reversed) return "This payment has already been reversed.";
+  if (isPostedBySource(p)) return `This payment belongs to ${p.source === "payslip" ? "a payslip" : p.source === "expense" ? "an expense" : "an invoice"}. Delete or edit that document instead; its payments are reversed for you.`;
+  return "";
+};
+const canPrintReceipt = (p) => p.type === "cash_in" && !p.reversed && !isReversalRow(p) && !!p.id && isIsoDate(p.date) && (p.source === "invoice" || p.category === "Fee Collection");
 
 function useIsMobile() {
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
@@ -30,12 +48,13 @@ function useIsMobile() {
 export default function Payments() {
   const { branches, activeBranch } = useBranch();
   const isMobile = useIsMobile();
-  const [accounts, setAccounts] = useState([]);
+  const { accounts, postable, problem: accountsProblem, status: accountsStatus } = useAccounts();
+  const { busy: submitting, run: runSubmit } = useSubmitLock();
   const [showModal, setShowModal] = useState(false);
   const [mode, setMode] = useState("single");
-  const [form, setForm] = useState({ type: "cash_in", account: "", description: "", amount: "", date: "", reference: "", branchId: "", category: "" });
+  const [form, setForm] = useState(emptyForm());
   const [bulkLines, setBulkLines] = useState([{ ...emptyLine }, { ...emptyLine }]);
-  const [bulkDate, setBulkDate] = useState("");
+  const [bulkDate, setBulkDate] = useState(todayLocal());
   const [bulkRef, setBulkRef] = useState("");
   const [search, setSearch] = useState("");
   const [filterType, setFilterType] = useState("");
@@ -44,14 +63,6 @@ export default function Payments() {
   const [filterDateTo, setFilterDateTo] = useState("");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
-
-  // accounts still loaded directly (used by the modal dropdowns)
-  useEffect(() => {
-    const u2 = onSnapshot(collection(db, "accounts"), snap =>
-      setAccounts(snap.docs.map(d => ({ id: d.id, ...d.data() })))
-    );
-    return () => { u2(); };
-  }, []);
 
   // payments via the shared hook: realtime + search + filters + sort + paging
   const { filtered, paged, total, pageCount, page: safePage } = useCollection("payments", {
@@ -77,67 +88,110 @@ export default function Payments() {
   const [showBulkEdit, setShowBulkEdit] = useState(false);
   const [bulkBusy, setBulkBusy] = useState(false);
 
-  const bankCashAccounts = accounts.filter(a => a.subType === "Bank & Cash" || a.type === "Assets");
+  const totalIn = sumMoney(filtered.filter(p => p.type === "cash_in").map(p => p.amount));
+  const totalOut = sumMoney(filtered.filter(p => p.type === "cash_out").map(p => p.amount));
 
-  const totalIn = filtered.filter(p => p.type === "cash_in").reduce((s, p) => s + Number(p.amount), 0);
-  const totalOut = filtered.filter(p => p.type === "cash_out").reduce((s, p) => s + Number(p.amount), 0);
-
-  const handleSingle = async (e) => {
-    e.preventDefault();
-    await addDoc(collection(db, "payments"), { ...form, createdAt: serverTimestamp() });
-    toast.success("Payment recorded");
-    logActivity("recorded", "Payments", `${form.type === "cash_in" ? "Cash in" : "Cash out"} Rs. ${Number(form.amount || 0).toLocaleString()} — ${form.account}${form.description ? ` (${form.description})` : ""}`);
-    setShowModal(false);
-    setForm({ type: "cash_in", account: "", description: "", amount: "", date: "", reference: "", branchId: "", category: "" });
+  const openModal = () => {
+    setForm({ ...emptyForm(), accountId: pickDefaultAccountId(postable) });
+    setBulkDate(todayLocal());
+    setShowModal(true);
   };
 
-  const handleBulk = async (e) => {
+  const handleSingle = (e) => {
     e.preventDefault();
-    const valid = bulkLines.filter(l => l.account && l.amount && l.description);
-    if (valid.length === 0) return toast.error("Add at least one valid line");
-    await Promise.all(valid.map(line =>
-      addDoc(collection(db, "payments"), { ...line, date: bulkDate, reference: bulkRef, createdAt: serverTimestamp() })
-    ));
-    toast.success(`${valid.length} payments recorded`);
-    logActivity("recorded", "Payments", `${valid.length} payments (bulk entry)`);
-    setShowModal(false);
-    setBulkLines([{ ...emptyLine }, { ...emptyLine }]);
-    setBulkDate(""); setBulkRef("");
+    return runSubmit(async () => {
+      if (!form.accountId) return toast.error("Select the account");
+      try {
+        await postManualPayment({ accounts, ...form });
+        rememberAccountChoice(form.accountId);
+        const acctName = accounts.find(a => a.id === form.accountId)?.name || "";
+        toast.success("Payment recorded");
+        logActivity("recorded", "Payments", `${form.type === "cash_in" ? "Cash in" : "Cash out"} Rs. ${formatMoney(form.amount)} — ${acctName}${form.description ? ` (${form.description})` : ""}`);
+        setShowModal(false);
+        setForm(emptyForm());
+      } catch (err) {
+        toast.error(err?.message || "Could not record the payment", { duration: 7000 });
+      }
+    });
   };
 
-  const handleDelete = async (p) => {
-    if (!window.confirm("Delete this payment? Account balances will change. You can restore it from Trash.")) return;
+  const handleBulk = (e) => {
+    e.preventDefault();
+    return runSubmit(async () => {
+      const valid = bulkLines.filter(l => l.accountId && l.amount && l.description);
+      if (valid.length === 0) return toast.error("Add at least one valid line");
+      // validate every line before writing any
+      for (const l of valid) {
+        const a = parsePositiveAmount(l.amount, `Amount for "${l.description}"`);
+        if (!a.ok) return toast.error(a.error);
+      }
+      if (!isIsoDate(bulkDate)) return toast.error("Enter a valid date");
+      let ok = 0;
+      const failures = [];
+      for (const line of valid) {
+        try {
+          await postManualPayment({ accounts, ...line, date: bulkDate, reference: bulkRef });
+          ok++;
+        } catch (err) {
+          failures.push(`${line.description}: ${err?.message || "failed"}`);
+        }
+      }
+      if (failures.length) {
+        toast.error(`${ok} recorded, ${failures.length} failed: ${failures.slice(0, 3).join("; ")}`, { duration: 9000 });
+        // keep only the failed lines so a retry cannot duplicate the good ones
+        const failedDescs = new Set(failures.map(f => f.split(":")[0]));
+        setBulkLines(valid.filter(l => failedDescs.has(l.description)));
+      } else {
+        toast.success(`${ok} payments recorded`);
+        setShowModal(false);
+        setBulkLines([{ ...emptyLine }, { ...emptyLine }]);
+        setBulkRef("");
+      }
+      if (ok > 0) logActivity("recorded", "Payments", `${ok} payments (bulk entry)`);
+    });
+  };
+
+  // Posted money is never deleted or edited in place: it is reversed with an
+  // equal-and-opposite entry, and both rows stay in the ledger.
+  const handleReverse = (p) => runSubmit(async () => {
+    const why = reverseBlockReason(p);
+    if (why) return toast.error(why, { duration: 6000 });
+    if (!window.confirm("Reverse this payment? An equal and opposite entry is posted and both stay in the ledger.")) return;
     try {
-      await deleteDoc(doc(db, "payments", p.id));
-      toast.success("Payment moved to Trash");
-      logActivity("deleted", "Payments", `${p.type === "cash_in" ? "Cash in" : "Cash out"} Rs. ${Number(p.amount || 0).toLocaleString()} — ${p.account}${p.description ? ` (${p.description})` : ""}`);
-    }
-    catch { toast.error("Error deleting"); }
-  };
+      const id = await reversePayment(p);
+      if (!id) return toast("This payment was already reversed");
+      toast.success("Payment reversed");
+      logActivity("reversed", "Payments", `${p.type === "cash_in" ? "Cash in" : "Cash out"} Rs. ${formatMoney(p.amount || 0)} — ${p.account}${p.description ? ` (${p.description})` : ""}`);
+    } catch (err) { toast.error(err?.message || "Could not reverse the payment"); }
+  });
 
-  const handleBulkDelete = async () => {
-    const ids = [...bulk.selected];
-    if (ids.length === 0) return;
-    if (!window.confirm(`Delete ${ids.length} payment${ids.length === 1 ? "" : "s"}? Account balances will change accordingly. You can restore them from Trash.`)) return;
+  const handleBulkReverse = () => runSubmit(async () => {
+    const rows = filtered.filter(p => bulk.selected.has(p.id));
+    const eligible = rows.filter(p => !reverseBlockReason(p));
+    const skipped = rows.length - eligible.length;
+    if (eligible.length === 0) return toast.error("None of the selected payments can be reversed here (already reversed, reversal entries, or posted from an invoice, expense or payslip).", { duration: 7000 });
+    if (!window.confirm(`Reverse ${eligible.length} payment${eligible.length === 1 ? "" : "s"}?${skipped ? ` ${skipped} selected row${skipped === 1 ? "" : "s"} cannot be reversed here and will be skipped.` : ""}`)) return;
     setBulkBusy(true);
     try {
-      await deleteDocs("payments", ids);
-      toast.success(bulkResultMessage(ids.length, 0, "moved to Trash", "payments"));
-      logActivity("deleted", "Payments", `${ids.length} payments (bulk)`);
+      const { ok, failed } = await runBulk(eligible, (p) => reversePayment(p), { chunkSize: 3 });
+      toast[failed.length ? "error" : "success"](bulkResultMessage(ok.length, failed.length, "reversed", "payments") + (skipped ? ` · ${skipped} skipped` : ""));
+      if (ok.length) logActivity("reversed", "Payments", `${ok.length} payments (bulk)`);
       bulk.clear();
     } catch (err) {
-      toast.error(err?.message || "Bulk delete failed");
+      toast.error(err?.message || "Bulk reverse failed");
     } finally { setBulkBusy(false); }
-  };
+  });
 
+  // Category is the only field that is safe to change on posted payments:
+  // account, date and branch move money between balances and periods.
   const handleBulkEditApply = async (changes) => {
     setBulkBusy(true);
     try {
-      const n = bulk.count;
-      if (changes.branchId === "main") changes.branchId = "";
-      await updateDocs("payments", [...bulk.selected], { ...changes, updatedAt: serverTimestamp() });
-      toast.success(`${n} payment${n === 1 ? "" : "s"} updated`);
-      logActivity("updated", "Payments", `${n} payments (bulk): ${Object.keys(changes).join(", ")}`);
+      const rows = filtered.filter(p => bulk.selected.has(p.id) && !isReversalRow(p));
+      if (rows.length === 0) { toast.error("Reversal entries cannot be edited"); return; }
+      await updateDocs("payments", rows.map(p => p.id), { category: changes.category, updatedAt: serverTimestamp() });
+      toast.success(`${rows.length} payment${rows.length === 1 ? "" : "s"} updated`);
+      logActivity("updated", "Payments", `${rows.length} payments (bulk): category`);
       setShowBulkEdit(false);
       bulk.clear();
     } catch (err) {
@@ -145,10 +199,27 @@ export default function Payments() {
     } finally { setBulkBusy(false); }
   };
 
+  const handlePrintReceipt = async (p) => {
+    try {
+      let invoice = null;
+      if (p.source === "invoice" && p.sourceId) {
+        try {
+          const snap = await getDoc(doc(db, "invoices", p.sourceId));
+          if (snap.exists()) invoice = snap.data();
+        } catch { /* fall back to the payment description */ }
+      }
+      const data = receiptFromPayment({ payment: p, invoice, branches, printedOn: todayLocal() });
+      if (!openPrintWindow(buildReceiptHtml(data))) toast.error("Pop-up blocked. Allow pop-ups for this site to print the receipt.");
+      else logActivity("printed", "Payments", `Receipt ${data.receiptNo}`);
+    } catch (err) {
+      toast.error(err?.message || "Could not build the receipt");
+    }
+  };
+
   const updateBulkLine = (idx, field, value) =>
     setBulkLines(p => p.map((l, i) => i === idx ? { ...l, [field]: value } : l));
 
-  const bulkTotal = bulkLines.reduce((s, l) => s + Number(l.amount || 0), 0);
+  const bulkTotal = sumMoney(bulkLines.map(l => l.amount));
 
   const handleCSV = () => exportToCSV("payments",
     ["Date", "Type", "Account", "Category", "Description", "Reference", "Amount"],
@@ -179,7 +250,7 @@ export default function Payments() {
             <button onClick={handleCSV} style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13 }}><Download size={14} /> CSV</button>
             <button onClick={handlePDF} style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13 }}><FileText size={14} /> PDF</button>
           </>}
-          <button onClick={() => setShowModal(true)}
+          <button onClick={openModal}
             style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 18px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600 }}>
             <Plus size={16} /> Add Payment
           </button>
@@ -196,7 +267,7 @@ export default function Payments() {
           <div key={label} style={{ background: "white", borderRadius: 12, padding: 16, border: "1px solid var(--border)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <div>
               <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 4 }}>{label}</div>
-              <div style={{ fontSize: isMobile ? 16 : 20, fontWeight: 700, color }}>Rs. {value.toLocaleString()}</div>
+              <div style={{ fontSize: isMobile ? 16 : 20, fontWeight: 700, color }}>Rs. {formatMoney(value)}</div>
             </div>
             <div style={{ width: 38, height: 38, borderRadius: 9, background: bg, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
               <Icon size={18} color={color} />
@@ -237,7 +308,7 @@ export default function Payments() {
                     <RowCheckbox checked={bulk.isSelected(p.id)} onChange={() => bulk.toggle(p.id)} label={`Select payment ${p.description || p.id}`} />
                   </div>
                   <div>
-                    <div style={{ fontWeight: 600, fontSize: 15 }}>{p.description}</div>
+                    <div style={{ fontWeight: 600, fontSize: 15 }}>{p.description}{p.reversed && <span style={{ marginLeft: 6, fontSize: 11, fontWeight: 700, color: "#b45309" }}>REVERSED</span>}{isReversalRow(p) && <span style={{ marginLeft: 6, fontSize: 11, fontWeight: 700, color: "#64748b" }}>REVERSAL</span>}</div>
                     <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>{p.date} · {p.account}</div>
                   </div>
                 </div>
@@ -251,7 +322,8 @@ export default function Payments() {
                   <div style={{ fontSize: 18, fontWeight: 700, color: p.type === "cash_in" ? "#10b981" : "#ef4444" }}>
                     {p.type === "cash_in" ? "+" : "-"}Rs. {Number(p.amount).toLocaleString()}
                   </div>
-                  <button onClick={() => handleDelete(p)} style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "6px 9px", borderRadius: 6, cursor: "pointer" }}><Trash2 size={13} /></button>
+                  {canPrintReceipt(p) && <button onClick={() => handlePrintReceipt(p)} title="Print receipt" style={{ border: "none", background: "var(--primary-light)", color: "var(--primary)", padding: "6px 9px", borderRadius: 6, cursor: "pointer" }}><Printer size={13} /></button>}
+                  <button onClick={() => handleReverse(p)} disabled={submitting} title={reverseBlockReason(p) || "Reverse this payment"} style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "6px 9px", borderRadius: 6, cursor: "pointer", opacity: reverseBlockReason(p) ? 0.45 : 1 }}><Undo2 size={13} /></button>
                 </div>
               </div>
             </div>
@@ -288,13 +360,18 @@ export default function Payments() {
                     </td>
                     <td style={{ padding: "11px 14px", fontSize: 13 }}>{p.account}</td>
                     <td style={{ padding: "11px 14px", fontSize: 13 }}>{p.category}</td>
-                    <td style={{ padding: "11px 14px", fontSize: 13 }}>{p.description}</td>
+                    <td style={{ padding: "11px 14px", fontSize: 13 }}>
+                      {p.description}
+                      {p.reversed && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 10, background: "#fef3c7", color: "#b45309" }}>REVERSED</span>}
+                      {isReversalRow(p) && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 10, background: "#f1f5f9", color: "#64748b" }}>REVERSAL</span>}
+                    </td>
                     <td style={{ padding: "11px 14px", fontSize: 12, fontFamily: "monospace" }}>{p.reference || "—"}</td>
                     <td style={{ padding: "11px 14px", fontSize: 14, fontWeight: 600, color: p.type === "cash_in" ? "#10b981" : "#ef4444", whiteSpace: "nowrap" }}>
                       {p.type === "cash_in" ? "+" : "-"}Rs. {Number(p.amount).toLocaleString()}
                     </td>
-                    <td style={{ padding: "11px 14px", textAlign: "right" }}>
-                      <button onClick={() => handleDelete(p)} style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "7px 9px", borderRadius: 8, cursor: "pointer" }}><Trash2 size={14} /></button>
+                    <td style={{ padding: "11px 14px", textAlign: "right", whiteSpace: "nowrap" }}>
+                      {canPrintReceipt(p) && <button onClick={() => handlePrintReceipt(p)} title="Print receipt" style={{ border: "none", background: "var(--primary-light)", color: "var(--primary)", padding: "7px 9px", borderRadius: 8, cursor: "pointer", marginRight: 6 }}><Printer size={14} /></button>}
+                      <button onClick={() => handleReverse(p)} disabled={submitting} title={reverseBlockReason(p) || "Reverse this payment"} style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "7px 9px", borderRadius: 8, cursor: "pointer", opacity: reverseBlockReason(p) ? 0.45 : 1 }}><Undo2 size={14} /></button>
                     </td>
                   </tr>
                 ))}
@@ -320,7 +397,7 @@ export default function Payments() {
         onClear={bulk.clear}
         actions={[
           { label: "Edit", icon: Pencil, onClick: () => setShowBulkEdit(true) },
-          { label: "Delete", icon: Trash2, variant: "danger", onClick: handleBulkDelete },
+          { label: "Reverse", icon: Undo2, variant: "danger", onClick: handleBulkReverse },
         ]}
       />
 
@@ -328,15 +405,12 @@ export default function Payments() {
       {showBulkEdit && (
         <BulkEditModal
           title={`Edit ${bulk.count} payment${bulk.count === 1 ? "" : "s"}`}
-          note="Tick a field to change it on every selected payment. Changing the account or date moves those amounts between account balances and periods."
+          note="Only the category can be changed on posted payments. To correct an account, date or amount, reverse the payment and record it again."
           busy={bulkBusy}
           onClose={() => setShowBulkEdit(false)}
           onApply={handleBulkEditApply}
           fields={[
-            { key: "date", label: "Date", type: "date" },
             { key: "category", label: "Category", type: "select", options: CATEGORIES.map(c => ({ value: c, label: c })) },
-            { key: "account", label: "Account", type: "select", options: bankCashAccounts.map(a => ({ value: a.name, label: a.name })) },
-            { key: "branchId", label: "Branch", type: "select", options: [{ value: "main", label: "Main" }, ...branches.map(b => ({ value: b.id, label: b.name }))] },
           ]}
         />
       )}
@@ -374,11 +448,15 @@ export default function Payments() {
                   </div>
                   <div>
                     <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 6 }}>Account</label>
-                    <select value={form.account} onChange={e => setForm(p => ({ ...p, account: e.target.value }))} required
-                      style={{ width: "100%", padding: "9px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14 }}>
-                      <option value="">Select account</option>
-                      {bankCashAccounts.map(a => <option key={a.id} value={a.name}>{a.code} — {a.name}</option>)}
-                    </select>
+                    {postable.length === 0 ? (
+                      <div style={{ fontSize: 13, color: "#ef4444" }}>{accountsStatus === "loading" ? "Loading accounts…" : accountsProblem}</div>
+                    ) : (
+                      <select value={form.accountId} onChange={e => setForm(p => ({ ...p, accountId: e.target.value }))} required
+                        style={{ width: "100%", padding: "9px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14 }}>
+                        <option value="">Select account</option>
+                        {postable.map(a => <option key={a.id} value={a.id}>{a.code ? `${a.code} — ` : ""}{a.name}</option>)}
+                      </select>
+                    )}
                   </div>
                   <div>
                     <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 6 }}>Category</label>
@@ -390,7 +468,7 @@ export default function Payments() {
                   </div>
                   <div>
                     <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 6 }}>Amount (Rs.)</label>
-                    <input type="number" value={form.amount} onChange={e => setForm(p => ({ ...p, amount: e.target.value }))} required
+                    <input type="number" min="0.01" step="0.01" value={form.amount} onChange={e => setForm(p => ({ ...p, amount: e.target.value }))} required
                       style={{ width: "100%", padding: "9px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14, boxSizing: "border-box" }} />
                   </div>
                   <div>
@@ -419,7 +497,7 @@ export default function Payments() {
                 </div>
                 <div style={{ display: "flex", gap: 10, marginTop: 24 }}>
                   <button type="button" onClick={() => setShowModal(false)} style={{ flex: 1, padding: "11px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer" }}>Cancel</button>
-                  <button type="submit" style={{ flex: 2, padding: "11px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600 }}>Save Payment</button>
+                  <button type="submit" disabled={submitting || postable.length === 0} style={{ flex: 2, padding: "11px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: (submitting || postable.length === 0) ? "not-allowed" : "pointer", opacity: (submitting || postable.length === 0) ? 0.6 : 1, fontWeight: 600 }}>{submitting ? "Saving..." : "Save Payment"}</button>
                 </div>
               </form>
             )}
@@ -453,10 +531,10 @@ export default function Payments() {
                         <option value="cash_in">Cash In</option>
                         <option value="cash_out">Cash Out</option>
                       </select>
-                      <select value={line.account} onChange={e => updateBulkLine(idx, "account", e.target.value)}
+                      <select value={line.accountId} onChange={e => updateBulkLine(idx, "accountId", e.target.value)}
                         style={{ padding: "7px 8px", border: "1px solid var(--border)", borderRadius: 6, fontSize: 13 }}>
                         <option value="">Account</option>
-                        {bankCashAccounts.map(a => <option key={a.id} value={a.name}>{a.name}</option>)}
+                        {postable.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
                       </select>
                       <input value={line.description} onChange={e => updateBulkLine(idx, "description", e.target.value)} placeholder="Description"
                         style={{ padding: "7px 8px", border: "1px solid var(--border)", borderRadius: 6, fontSize: 13 }} />
@@ -465,7 +543,7 @@ export default function Payments() {
                         <option value="">Category</option>
                         {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
                       </select>
-                      <input type="number" value={line.amount} onChange={e => updateBulkLine(idx, "amount", e.target.value)} placeholder="0"
+                      <input type="number" min="0.01" step="0.01" value={line.amount} onChange={e => updateBulkLine(idx, "amount", e.target.value)} placeholder="0"
                         style={{ padding: "7px 8px", border: "1px solid var(--border)", borderRadius: 6, fontSize: 13 }} />
                       {bulkLines.length > 1 && (
                         <button type="button" onClick={() => setBulkLines(p => p.filter((_, i) => i !== idx))}
@@ -480,14 +558,14 @@ export default function Payments() {
                       style={{ display: "flex", alignItems: "center", gap: 4, padding: "6px 14px", background: "var(--primary-light)", color: "var(--primary)", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 13, fontWeight: 600 }}>
                       <Plus size={13} /> Add Row
                     </button>
-                    <strong style={{ fontSize: 14 }}>Total: Rs. {bulkTotal.toLocaleString()}</strong>
+                    <strong style={{ fontSize: 14 }}>Total: Rs. {formatMoney(bulkTotal)}</strong>
                   </div>
                 </div>
 
                 <div style={{ display: "flex", gap: 10 }}>
                   <button type="button" onClick={() => setShowModal(false)} style={{ flex: 1, padding: "11px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer" }}>Cancel</button>
-                  <button type="submit" style={{ flex: 2, padding: "11px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600 }}>
-                    Save {bulkLines.filter(l => l.account && l.amount).length} Payments
+                  <button type="submit" disabled={submitting || postable.length === 0} style={{ flex: 2, padding: "11px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: (submitting || postable.length === 0) ? "not-allowed" : "pointer", opacity: (submitting || postable.length === 0) ? 0.6 : 1, fontWeight: 600 }}>
+                    {submitting ? "Saving..." : `Save ${bulkLines.filter(l => l.accountId && l.amount).length} Payments`}
                   </button>
                 </div>
               </form>
