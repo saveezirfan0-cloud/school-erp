@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { db } from "../firebase";
 import { collection, addDoc, deleteDoc, doc, onSnapshot, serverTimestamp, updateDocs, deleteDocs } from "../firebase";
 import { useBranch } from "../context/BranchContext";
+import { matchesBranch } from "../utils/branchFilter";
 import Pagination from "../components/UI/Pagination";
 import { useBulkSelect } from "../hooks/useBulkSelect";
 import BulkBar, { RowCheckbox, HeaderCheckbox } from "../components/UI/BulkBar";
@@ -61,7 +62,7 @@ export default function Expenses() {
   }, []);
 
   const filtered = expenses.filter(e => {
-    const matchBranch = (activeBranch === "all" || e.branchId === activeBranch) && (!filterBranch || e.branchId === filterBranch);
+    const matchBranch = matchesBranch(e, activeBranch) && (!filterBranch || e.branchId === filterBranch);
     const matchCat = !filterCategory || e.category === filterCategory;
     const matchFrom = !filterDateFrom || e.date >= filterDateFrom;
     const matchTo = !filterDateTo || e.date <= filterDateTo;
