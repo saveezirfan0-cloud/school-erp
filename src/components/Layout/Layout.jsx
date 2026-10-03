@@ -3,10 +3,12 @@ import { Outlet, useLocation } from "react-router-dom";
 import Sidebar from "./Sidebar";
 import Navbar from "./Navbar";
 import QuickAdd from "./QuickAdd";
+import CommandPalette from "./CommandPalette";
 
 export default function Layout() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
+  const [paletteOpen, setPaletteOpen] = useState(false);
   const location = useLocation();
 
   useEffect(() => {
@@ -23,6 +25,18 @@ export default function Layout() {
 
     window.addEventListener("resize", handler);
     return () => window.removeEventListener("resize", handler);
+  }, []);
+
+  // Ctrl/Cmd+K opens the page search from anywhere.
+  useEffect(() => {
+    const onKey = (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setPaletteOpen((o) => !o);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
   }, []);
 
   // Auto-close on mobile when navigating
@@ -62,7 +76,7 @@ export default function Layout() {
           ? "transform 0.25s ease"
           : "width 0.25s ease",
       }}>
-        <Sidebar onClose={isMobile ? () => setSidebarOpen(false) : null} />
+        <Sidebar onClose={isMobile ? () => setSidebarOpen(false) : null} onSearch={() => setPaletteOpen(true)} />
       </div>
 
       {/* Main content */}
@@ -85,6 +99,7 @@ export default function Layout() {
       </div>
 
       <QuickAdd />
+      {paletteOpen && <CommandPalette onClose={() => setPaletteOpen(false)} />}
 
     </div>
   );

@@ -63,3 +63,13 @@ button { cursor: pointer; }
 input, select, textarea { font-size: 16px !important; }
 /* Global spinner keyframe used by loading buttons */
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* Sidebar: pin star appears on hover/focus */
+.nav-row .nav-star { opacity: 0; transition: opacity 0.15s; cursor: pointer; }
+.nav-row:hover .nav-star, .nav-row .nav-star:focus-visible { opacity: 1; }
+
+/* Menu editor rows: on phones the section picker drops to its own line */
+.menu-row { flex-wrap: wrap; }
+@media (max-width: 768px) {
+  .menu-row .move-select { flex-basis: 100%; max-width: none !important; margin-left: 52px; }
+}

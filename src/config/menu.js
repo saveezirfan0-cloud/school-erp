@@ -10,31 +10,31 @@ import {
 // that gates it (null = everyone); `adminOnly` pages need the admin role.
 // Ids are what gets saved in a user's custom layout, so never rename one.
 export const MENU_ITEMS = {
-  dashboard:       { to: "/",                  label: "Dashboard",         icon: LayoutDashboard, perm: "canViewDashboard" },
-  students:        { to: "/students",          label: "Students",          icon: Users,           perm: "canViewStudents" },
-  employees:       { to: "/employees",         label: "Employees",         icon: UserCheck,       perm: "canViewEmployees" },
-  fees:            { to: "/fees",              label: "Fees & Invoices",   icon: Receipt,         perm: "canViewFees" },
-  attendance:      { to: "/attendance",         label: "Attendance",        icon: CalendarCheck,   perm: "canViewAttendance" },
-  exams:           { to: "/exams",              label: "Exams & Results",   icon: ClipboardList,   perm: "canViewExams" },
-  reportCards:     { to: "/report-cards",       label: "Report Cards",      icon: GraduationCap,   perm: "canViewExams" },
-  subjects:        { to: "/subjects",           label: "Subjects",          icon: Library,         perm: "canViewLearning" },
-  homework:        { to: "/homework",           label: "Homework",          icon: BookOpenCheck,     perm: "canViewLearning" },
-  materials:       { to: "/materials",          label: "Learning Materials",icon: FolderOpen,      perm: "canViewLearning" },
-  payments:        { to: "/payments",          label: "Payments",          icon: CreditCard,      perm: "canViewPayments" },
-  expenses:        { to: "/expenses",          label: "Expenses",          icon: TrendingDown,    perm: "canViewExpenses" },
-  payslips:        { to: "/payslips",          label: "Payslips",          icon: FileText,        perm: "canViewPayslips" },
-  chartOfAccounts: { to: "/chart-of-accounts", label: "Chart of Accounts", icon: BookOpen,        perm: "canViewAccounting" },
-  bankCash:        { to: "/bank-cash",         label: "Bank & Cash",       icon: Landmark,        perm: "canViewAccounting" },
-  journals:        { to: "/journals",          label: "Journals",          icon: BookMarked,      perm: "canViewAccounting" },
-  reports:         { to: "/reports",           label: "Reports",           icon: BarChart2,       perm: "canViewReports" },
-  reminderLogs:    { to: "/reminder-logs",     label: "Reminder Logs",     icon: MessageCircle,   perm: "canViewReports" },
-  activityLog:     { to: "/activity-log",      label: "Activity Log",      icon: History,         adminOnly: true },
-  branches:        { to: "/branches",          label: "Branches",          icon: Building2,       perm: "canManageBranches" },
-  users:           { to: "/users",             label: "Users",             icon: ShieldCheck,     perm: "canManageUsers" },
-  access:          { to: "/access",            label: "Access Control",    icon: KeyRound,        perm: "canManageUsers" },
-  import:          { to: "/import",            label: "Import Data",       icon: Upload,          perm: "canManageUsers" },
-  trash:           { to: "/trash",             label: "Trash",             icon: Trash2 },
-  settings:        { to: "/settings",          label: "Settings",          icon: Settings },
+  dashboard:       { to: "/",                  label: "Dashboard",         icon: LayoutDashboard, perm: "canViewDashboard", keywords: "home overview summary" },
+  students:        { to: "/students",          label: "Students",          icon: Users,           perm: "canViewStudents", keywords: "pupils children admission" },
+  employees:       { to: "/employees",         label: "Employees",         icon: UserCheck,       perm: "canViewEmployees", keywords: "staff teachers hr" },
+  fees:            { to: "/fees",              label: "Fees & Invoices",   icon: Receipt,         perm: "canViewFees", keywords: "invoice billing tuition" },
+  attendance:      { to: "/attendance",         label: "Attendance",        icon: CalendarCheck,   perm: "canViewAttendance", keywords: "present absent roll call register" },
+  exams:           { to: "/exams",              label: "Exams & Results",   icon: ClipboardList,   perm: "canViewExams", keywords: "tests marks results grades" },
+  reportCards:     { to: "/report-cards",       label: "Report Cards",      icon: GraduationCap,   perm: "canViewExams", keywords: "results transcript grades" },
+  subjects:        { to: "/subjects",           label: "Subjects",          icon: Library,         perm: "canViewLearning", keywords: "courses classes curriculum" },
+  homework:        { to: "/homework",           label: "Homework",          icon: BookOpenCheck,     perm: "canViewLearning", keywords: "assignments tasks" },
+  materials:       { to: "/materials",          label: "Learning Materials",icon: FolderOpen,      perm: "canViewLearning", keywords: "lessons resources files notes" },
+  payments:        { to: "/payments",          label: "Payments",          icon: CreditCard,      perm: "canViewPayments", keywords: "receipts income cash received" },
+  expenses:        { to: "/expenses",          label: "Expenses",          icon: TrendingDown,    perm: "canViewExpenses", keywords: "spending costs bills" },
+  payslips:        { to: "/payslips",          label: "Payslips",          icon: FileText,        perm: "canViewPayslips", keywords: "salary payroll wages" },
+  chartOfAccounts: { to: "/chart-of-accounts", label: "Chart of Accounts", icon: BookOpen,        perm: "canViewAccounting", keywords: "ledger accounts coa" },
+  bankCash:        { to: "/bank-cash",         label: "Bank & Cash",       icon: Landmark,        perm: "canViewAccounting", keywords: "bank cash balance accounts" },
+  journals:        { to: "/journals",          label: "Journals",          icon: BookMarked,      perm: "canViewAccounting", keywords: "journal entries vouchers" },
+  reports:         { to: "/reports",           label: "Reports",           icon: BarChart2,       perm: "canViewReports", keywords: "statements profit loss balance sheet" },
+  reminderLogs:    { to: "/reminder-logs",     label: "Reminder Logs",     icon: MessageCircle,   perm: "canViewReports", keywords: "whatsapp reminders messages" },
+  activityLog:     { to: "/activity-log",      label: "Activity Log",      icon: History,         adminOnly: true, keywords: "audit history changes" },
+  branches:        { to: "/branches",          label: "Branches",          icon: Building2,       perm: "canManageBranches", keywords: "campus locations" },
+  users:           { to: "/users",             label: "Users",             icon: ShieldCheck,     perm: "canManageUsers", keywords: "accounts staff logins roles" },
+  access:          { to: "/access",            label: "Access Control",    icon: KeyRound,        perm: "canManageUsers", keywords: "permissions roles rights" },
+  import:          { to: "/import",            label: "Import Data",       icon: Upload,          perm: "canManageUsers", keywords: "upload excel csv migrate" },
+  trash:           { to: "/trash",             label: "Trash",             icon: Trash2, keywords: "deleted restore recycle" },
+  settings:        { to: "/settings",          label: "Settings",          icon: Settings, keywords: "preferences whatsapp quick payment link" },
 };
 
 // A section with an empty label renders as plain top-level links.
@@ -168,3 +168,49 @@ export function toggleHidden(layout, key) {
   next.hidden = next.hidden.includes(key) ? next.hidden.filter((k) => k !== key) : [...next.hidden, key];
   return next;
 }
+
+// ---- personal preferences (kept apart from the layout so toggling a
+// section or pinning a page never freezes the user to a custom layout) ----
+
+export const normalizePrefs = (saved) => ({
+  pinned: Array.isArray(saved?.pinned) ? saved.pinned.filter((k, i, a) => MENU_ITEMS[k] && a.indexOf(k) === i) : [],
+  collapsed: Array.isArray(saved?.collapsed) ? saved.collapsed.filter((k) => typeof k === "string") : null,
+});
+
+// ---- navigation helpers ----
+
+// Pages the user may open, in menu order, ignoring the "hidden" list
+// (a page hidden from the sidebar is still reachable by search).
+export function listPages(layout, access) {
+  const out = [];
+  layout.sections.forEach((s) => s.items.forEach((key) => {
+    if (isItemAllowed(key, access)) out.push({ key, section: s.label.trim(), ...MENU_ITEMS[key] });
+  }));
+  return out;
+}
+
+export function searchPages(pages, query) {
+  const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
+  if (!terms.length) return pages;
+  return pages
+    .map((p) => {
+      const label = p.label.toLowerCase();
+      const hay = `${label} ${p.section.toLowerCase()} ${p.keywords || ""}`;
+      if (!terms.every((t) => hay.includes(t))) return null;
+      // label matches outrank section/keyword matches
+      return { p, score: terms.every((t) => label.includes(t)) ? (label.startsWith(terms[0]) ? 0 : 1) : 2 };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.score - b.score)
+    .map((x) => x.p);
+}
+
+// Where "/" should land: the dashboard if allowed, otherwise the first
+// page in the user's own menu order (null = nothing accessible).
+export function homePath(layout, access) {
+  if (isItemAllowed("dashboard", access)) return "/";
+  const first = listPages(layout, access).find((p) => p.key !== "settings" && p.key !== "trash") || listPages(layout, access)[0];
+  return first ? first.to : null;
+}
+
+export const ROLE_MENU_PREFIX = "menu:";
