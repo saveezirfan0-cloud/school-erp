@@ -216,14 +216,46 @@ export default function Dashboard() {
       rows: [...scope.expenses].sort((a, b) => (b._on || "").localeCompare(a._on || "")),
       footer: totalFoot("Total", totalExp),
     },
+    // The entries behind the net figure: every fee received and every expense /
+    // salary in scope, newest first, signed so they add up to the net.
     net: {
       title: netSurplus >= 0 ? "Net Surplus" : "Net Deficit", subtitle: `${scopeTitle} · ${periodText}`,
-      columns: [{ key: "label", label: "Item" }, { key: "amt", label: "Amount", align: "right", render: r => <strong>{rs(r.amt)}</strong>, text: r => r.amt }],
-      rows: [
-        { id: "c", label: "Fees collected", amt: collected },
-        { id: "e", label: "Less: expenses", amt: totalExp },
-        { id: "n", label: netSurplus >= 0 ? "Net surplus" : "Net deficit", amt: Math.abs(netSurplus) },
+      summary: [
+        { label: "Fees collected", value: rs(collected), color: "#10b981" },
+        { label: "Expenses & payroll", value: rs(totalExp), color: "#ef4444" },
+        { label: netSurplus >= 0 ? "Net surplus" : "Net deficit", value: rs(Math.abs(netSurplus)), color: netSurplus >= 0 ? "#10b981" : "#ef4444" },
       ],
+      columns: [
+        { key: "date", label: "Date" },
+        { key: "type", label: "Type" },
+        { key: "details", label: "Details" },
+        branchCol,
+        { key: "signed", label: "Amount", align: "right", text: r => r.signed, render: r => <strong style={{ color: r.signed >= 0 ? "#10b981" : "#ef4444" }}>{r.signed >= 0 ? "+" : "−"}{rs(Math.abs(r.signed))}</strong> },
+      ],
+      rows: [
+        ...scope.collected.map(r => ({ id: `f-${r.id}`, _branch: r._branch, date: r._paidOn, type: "Fee", details: `${r.studentName || "—"} · ${r.month || ""} ${r.year || ""}`.trim(), signed: r._received, onClick: openStudent(r.studentId) })),
+        ...scope.expenses.map(r => ({ id: `e-${r.id}`, _branch: r._branch, date: r._on, type: r.category === "Salaries" ? "Salary" : "Expense", details: r.description || r.category || "—", signed: -Number(r.amount || 0) })),
+      ].sort((a, b) => (b.date || "").localeCompare(a.date || "")),
+    },
+    // Collection rate = collected / (collected + still outstanding): list both sides.
+    rate: {
+      title: "Collection Rate", subtitle: `${scopeTitle} · ${periodText}`,
+      summary: [
+        { label: "Collected", value: rs(collected), color: "#10b981" },
+        { label: "Outstanding", value: rs(pendingAmt), color: "#f59e0b" },
+        { label: "Collection rate", value: `${rate}%` },
+      ],
+      columns: [
+        { key: "date", label: "Date" },
+        { key: "kind", label: "Status" },
+        studentCol,
+        branchCol,
+        { key: "amt", label: "Amount", align: "right", text: r => r.amt, render: r => <strong>{rs(r.amt)}</strong> },
+      ],
+      rows: [
+        ...scope.collected.map(r => ({ ...r, id: `c-${r.id}`, date: r._paidOn, kind: "Collected", amt: r._received, onClick: openStudent(r.studentId) })),
+        ...scope.pending.map(r => ({ ...r, id: `p-${r.id}`, date: r._raisedOn, kind: "Outstanding", amt: r._outstanding, onClick: openStudent(r.studentId) })),
+      ].sort((a, b) => (b.date || "").localeCompare(a.date || "")),
     },
     branches: {
       title: "Branches", subtitle: `Per-branch breakdown · ${periodText} — click a branch to open its dashboard`,
@@ -261,18 +293,19 @@ export default function Dashboard() {
 
       <DateRangeFilter value={period} onChange={setPeriod} />
 
-      <button type="button" onClick={() => setDetail("net")}
-        style={{ ...tileStyle, width: "100%", border: "none", background: "var(--sidebar-bg)", borderRadius: 14, padding: "20px 24px", marginBottom: 20, color: "white", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12 }}>
-        <div>
+      <div style={{ background: "var(--sidebar-bg)", borderRadius: 14, marginBottom: 20, color: "white", display: "flex", justifyContent: "space-between", alignItems: "stretch", flexWrap: "wrap" }}>
+        <button type="button" onClick={() => setDetail("net")} title="View entries behind the net figure"
+          style={{ ...tileStyle, flex: "1 1 260px", border: "none", background: "transparent", color: "inherit", padding: "20px 24px", borderRadius: 14 }}>
           <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 4, textTransform: "uppercase", letterSpacing: 1 }}>Net {netSurplus >= 0 ? "Surplus" : "Deficit"}</div>
           <div style={{ fontSize: 28, fontWeight: 700 }}>{rs(Math.abs(netSurplus))}</div>
           <div style={{ fontSize: 12, opacity: 0.65, marginTop: 4 }}>Fees collected minus expenses &amp; payroll · {periodText}</div>
-        </div>
-        <div style={{ textAlign: "right" }}>
+        </button>
+        <button type="button" onClick={() => setDetail("rate")} title="View entries behind the collection rate"
+          style={{ ...tileStyle, border: "none", background: "transparent", color: "inherit", padding: "20px 24px", borderRadius: 14, textAlign: "right" }}>
           <div style={{ fontSize: 12, opacity: 0.65, marginBottom: 4 }}>Collection rate</div>
           <div style={{ fontSize: 22, fontWeight: 700 }}>{rate}%</div>
-        </div>
-      </button>
+        </button>
+      </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12, marginBottom: 20 }}>
         {cards.map(({ key, label, value, icon: Icon, color, bg, hint }) => (

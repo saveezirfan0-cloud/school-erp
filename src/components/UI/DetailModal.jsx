@@ -5,7 +5,7 @@ import { exportToCSV } from "../../utils/exportUtils";
 // Generic popup used by clickable dashboard metrics.
 //   columns: [{ key, label, align?, render?(row) }]
 //   footer:  optional node (e.g. totals)
-export default function DetailModal({ title, subtitle, columns, rows, footer, onClose, emptyText = "Nothing to show for this period" }) {
+export default function DetailModal({ title, subtitle, summary, columns, rows, footer, onClose, emptyText = "Nothing to show for this period" }) {
   useEffect(() => {
     const onKey = (e) => { if (e.key === "Escape") onClose(); };
     window.addEventListener("keydown", onKey);
@@ -42,6 +42,16 @@ export default function DetailModal({ title, subtitle, columns, rows, footer, on
             <button onClick={onClose} aria-label="Close" style={{ border: "none", background: "none", cursor: "pointer", padding: 4 }}><X size={20} /></button>
           </div>
         </div>
+        {summary && (
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", padding: "12px 20px", borderBottom: "1px solid var(--border)", background: "#f8fafc" }}>
+            {summary.map(({ label, value, color }) => (
+              <div key={label} style={{ flex: "1 1 120px" }}>
+                <div style={{ fontSize: 11, color: "var(--text-muted)" }}>{label}</div>
+                <div style={{ fontSize: 16, fontWeight: 700, color: color || "var(--text)" }}>{value}</div>
+              </div>
+            ))}
+          </div>
+        )}
         <div style={{ overflow: "auto", flex: 1 }}>
           <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 480 }}>
             <thead>
