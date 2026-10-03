@@ -11,10 +11,11 @@ import { runBulk, bulkResultMessage } from "../utils/bulk";
 import { logActivity } from "../utils/auditLog";
 import { recordPayment, bankCashAccounts, reverseSourcePayments } from "../utils/accounting";
 import { exportToCSV, exportToPDF } from "../utils/exportUtils";
+import { EXTRA_EXPENSE_CATEGORIES } from "../config/statementHeads";
 import toast from "react-hot-toast";
 import { Plus, Trash2, X, Download, FileText, Pencil } from "lucide-react";
 
-const CATEGORIES = ["Rent", "Utilities", "Salaries", "Supplies", "Maintenance", "Transport", "Other"];
+const CATEGORIES = ["Rent", "Utilities", "Salaries", "Supplies", "Maintenance", "Transport", "Other", ...EXTRA_EXPENSE_CATEGORIES];
 const emptyLine = { description: "", amount: "", category: "" };
 
 function useIsMobile() {

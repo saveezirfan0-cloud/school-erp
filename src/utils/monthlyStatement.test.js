@@ -31,32 +31,66 @@ const base = {
   ],
 };
 
-test("groups income and expenses by branch head for the month", () => {
+const rowMap = (rows) => Object.fromEntries(rows.map((r) => [r.label, r.amount]));
+
+test("prints every sheet head, in sheet order, including zero rows", () => {
+  const s = buildMonthlyStatement({ year: 2026, month: 9, branches, accounts });
+  expect(s.income.map((r) => r.label).slice(0, 4)).toEqual(["Baneen Fees", "Welfare", "Donation", "Admission Fees"]);
+  expect(s.expense[0].label).toBe("Utility Baneen");
+  expect(s.expense.at(-1).label).toBe("Suspense");
+  expect(s.income.every((r) => r.amount === 0)).toBe(true);
+});
+
+test("routes income to the matching heads for the month", () => {
   const s = buildMonthlyStatement(base);
-  expect(s.income).toEqual([
-    { label: "Banaat Fees", amount: 500 },
-    { label: "Baneen Admission Fees", amount: 200 },
-    { label: "Baneen Fees", amount: 800 },
-    { label: "Donation", amount: 250 },
-  ]);
-  expect(s.expense).toEqual([
-    { label: "Salaries — Baneen", amount: 400 },
-    { label: "Utilities — Baneen", amount: 300 },
-  ]);
+  expect(rowMap(s.income)).toMatchObject({
+    "Baneen Fees": 800, "Admission Fees": 200, "Banaat Fees": 500, Donation: 250, Welfare: 0,
+  });
   expect(s.totalIncome).toBe(1750);
-  expect(s.totalExpense).toBe(700);
+});
+
+test("routes expenses: category heads for Baneen, lumps for other branches", () => {
+  const s = buildMonthlyStatement({
+    ...base,
+    expenses: [
+      { branchId: "b1", category: "Utilities", amount: 300, date: "2026-09-02" },
+      { branchId: "b1", category: "Welfare", amount: 70, date: "2026-09-03" },
+      { branchId: "b2", category: "Utilities", amount: 120, date: "2026-09-04" }, // Banaat lump
+      { branchId: "b1", category: "Utilities", amount: 100, date: "2026-10-01" }, // other month
+    ],
+  });
+  expect(rowMap(s.expense)).toMatchObject({
+    "Utility Baneen": 300, Welfare: 70, "Banaat Expense": 120, "Baneen Staff Salary": 400,
+  });
+  expect(s.totalExpense).toBe(890);
+});
+
+test("unmatched money lands in an Other row so totals still reconcile", () => {
+  const s = buildMonthlyStatement({
+    ...base,
+    payments: [{ type: "cash_in", account: "Cash", amount: 40, category: "Mystery", date: "2026-09-15" }],
+    expenses: [{ branchId: "b1", category: "Zakat run", amount: 55, date: "2026-09-02" }],
+  });
+  expect(s.income.at(-1)).toEqual({ label: "Other Income", amount: 40 });
+  expect(s.expense.at(-1)).toEqual({ label: "Other Expense", amount: 55 });
 });
 
 test("opening balance carries prior movements; closing = opening + income - expense", () => {
   const s = buildMonthlyStatement(base);
   expect(s.openingBalance).toBe(1150);
-  expect(s.closingBalance).toBe(1150 + 1750 - 700);
+  expect(s.closingBalance).toBe(s.openingBalance + s.totalIncome - s.totalExpense);
+});
+
+test("single-branch view leaves out organisation-wide account opening balances", () => {
+  const s = buildMonthlyStatement({ ...base, includeAccountOpening: false });
+  expect(s.openingBalance).toBe(150);
 });
 
 test("branch scope filter applies", () => {
   const s = buildMonthlyStatement({ ...base, inScope: (r) => r.branchId === "b2" });
   expect(s.totalIncome).toBe(500);
   expect(s.totalExpense).toBe(0);
+  expect(rowMap(s.income)["Banaat Fees"]).toBe(500);
 });
 
 test("period label", () => {

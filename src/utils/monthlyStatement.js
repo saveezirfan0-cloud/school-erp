@@ -11,10 +11,11 @@
 //   - Expenses        = expense rows by date
 //   - Salaries        = paid payslips by paid date
 //
-// Heads are named per branch ("Baneen Fees", "Utilities — Baneen") so the
-// statement reads like the manual sheet it replaces.
+// Heads come from src/config/statementHeads.js so the statement reads like
+// the manual sheet it replaces (every head prints, even at 0).
 
 import { toDate } from "./dates";
+import { BRANCH_GROUPS, INCOME_HEADS, EXPENSE_HEADS } from "../config/statementHeads";
 
 const pad = (n) => String(n).padStart(2, "0");
 
@@ -34,8 +35,9 @@ export function monthRange(year, month) {
 
 const num = (v) => Number(v || 0);
 
-// Fee line items that count as admission income rather than regular fees.
+// Fee line items are routed by what they are called.
 const isAdmission = (description = "") => /admission|registration/i.test(description);
+const isTafseer = (description = "") => /tafseer|tafsir/i.test(description);
 
 // Payments that are bookkeeping for a source document or a transfer between
 // our own accounts — not income in their own right.
@@ -46,20 +48,47 @@ function branchName(branchId, branches) {
   return branches.find((b) => b.id === branchId)?.name || "Main";
 }
 
-// Collects amounts under a head name, remembering first-seen order.
-function makeBucket() {
-  const map = new Map();
+// Which branch group ("baneen", "umer", ...) a branch name belongs to.
+function branchGroup(name) {
+  return Object.keys(BRANCH_GROUPS).find((k) => BRANCH_GROUPS[k].test(name)) || "";
+}
+
+// Fixed, ordered list of heads that also collects anything unmatched into an
+// extra row, so totals always reconcile.
+function makeLedger(heads, otherLabel) {
+  const totals = new Map(heads.map((h) => [h.label, 0]));
+  let other = 0;
   return {
-    add(head, amount) {
+    add(label, amount) {
       if (!amount) return;
-      map.set(head, (map.get(head) || 0) + amount);
+      if (label && totals.has(label)) totals.set(label, totals.get(label) + amount);
+      else other += amount;
     },
     rows() {
-      return [...map.entries()]
-        .map(([label, amount]) => ({ label, amount }))
-        .sort((a, b) => a.label.localeCompare(b.label));
+      const rows = [...totals.entries()].map(([label, amount]) => ({ label, amount }));
+      if (other) rows.push({ label: otherLabel, amount: other });
+      return rows;
     },
   };
+}
+
+// Income head for an invoice line item, or "" when no head fits.
+function incomeHeadForLine(desc, group) {
+  const kind = isTafseer(desc) ? "tafseer" : isAdmission(desc) ? "admission" : "fee";
+  return INCOME_HEADS.find((h) => h.kind === kind && (kind === "tafseer" || h.branch === group))?.label || "";
+}
+
+function incomeHeadForPayment(category) {
+  return INCOME_HEADS.find((h) => h.kind === "payment" && h.category.test(category))?.label || "";
+}
+
+// Expense head for a category spent in a branch group.
+function expenseHead(category, group) {
+  const wide = EXPENSE_HEADS.find((h) => h.anyBranch && h.category.test(category));
+  if (wide) return wide.label;
+  const lump = EXPENSE_HEADS.find((h) => h.branch && h.branch === group);
+  if (lump) return lump.label;
+  return EXPENSE_HEADS.find((h) => !h.anyBranch && !h.branch && h.category.test(category))?.label || "";
 }
 
 /**
@@ -73,36 +102,38 @@ function makeBucket() {
  * @param {Array}  p.accounts     chart of accounts (for opening balances)
  * @param {Array}  p.branches
  * @param {(record) => boolean} [p.inScope]  branch filter, defaults to all
+ * @param {boolean} [p.includeAccountOpening]  add the accounts' own opening
+ *   balances. These are organisation-wide, so pass false for a single branch.
  */
 export function buildMonthlyStatement({
   year, month, invoices = [], expenses = [], payslips = [], payments = [],
-  accounts = [], branches = [], inScope = () => true,
+  accounts = [], branches = [], inScope = () => true, includeAccountOpening = true,
 }) {
   const { from, to } = monthRange(year, month);
   const inMonth = (value) => {
     const d = ymd(value);
     return d !== "" && d >= from && d <= to;
   };
+  const groupOf = (record) => branchGroup(branchName(record.branchId, branches));
 
   // ---- Income ----
-  const income = makeBucket();
+  const income = makeLedger(INCOME_HEADS, "Other Income");
 
   invoices.filter(inScope).forEach((inv) => {
     const paid = num(inv.paidAmount);
     if (!paid || !inMonth(inv.paidDate)) return;
-    const branch = branchName(inv.branchId, branches);
+    const group = groupOf(inv);
     const items = Array.isArray(inv.lineItems) && inv.lineItems.length ? inv.lineItems : null;
     const total = items ? items.reduce((s, li) => s + num(li.amount), 0) : 0;
     if (!items || !total) {
-      income.add(`${branch} Fees`, paid);
+      income.add(incomeHeadForLine("", group), paid);
       return;
     }
     // Split what was actually received across the line items pro rata, so a
     // part-paid invoice still lands in the right heads.
     items.forEach((li) => {
       const share = (paid * num(li.amount)) / total;
-      const desc = li.customDescription || li.description || "";
-      income.add(isAdmission(desc) ? `${branch} Admission Fees` : `${branch} Fees`, share);
+      income.add(incomeHeadForLine(li.customDescription || li.description || "", group), share);
     });
   });
 
@@ -111,22 +142,20 @@ export function buildMonthlyStatement({
     if (p.source === "invoice" || p.source === "expense" || p.source === "payslip") return;
     if (TRANSFER_CATEGORIES.includes(p.category)) return;
     if (!inMonth(p.date)) return;
-    income.add((p.category || "Miscellaneous").trim() || "Miscellaneous", num(p.amount));
+    income.add(incomeHeadForPayment(p.category || ""), num(p.amount));
   });
 
   // ---- Expenses ----
-  const expense = makeBucket();
+  const expense = makeLedger(EXPENSE_HEADS, "Other Expense");
 
   expenses.filter(inScope).forEach((e) => {
     if (!inMonth(e.date)) return;
-    const cat = e.category || "Other";
-    const branch = branchName(e.branchId, branches);
-    expense.add(`${cat} — ${branch}`, num(e.amount));
+    expense.add(expenseHead(e.category || "", groupOf(e)), num(e.amount));
   });
 
   payslips.filter(inScope).forEach((s) => {
     if (s.status !== "paid" || !inMonth(s.paidDate)) return;
-    expense.add(`Salaries — ${branchName(s.branchId, branches)}`, num(s.netPay));
+    expense.add(expenseHead("Salaries", groupOf(s)), num(s.netPay));
   });
 
   const incomeRows = income.rows();
@@ -139,7 +168,7 @@ export function buildMonthlyStatement({
   const cashAccounts = accounts.filter((a) => a.subType === "Bank & Cash");
   const names = new Set(cashAccounts.map((a) => a.name));
   const opening =
-    cashAccounts.reduce((s, a) => s + num(a.balance), 0) +
+    (includeAccountOpening ? cashAccounts.reduce((s, a) => s + num(a.balance), 0) : 0) +
     payments
       .filter(inScope)
       .filter((p) => names.has(p.account) && ymd(p.date) !== "" && ymd(p.date) < from)

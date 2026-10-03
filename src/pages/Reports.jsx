@@ -83,6 +83,7 @@ export default function Reports() {
 
   const statement = useMemo(() => buildMonthlyStatement({
     year: hsYear, month: hsMonth, ...raw, branches,
+    includeAccountOpening: activeBranch === "all",
     inScope: (r) => matchesBranch(r, activeBranch),
   }), [hsYear, hsMonth, raw, branches, activeBranch]);
 
@@ -301,9 +302,6 @@ export default function Reports() {
               <table key={i} style={{ width: "100%", borderCollapse: "collapse", fontSize: 14, marginBottom: 14 }}>
                 <tbody>
                   {title && <tr><td colSpan={2} style={{ ...hsBar, textAlign: "center", fontSize: 15 }}>{title}</td></tr>}
-                  {rows && rows.length === 0 && (
-                    <tr><td colSpan={2} style={{ ...hsCell, color: "var(--text-muted)", textAlign: "center" }}>Nothing recorded this month</td></tr>
-                  )}
                   {(rows || []).map(r => (
                     <tr key={r.label}>
                       <td style={{ ...hsCell, fontWeight: 700 }}>{r.label}</td>
