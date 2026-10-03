@@ -4,7 +4,9 @@ import { db, doc, getDoc } from "../firebase";
 import { useRelated } from "../hooks/useProfileData";
 import { toMillis, formatDate, localISODate } from "../utils/dates";
 import { summarizeInvoices } from "../utils/fees";
-import { ArrowLeft, FileText, TrendingUp, Wallet } from "lucide-react";
+import { buildStatement, printStatements } from "../utils/studentStatement";
+import toast from "react-hot-toast";
+import { ArrowLeft, FileText, TrendingUp, Wallet, Printer } from "lucide-react";
 
 // Per-student financial history: every invoice raised, every payment
 // received, and the running balance. The single most useful screen
@@ -59,9 +61,19 @@ export default function StudentLedger() {
         <ArrowLeft size={16} /> Back
       </button>
 
-      <div style={{ marginBottom: 16 }}>
-        <h2 style={{ fontSize: 22, fontWeight: 700 }}>{student?.name || "Student"} <span style={{ fontSize: 14, fontWeight: 400, color: "var(--text-muted)", fontFamily: "monospace" }}>{student?.studentId}</span></h2>
-        <div style={{ fontSize: 13, color: "var(--text-muted)" }}>{student?.grade} {student?.parentName ? `• Parent: ${student.parentName}` : ""}</div>
+      <div style={{ marginBottom: 16, display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
+        <div>
+          <h2 style={{ fontSize: 22, fontWeight: 700 }}>{student?.name || "Student"} <span style={{ fontSize: 14, fontWeight: 400, color: "var(--text-muted)", fontFamily: "monospace" }}>{student?.studentId}</span></h2>
+          <div style={{ fontSize: 13, color: "var(--text-muted)" }}>{student?.grade} {student?.parentName ? `• Parent: ${student.parentName}` : ""}</div>
+        </div>
+        <button disabled={!student || loading}
+          onClick={() => {
+            const statement = buildStatement({ student, invoices, payments: studentPayments, today: localISODate() });
+            if (!printStatements([statement])) toast.error("Allow pop-ups to print the statement");
+          }}
+          style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 14px", border: "1px solid var(--border)", borderRadius: 8, background: "white", cursor: "pointer", fontSize: 13 }}>
+          <Printer size={14} /> Print statement
+        </button>
       </div>
 
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 20 }}>

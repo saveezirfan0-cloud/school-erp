@@ -4,8 +4,8 @@
 // plus a slot for tab-specific filters.
 
 import React from "react";
-import { RotateCcw, Download, Printer, RefreshCw } from "lucide-react";
-import { DATE_PRESETS, GRANULARITIES } from "../../utils/reportData";
+import { RotateCcw, Download, Printer, RefreshCw, Mail } from "lucide-react";
+import { DATE_PRESETS, GRANULARITIES, COMPARE_MODES } from "../../utils/reportData";
 
 const control = { padding: "8px 10px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 13, background: "white", minWidth: 0 };
 const labelStyle = { fontSize: 11, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4, display: "block" };
@@ -30,12 +30,12 @@ export default function ReportFilters({
   preset, onPreset, custom, onCustom,
   showPeriod = true, periodLabel = "Period",
   granularity, onGranularity,
-  compare, onCompare, showCompare = false,
+  compareMode, onCompareMode, showCompare = false,
   children,                       // tab-specific filters
   dirty, onReset,
   summary,                        // e.g. "Main Office · 1 Jan 2026 – 31 Dec 2026"
   onRefresh, refreshing,
-  onCSV, onPDF,
+  onCSV, onPDF, onEmail,
 }) {
   return (
     <div style={{ background: "white", border: "1px solid var(--border)", borderRadius: 12, padding: 16, marginBottom: 24 }}>
@@ -50,16 +50,13 @@ export default function ReportFilters({
         )}
         {granularity !== undefined && <Select label="Group by" value={granularity} onChange={onGranularity} options={GRANULARITIES.map(g => ({ value: g.id, label: g.label }))} />}
         {children}
-        {showCompare && (
-          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, padding: "9px 0", cursor: "pointer" }}>
-            <input type="checkbox" checked={compare} onChange={e => onCompare(e.target.checked)} /> Compare with previous period
-          </label>
-        )}
+        {showCompare && <Select label="Compare with" value={compareMode} onChange={onCompareMode} options={COMPARE_MODES.map(m => ({ value: m.id, label: m.label }))} />}
         <div style={{ marginLeft: "auto", display: "flex", gap: 8, flexWrap: "wrap" }}>
           {dirty && <button onClick={onReset} style={btn}><RotateCcw size={13} /> Reset</button>}
           {onRefresh && <button onClick={onRefresh} disabled={refreshing} style={btn} title="Reload the latest data"><RefreshCw size={13} /> {refreshing ? "Loading…" : "Refresh"}</button>}
           {onCSV && <button onClick={onCSV} style={btn}><Download size={13} /> CSV</button>}
           {onPDF && <button onClick={onPDF} style={btn}><Printer size={13} /> PDF</button>}
+          {onEmail && <button onClick={onEmail} style={btn} title="Open an email with a text summary of this report"><Mail size={13} /> Email summary</button>}
         </div>
       </div>
       {summary && <div style={{ marginTop: 12, fontSize: 12, color: "var(--text-muted)" }}>Showing: <strong style={{ color: "#334155" }}>{summary}</strong></div>}
