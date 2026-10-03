@@ -33,6 +33,8 @@ Run in the SQL Editor, in order:
 2. `supabase/security.sql` — enables Row-Level Security policies
 3. `supabase/attendance.sql` — attendance table + RLS + realtime
    (needed for the Attendance tab on student / employee profiles)
+4. `supabase/budgets.sql` — budgets table + RLS
+   (needed for Reports → Budget vs Actual; the rest of Reports works without it)
 
 Then:
 - Disable signups: Authentication → Sign In/Providers → Email → off

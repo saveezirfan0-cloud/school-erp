@@ -73,7 +73,7 @@ export default function Subjects() {
   );
   const { items: paged, page: safePage, pageCount, total } = paginate(filtered, page, pageSize);
 
-  const bulk = useBulkSelect(filtered.map((s) => s.id));
+  const bulk = useBulkSelect(rows.map((s) => s.id), activeBranch);
   const pagedIds = paged.map((s) => s.id);
 
   useEffect(() => { setPage(1); }, [search, filterGrade, pageSize, activeBranch, sortField, sortDir]);

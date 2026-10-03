@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useState, useMemo, useCallback } from "react";
-import { db } from "../firebase";
-import { doc, onSnapshot, collection, updateDocs } from "../firebase";
+import { db, doc, onSnapshot, collection, updateDocs, setDoc, deleteDoc } from "../firebase";
+import { ROLE_MENU_PREFIX, normalizePrefs } from "../config/menu";
 import { useAuth } from "./AuthContext";
 
 const UserContext = createContext();
@@ -177,6 +177,9 @@ export function UserProvider({ children }) {
   const [userProfile, setUserProfile] = useState(null);
   const [loadingProfile, setLoadingProfile] = useState(true);
   const [customRolePerms, setCustomRolePerms] = useState({});
+  // Admin-set default menus per role, stored as custom_roles rows with a
+  // reserved "menu:" id so no schema change is needed.
+  const [roleMenuDefaults, setRoleMenuDefaults] = useState({});
 
   // Load user profile from Firestore
   useEffect(() => {
@@ -226,10 +229,17 @@ export function UserProvider({ children }) {
       collection(db, "customRoles"),
       (snap) => {
         const perms = {};
+        const menus = {};
         snap.docs.forEach(d => {
+          if (d.id.startsWith(ROLE_MENU_PREFIX)) {
+            const layout = d.data().menuLayout;
+            if (layout) menus[d.id.slice(ROLE_MENU_PREFIX.length)] = layout;
+            return;
+          }
           perms[d.id] = d.data().permissions || {};
         });
         setCustomRolePerms(perms);
+        setRoleMenuDefaults(menus);
       },
       (error) => {
         console.error("Custom roles error:", error);
@@ -259,21 +269,63 @@ export function UserProvider({ children }) {
 
   const isAdmin = role === "admin";
 
-  // Personal sidebar layout (null = use the default). Saved per user on
-  // their own profile row. updateDocs merges into `extra` so this never
-  // overwrites pagePermissions (a plain updateDoc would replace it).
-  const menuLayout = userProfile?.menuLayout || null;
-  const saveMenuLayout = useCallback(async (layout) => {
+  // Menu: a user's own layout wins, then the default an admin set for
+  // their role, then the built-in default (null). updateDocs merges into
+  // `extra`, so these never overwrite pagePermissions (plain updateDoc would).
+  const ownMenuLayout = userProfile?.menuLayout || null;
+  const roleMenuLayout = roleMenuDefaults[role] || null;
+  const menuLayout = ownMenuLayout || roleMenuLayout;
+  const menuPrefs = useMemo(() => normalizePrefs(userProfile?.menuPrefs), [userProfile?.menuPrefs]);
+
+  const saveProfileExtra = useCallback(async (key, value) => {
     if (!userProfile?.id) return;
-    const previous = userProfile.menuLayout ?? null;
-    setUserProfile((p) => (p ? { ...p, menuLayout: layout } : p));
+    const previous = userProfile[key] ?? null;
+    setUserProfile((p) => (p ? { ...p, [key]: value } : p));
     try {
-      await updateDocs("users", [userProfile.id], { menuLayout: layout });
+      await updateDocs("users", [userProfile.id], { [key]: value });
     } catch (e) {
-      setUserProfile((p) => (p ? { ...p, menuLayout: previous } : p));
+      setUserProfile((p) => (p ? { ...p, [key]: previous } : p));
       throw e;
     }
-  }, [userProfile?.id, userProfile?.menuLayout]);
+  }, [userProfile]);
+
+  // layout === null resets to the role/built-in default
+  const saveMenuLayout = useCallback((layout) => saveProfileExtra("menuLayout", layout), [saveProfileExtra]);
+
+  // Preferences (pins, collapsed sections) change often: update the UI at
+  // once and batch the network write.
+  const prefsTimer = React.useRef(null);
+  const saveMenuPrefs = useCallback((next) => {
+    if (!userProfile?.id) return;
+    const id = userProfile.id;
+    setUserProfile((p) => (p ? { ...p, menuPrefs: next } : p));
+    clearTimeout(prefsTimer.current);
+    prefsTimer.current = setTimeout(() => {
+      updateDocs("users", [id], { menuPrefs: next }).catch((e) => console.error("menuPrefs save failed:", e));
+    }, 600);
+  }, [userProfile?.id]);
+
+  // Admin only (RLS enforces it): set or clear the default menu for a role.
+  const saveRoleMenuDefault = useCallback(async (roleId, layout) => {
+    const ref = doc(db, "customRoles", ROLE_MENU_PREFIX + roleId);
+    if (layout) await setDoc(ref, { menuLayout: layout });
+    else await deleteDoc(ref);
+  }, []);
+
+  // Personal layout of the Haji Sahab report (null = default). Saved the same
+  // way as the menu layout, on the user's own profile row.
+  const hajiLayout = userProfile?.hajiLayout || null;
+  const saveHajiLayout = useCallback(async (layout) => {
+    if (!userProfile?.id) return;
+    const previous = userProfile.hajiLayout ?? null;
+    setUserProfile((p) => (p ? { ...p, hajiLayout: layout } : p));
+    try {
+      await updateDocs("users", [userProfile.id], { hajiLayout: layout });
+    } catch (e) {
+      setUserProfile((p) => (p ? { ...p, hajiLayout: previous } : p));
+      throw e;
+    }
+  }, [userProfile?.id, userProfile?.hajiLayout]);
 
   // If branch_manager, restrict to their assigned branch
   const assignedBranchId = (role === "branch_manager" || role === "teacher") ? userProfile?.branchId : null;
@@ -288,8 +340,16 @@ export function UserProvider({ children }) {
     isAdmin,
     assignedBranchId,
     menuLayout,
+    ownMenuLayout,
+    roleMenuLayout,
+    roleMenuDefaults,
     saveMenuLayout,
-  }), [userProfile, loadingProfile, role, permissions, customRolePerms, can, isAdmin, assignedBranchId, menuLayout, saveMenuLayout]);
+    saveRoleMenuDefault,
+    menuPrefs,
+    saveMenuPrefs,
+    hajiLayout,
+    saveHajiLayout,
+  }), [userProfile, loadingProfile, role, permissions, customRolePerms, can, isAdmin, assignedBranchId, menuLayout, ownMenuLayout, roleMenuLayout, roleMenuDefaults, saveMenuLayout, saveRoleMenuDefault, menuPrefs, saveMenuPrefs, hajiLayout, saveHajiLayout]);
 
   return (
     <UserContext.Provider value={value}>

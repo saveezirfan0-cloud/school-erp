@@ -55,7 +55,7 @@ export default function Payments() {
   }, []);
 
   // payments via the shared hook: realtime + search + filters + sort + paging
-  const { filtered, paged, total, pageCount, page: safePage } = useCollection("payments", {
+  const { rows, filtered, paged, total, pageCount, page: safePage } = useCollection("payments", {
     activeBranch,
     search,
     searchFields: ["description", "account", "reference", "category"],
@@ -73,19 +73,20 @@ export default function Payments() {
   useEffect(() => { setPage(1); }, [search, filterType, filterCategory, filterDateFrom, filterDateTo, pageSize, activeBranch]);
 
   // multi-select for bulk actions
-  const bulk = useBulkSelect(filtered.map(p => p.id));
+  const bulk = useBulkSelect(rows.map(p => p.id), activeBranch);
   const pagedIds = paged.map(p => p.id);
   const [showBulkEdit, setShowBulkEdit] = useState(false);
   const [bulkBusy, setBulkBusy] = useState(false);
 
   const bankCashAccounts = accounts.filter(a => a.subType === "Bank & Cash" || a.type === "Assets");
+  const accountIdByName = (name) => accounts.find(a => a.name === name)?.id || "";
 
   const totalIn = filtered.filter(p => p.type === "cash_in").reduce((s, p) => s + Number(p.amount), 0);
   const totalOut = filtered.filter(p => p.type === "cash_out").reduce((s, p) => s + Number(p.amount), 0);
 
   const handleSingle = async (e) => {
     e.preventDefault();
-    await addDoc(collection(db, "payments"), { ...form, createdAt: serverTimestamp() });
+    await addDoc(collection(db, "payments"), { ...form, accountId: accountIdByName(form.account), createdAt: serverTimestamp() });
     toast.success("Payment recorded");
     logActivity("recorded", "Payments", `${form.type === "cash_in" ? "Cash in" : "Cash out"} Rs. ${Number(form.amount || 0).toLocaleString()} — ${form.account}${form.description ? ` (${form.description})` : ""}`);
     setShowModal(false);
@@ -97,7 +98,7 @@ export default function Payments() {
     const valid = bulkLines.filter(l => l.account && l.amount && l.description);
     if (valid.length === 0) return toast.error("Add at least one valid line");
     await Promise.all(valid.map(line =>
-      addDoc(collection(db, "payments"), { ...line, date: bulkDate, reference: bulkRef, createdAt: serverTimestamp() })
+      addDoc(collection(db, "payments"), { ...line, accountId: accountIdByName(line.account), date: bulkDate, reference: bulkRef, createdAt: serverTimestamp() })
     ));
     toast.success(`${valid.length} payments recorded`);
     logActivity("recorded", "Payments", `${valid.length} payments (bulk entry)`);
@@ -136,7 +137,9 @@ export default function Payments() {
     try {
       const n = bulk.count;
       if (changes.branchId === "main") changes.branchId = "";
-      await updateDocs("payments", [...bulk.selected], { ...changes, updatedAt: serverTimestamp() });
+      // Keep the account link in step with a changed account name.
+      const patch = changes.account ? { ...changes, accountId: accountIdByName(changes.account) } : changes;
+      await updateDocs("payments", [...bulk.selected], { ...patch, updatedAt: serverTimestamp() });
       toast.success(`${n} payment${n === 1 ? "" : "s"} updated`);
       logActivity("updated", "Payments", `${n} payments (bulk): ${Object.keys(changes).join(", ")}`);
       setShowBulkEdit(false);
