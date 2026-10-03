@@ -80,3 +80,37 @@ test("edit operations don't mutate their input", () => {
   toggleHidden(base, "students");
   expect(JSON.stringify(base)).toBe(snapshot);
 });
+
+// ---- search, home page and prefs ----
+import { searchPages, listPages, homePath, normalizePrefs } from "./menu";
+
+test("searchPages matches label, section and keywords, best match first", () => {
+  const pages = listPages(defaultLayout(), allAccess);
+  expect(searchPages(pages, "").length).toBe(pages.length);
+  expect(searchPages(pages, "salary").map((p) => p.key)).toEqual(["payslips"]);          // keyword
+  expect(searchPages(pages, "people").map((p) => p.key)).toEqual(["students", "employees"]); // section
+  expect(searchPages(pages, "pay")[0].key).toBe("payments");                              // label prefix beats keyword
+  expect(searchPages(pages, "zzz")).toEqual([]);
+});
+
+test("listPages respects permissions but not the hidden list", () => {
+  const layout = toggleHidden(defaultLayout(), "students");
+  const only = { can: (p) => p === "canViewStudents", isAdmin: false };
+  expect(listPages(layout, only).map((p) => p.key)).toEqual(["students", "trash", "settings"]);
+});
+
+test("homePath: dashboard if allowed, else the first page of the user's own menu", () => {
+  expect(homePath(defaultLayout(), allAccess)).toBe("/");
+  const collector = { can: (p) => p === "canViewStudents" || p === "canViewFees", isAdmin: false };
+  expect(homePath(defaultLayout(), collector)).toBe("/students");
+  // user moved Fees to the top -> lands there
+  const moved = moveItem(defaultLayout(), "fees", "main", 0);
+  expect(homePath(moved, collector)).toBe("/fees");
+  // nothing accessible except Trash/Settings -> still lands on one of them
+  expect(homePath(defaultLayout(), { can: () => false, isAdmin: false })).toBe("/trash");
+});
+
+test("normalizePrefs drops unknown/duplicate pins and keeps collapsed null when unset", () => {
+  expect(normalizePrefs(undefined)).toEqual({ pinned: [], collapsed: null });
+  expect(normalizePrefs({ pinned: ["fees", "ghost", "fees"], collapsed: ["admin"] })).toEqual({ pinned: ["fees"], collapsed: ["admin"] });
+});

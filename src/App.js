@@ -5,6 +5,7 @@ import { AuthProvider, useAuth } from "./context/AuthContext";
 import { BranchProvider } from "./context/BranchContext";
 import { UserProvider, useUser } from "./context/UserContext";
 import Layout from "./components/Layout/Layout";
+import { normalizeLayout, homePath } from "./config/menu";
 
 // Login is needed immediately; keep it eager. Everything else is
 // lazy-loaded so the initial bundle stays small and heavy pages
@@ -43,6 +44,15 @@ const PageLoader = () => (
     <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
   </div>
 );
+
+// "/" shows the dashboard when the user may see it; otherwise it sends
+// them to the first page of their own menu instead of "Access Denied".
+function Home() {
+  const { can, isAdmin, menuLayout } = useUser();
+  if (can("canViewDashboard")) return <Dashboard />;
+  const path = homePath(normalizeLayout(menuLayout), { can, isAdmin });
+  return <Navigate to={path || "/unauthorized"} replace />;
+}
 
 function PrivateRoute({ children, permission }) {
   const { user, loading } = useAuth();
@@ -91,8 +101,8 @@ export default function App() {
                 </PrivateRoute>
               }>
                 <Route index element={
-                  <PrivateRoute permission="canViewDashboard">
-                    <Dashboard />
+                  <PrivateRoute>
+                    <Home />
                   </PrivateRoute>
                 } />
                 <Route path="students" element={
