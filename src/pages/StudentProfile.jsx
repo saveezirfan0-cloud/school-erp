@@ -6,6 +6,7 @@ import { useUser } from "../context/UserContext";
 import { useDocument, useRelated } from "../hooks/useProfileData";
 import { logActivity } from "../utils/auditLog";
 import { formatDate, localISODate, durationSince } from "../utils/dates";
+import { summarizeInvoices, isLivePayment } from "../utils/fees";
 import ProfileShell, { cardStyle, cardHeadStyle } from "../components/Profile/ProfileShell";
 import DetailsCard from "../components/Profile/DetailsCard";
 import AttendanceTab, { summarize } from "../components/Profile/AttendanceTab";
@@ -44,31 +45,12 @@ export default function StudentProfile() {
   const branchName = branches.find((b) => b.id === student?.branchId)?.name || "Main Office";
   const branchOptions = [{ value: "", label: "Main Office" }, ...branches.map((b) => ({ value: b.id, label: b.name }))];
 
-  // Per-invoice paid amount = net non-reversed payments (same rule the
-  // Fees page uses: ignore reversed originals and the reversal rows).
+  // Shared with the ledger so the two screens always agree.
   const fees = useMemo(() => {
-    const today = localISODate();
-    const mine = invoicePayments.filter((p) => invoices.some((i) => i.id === p.sourceId));
-    const paidBy = {};
-    for (const p of mine) {
-      if (p.reversed || p.reversalOf) continue;
-      paidBy[p.sourceId] = (paidBy[p.sourceId] || 0) + (p.type === "cash_in" ? Number(p.amount) : -Number(p.amount));
-    }
-    const rows = invoices.map((i) => {
-      const amount = Number(i.amount || 0);
-      const paid = paidBy[i.id] || 0;
-      const concession = Number(i.concessionAmount || 0);
-      const balance = Math.max(0, amount - paid - concession);
-      const status = balance <= 0 ? "Paid" : paid > 0 ? "Partial" : (i.dueDate && i.dueDate < today ? "Overdue" : "Pending");
-      return { ...i, amount, paid, balance, statusLabel: status };
-    }).sort((a, b) => (String(b.createdAt || "") > String(a.createdAt || "") ? 1 : -1));
-    return {
-      rows,
-      billed: rows.reduce((s, r) => s + r.amount, 0),
-      received: rows.reduce((s, r) => s + r.paid, 0),
-      balance: rows.reduce((s, r) => s + r.balance, 0),
-      payments: mine.sort((a, b) => (String(b.date || "") > String(a.date || "") ? 1 : -1)),
-    };
+    const out = summarizeInvoices(invoices, invoicePayments, localISODate());
+    out.rows.sort((a, b) => (String(b.createdAt || "") > String(a.createdAt || "") ? 1 : -1));
+    out.payments.sort((a, b) => (String(b.date || "") > String(a.date || "") ? 1 : -1));
+    return out;
   }, [invoices, invoicePayments]);
 
   if (loading) return <div style={{ padding: 60, textAlign: "center", color: "var(--text-muted)" }}>Loading…</div>;
@@ -145,6 +127,7 @@ export default function StudentProfile() {
             {[
               ["Total billed", fees.billed, "var(--primary)", FileText],
               ["Total received", fees.received, "#10b981", TrendingUp],
+              ...(fees.concession > 0 ? [["Concession", fees.concession, "#2563eb", Receipt]] : []),
               ["Balance due", fees.balance, fees.balance > 0 ? "#ef4444" : "#10b981", Wallet],
             ].map(([label, value, color, Icon]) => (
               <div key={label} style={{ flex: 1, minWidth: 150, background: "white", border: "1px solid var(--border)", borderRadius: 12, padding: 16 }}>
@@ -184,7 +167,7 @@ export default function StudentProfile() {
           </div>
 
           <div style={cardStyle}>
-            <div style={cardHeadStyle}>Payments received ({fees.payments.filter((p) => !p.reversed && !p.reversalOf).length})</div>
+            <div style={cardHeadStyle}>Payments received ({fees.payments.filter(isLivePayment).length})</div>
             {fees.payments.length === 0 ? <div style={{ padding: 30, textAlign: "center", color: "var(--text-muted)" }}>No payments yet.</div> : fees.payments.map((p) => {
               const struck = p.reversed || p.reversalOf;
               return (
