@@ -40,6 +40,13 @@ const TABLE_MAP = {
   reminderLogs: "reminder_logs",
   auditLog: "audit_log",
   attendance: "attendance",
+  // LMS / academics (supabase/lms.sql)
+  subjects: "subjects",
+  exams: "exams",
+  examResults: "exam_results",
+  assignments: "assignments",
+  submissions: "submissions",
+  materials: "materials",
 };
 
 // Real (non-jsonb) columns per table. Anything not in this list
@@ -58,7 +65,13 @@ const COLUMNS = {
   custom_roles: ["id", "permissions", "created_at", "updated_at"],
   reminder_logs: ["id", "student_id", "phone", "message", "status", "date", "timestamp", "created_at", "updated_at"],
   audit_log: ["id", "user", "action", "module", "details", "timestamp", "created_at"],
+  subjects: ["id", "name", "code", "grade", "teacher", "branch_id", "created_at", "updated_at"],
   attendance: ["id", "subject_type", "subject_id", "date", "status", "branch_id", "created_at", "updated_at"],
+  exams: ["id", "name", "term", "exam_type", "grade", "date", "total_marks", "published", "branch_id", "created_at", "updated_at"],
+  exam_results: ["id", "exam_id", "student_id", "subject_id", "marks_obtained", "max_marks", "absent", "remarks", "branch_id", "created_at", "updated_at"],
+  assignments: ["id", "title", "description", "subject_id", "grade", "assigned_date", "due_date", "max_marks", "attachment_url", "branch_id", "created_at", "updated_at"],
+  submissions: ["id", "assignment_id", "student_id", "status", "submitted_date", "marks", "feedback", "attachment_url", "branch_id", "created_at", "updated_at"],
+  materials: ["id", "title", "description", "kind", "url", "subject_id", "grade", "branch_id", "created_at", "updated_at"],
 };
 
 const SERVER_TS = "__SERVER_TIMESTAMP__";
@@ -104,6 +117,7 @@ function decode(row) {
 const SOFT_DELETE_TABLES = new Set([
   "students", "employees", "invoices", "expenses", "payments",
   "payslips", "accounts", "journals", "branches", "reminder_logs",
+  "subjects", "exams", "assignments", "materials",
 ]);
 
 // ---- Historical data scope ----
@@ -271,10 +285,16 @@ export async function updateDoc(ref, data) {
 // Insert-or-update many rows in one request. `onConflict` lists the columns
 // of a unique index (e.g. "subject_type,subject_id,date"); rows that hit it
 // are updated instead of rejected.
+//
+// `onConflict` is either that snake_case comma-separated string, or an array
+// of camelCase field names (e.g. ["examId","studentId","subjectId"]) which is
+// converted for you. On conflict the whole row is replaced, including `extra`,
+// so pass complete rows rather than partial patches.
 export async function upsertDocs(name, rows, onConflict) {
   const table = TABLE_MAP[name] || name;
   if (!rows || rows.length === 0) return 0;
-  const { error } = await supabase.from(table).upsert(rows.map((r) => encode(table, r)), { onConflict });
+  const conflict = Array.isArray(onConflict) ? onConflict.map(toSnake).join(",") : onConflict;
+  const { error } = await supabase.from(table).upsert(rows.map((r) => encode(table, r)), { onConflict: conflict });
   if (error) throw error;
   return rows.length;
 }
@@ -424,6 +444,23 @@ export async function getDocs(ref) {
   const { data, error } = await builder;
   if (error) throw error;
   return querySnap(data);
+}
+
+// Like getDocs(), but pages through the whole table. PostgREST caps a
+// single response at 1000 rows by default, so anything that sums over
+// a collection (reports) must page or its totals silently truncate.
+// Rows are ordered by id so range() pages are stable.
+export async function getAllDocs(ref, pageSize = 1000) {
+  const rows = [];
+  for (let from = 0; ; from += pageSize) {
+    let builder = supabase.from(ref.table).select("*");
+    builder = applyQuery(builder, ref).order("id", { ascending: true }).range(from, from + pageSize - 1);
+    const { data, error } = await builder;
+    if (error) throw error;
+    rows.push(...(data || []));
+    if (!data || data.length < pageSize) break;
+  }
+  return querySnap(rows);
 }
 
 export async function getDoc(ref) {

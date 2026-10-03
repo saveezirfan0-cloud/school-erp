@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { db, addDoc, updateDoc, deleteDoc, doc, collection, serverTimestamp, updateDocs, deleteDocs } from "../firebase";
+import { db, supabase, addDoc, updateDoc, deleteDoc, doc, collection, serverTimestamp, updateDocs, deleteDocs } from "../firebase";
 import { useBranch } from "../context/BranchContext";
 import { useCollection } from "../hooks/useCollection";
 import { useBulkSelect } from "../hooks/useBulkSelect";
@@ -14,12 +14,22 @@ import { bulkResultMessage } from "../utils/bulk";
 import { logActivity } from "../utils/auditLog";
 import { exportToCSV, exportToPDF } from "../utils/exportUtils";
 import toast from "react-hot-toast";
-import { Plus, Users, Edit2, Trash2, X, Download, FileText, Receipt, CalendarCheck } from "lucide-react";
+import { Plus, Users, Edit2, Trash2, X, Download, FileText, Receipt, CalendarCheck, GraduationCap } from "lucide-react";
 import { useNavigate } from "react-router-dom";
+import { isLeftStudent, leftStatusFields } from "../utils/studentStatus";
 import { useUser } from "../context/UserContext";
 import RollCallModal from "../components/Profile/RollCallModal";
 
 const emptyStudent = { name: "", studentId: "", grade: "", parentName: "", parentPhone: "", email: "", branchId: "", monthlyFee: "", address: "", dob: "", recurringFee: false };
+
+// Invoices copy the student's branch when they are created. When a student
+// moves branch, carry their invoices along so branch-scoped fees/dashboards
+// stay correct. Best effort: the dashboard also resolves branch via the student.
+async function syncInvoiceBranch(studentIds, branchId) {
+  if (!studentIds.length) return;
+  const { error } = await supabase.from("invoices").update({ branch_id: branchId || "" }).in("student_id", studentIds);
+  if (error) console.error("Could not update invoice branch:", error);
+}
 
 function useIsMobile() {
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
@@ -33,9 +43,10 @@ function useIsMobile() {
 
 export default function Students() {
   const { branches, activeBranch } = useBranch();
+  const { can } = useUser();
+  const canSeeAcademics = can("canViewAttendance") || can("canViewExams") || can("canViewLearning");
   const isMobile = useIsMobile();
   const navigate = useNavigate();
-  const { can } = useUser();
   const [showRollCall, setShowRollCall] = useState(false);
 
   const [search, setSearch] = useState("");
@@ -80,7 +91,9 @@ export default function Students() {
     e.preventDefault();
     try {
       if (editing) {
+        const before = rows.find((r) => r.id === editing);
         await updateDoc(doc(db, "students", editing), { ...form, updatedAt: serverTimestamp() });
+        if (before && (before.branchId || "") !== (form.branchId || "")) await syncInvoiceBranch([editing], form.branchId);
         toast.success("Student updated");
         logActivity("updated", "Students", `${form.name || "Unnamed"}${form.studentId ? ` (${form.studentId})` : ""}`);
       } else {
@@ -123,6 +136,7 @@ export default function Students() {
       const n = bulk.count;
       if (changes.branchId === "main") changes.branchId = "";
       await updateDocs("students", [...bulk.selected], { ...changes, updatedAt: serverTimestamp() });
+      if ("branchId" in changes) await syncInvoiceBranch([...bulk.selected], changes.branchId);
       toast.success(`${n} student${n === 1 ? "" : "s"} updated`);
       logActivity("updated", "Students", `${n} students (bulk): ${Object.keys(changes).join(", ")}`);
       setShowBulkEdit(false);
@@ -205,6 +219,7 @@ export default function Students() {
                 </div>
                 <div style={{ display: "flex", gap: 6 }} onClick={(e) => e.stopPropagation()}>
                   <button onClick={() => navigate(`/students/${s.id}/ledger`)} title="Ledger" style={{ border: "none", background: "#eff6ff", color: "#2563eb", padding: "7px 9px", borderRadius: 8, cursor: "pointer" }}><Receipt size={14} /></button>
+                  {canSeeAcademics && <button onClick={() => navigate(`/students/${s.id}/academics`)} title="Academics" aria-label="Academics" style={{ border: "none", background: "#ecfdf5", color: "#059669", padding: "7px 9px", borderRadius: 8, cursor: "pointer" }}><GraduationCap size={14} /></button>}
                   <button onClick={() => { setForm(s); setEditing(s.id); setShowModal(true); }} style={{ border: "none", background: "var(--primary-light)", color: "var(--primary)", padding: "7px 9px", borderRadius: 8, cursor: "pointer" }}><Edit2 size={14} /></button>
                   <button onClick={() => handleDelete(s)} style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "7px 9px", borderRadius: 8, cursor: "pointer" }}><Trash2 size={14} /></button>
                 </div>
@@ -245,7 +260,7 @@ export default function Students() {
                       <RowCheckbox checked={bulk.isSelected(s.id)} onChange={() => bulk.toggle(s.id)} label={`Select ${studentName(s)}`} />
                     </td>
                     <td style={{ padding: "11px 14px", fontSize: 12, fontFamily: "monospace" }}>{s.studentId}</td>
-                    <td style={{ padding: "11px 14px", fontSize: 14, fontWeight: 500, whiteSpace: "nowrap", color: "var(--primary)" }}>{studentName(s)}</td>
+                    <td style={{ padding: "11px 14px", fontSize: 14, fontWeight: 500, whiteSpace: "nowrap", color: "var(--primary)" }}>{studentName(s)}{isLeftStudent(s) && <span style={{ marginLeft: 8, padding: "2px 8px", borderRadius: 20, fontSize: 11, background: "#fef2f2", color: "#ef4444", fontWeight: 600 }}>Left</span>}</td>
                     <td style={{ padding: "11px 14px", fontSize: 13 }}>{s.grade}</td>
                     <td style={{ padding: "11px 14px", fontSize: 13, whiteSpace: "nowrap" }}>{s.parentName}</td>
                     <td style={{ padding: "11px 14px", fontSize: 13 }}>{s.parentPhone}</td>
@@ -259,6 +274,7 @@ export default function Students() {
                     <td style={{ padding: "11px 14px" }} onClick={(e) => e.stopPropagation()}>
                       <div style={{ display: "flex", gap: 6 }}>
                         <button onClick={() => navigate(`/students/${s.id}/ledger`)} title="Ledger" style={{ border: "none", background: "#eff6ff", color: "#2563eb", padding: "6px 9px", borderRadius: 6, cursor: "pointer" }}><Receipt size={13} /></button>
+                        {canSeeAcademics && <button onClick={() => navigate(`/students/${s.id}/academics`)} title="Academics" aria-label="Academics" style={{ border: "none", background: "#ecfdf5", color: "#059669", padding: "6px 9px", borderRadius: 6, cursor: "pointer" }}><GraduationCap size={13} /></button>}
                         <button onClick={() => { setForm(s); setEditing(s.id); setShowModal(true); }} style={{ border: "none", background: "var(--primary-light)", color: "var(--primary)", padding: "6px 9px", borderRadius: 6, cursor: "pointer" }}><Edit2 size={13} /></button>
                         <button onClick={() => handleDelete(s)} style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "6px 9px", borderRadius: 6, cursor: "pointer" }}><Trash2 size={13} /></button>
                       </div>
@@ -359,6 +375,13 @@ export default function Students() {
                     <option value="">Main Office</option>
                     {branches.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
                   </select>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, padding: 12, border: "1px solid var(--border)", borderRadius: 8, background: isLeftStudent(form) ? "#fef2f2" : "#f8fafc" }}>
+                  <input type="checkbox" id="studentLeft" checked={isLeftStudent(form)} onChange={(e) => setForm((p) => ({ ...p, ...leftStatusFields(e.target.checked) }))} style={{ width: 18, height: 18 }} />
+                  <div>
+                    <label htmlFor="studentLeft" style={{ fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Student has left</label>
+                    <div style={{ fontSize: 11, color: "var(--text-muted)" }}>Keeps their records, stops new fee invoices</div>
+                  </div>
                 </div>
                 <div style={{ display: "flex", alignItems: "center", gap: 10, padding: 12, border: "1px solid var(--border)", borderRadius: 8, background: form.recurringFee ? "#f0fdf4" : "#f8fafc" }}>
                   <input type="checkbox" id="recurringFee" checked={form.recurringFee || false} onChange={(e) => setForm((p) => ({ ...p, recurringFee: e.target.checked }))} style={{ width: 18, height: 18 }} />
