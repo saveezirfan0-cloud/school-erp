@@ -27,6 +27,9 @@ import { matchesBranch } from "./branchFilter";
 // Same definitions of "collected" / "outstanding" as Dashboard and Fees & Invoices.
 import { invoiceCollected, invoiceConcession, invoiceOutstanding, invoiceUnverified } from "./invoiceTotals";
 import { invoiceDate, invoicePaidDate, expenseDate, payslipPaidDate, payslipPeriodDate } from "./reporting";
+// Matches a payment to a chart account by id (survives renames), else by name.
+// Same rule as reporting.attributePayments.
+import { paymentInAccount } from "./paymentAccount";
 
 export const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 const MONTH_SHORT = MONTH_NAMES.map(m => m.slice(0, 3));
@@ -163,6 +166,31 @@ export function previousRange(range) {
   }
   const days = daysBetween(from, to) + 1;
   return { from: addDays(from, -days), to: prevTo };
+}
+
+// Same dates one year earlier. A range ending on the last day of a month
+// keeps ending on the last day (so Feb 2025 compares with the whole of Feb 2024).
+export function yearAgoRange(range) {
+  if (!range || !range.from || !range.to) return null;
+  const shift = (d, endOfMonthAware) => {
+    const y = d.getFullYear() - 1;
+    const lastDay = new Date(y, d.getMonth() + 1, 0).getDate();
+    const wasLast = d.getDate() === new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+    const day = endOfMonthAware && wasLast ? lastDay : Math.min(d.getDate(), lastDay);
+    return new Date(y, d.getMonth(), day, d.getHours(), d.getMinutes(), d.getSeconds(), d.getMilliseconds());
+  };
+  return { from: shift(range.from, false), to: shift(range.to, true) };
+}
+
+export const COMPARE_MODES = [
+  { id: "prev", label: "Previous period", short: "Previous" },
+  { id: "yoy", label: "Same period last year", short: "Last year" },
+  { id: "none", label: "No comparison", short: "" },
+];
+export function comparisonRange(range, mode) {
+  if (mode === "yoy") return yearAgoRange(range);
+  if (mode === "none") return null;
+  return previousRange(range);
 }
 
 export function rangeLabel(range) {
@@ -332,7 +360,11 @@ const withShare = (rows) => {
 
 // ------------------------------------------------------- profit & loss
 
-export function computeFinancials(d, { range, branch = "all" }) {
+// basis: "cash"    income = money received in the period (by paid date)
+//        "accrual" income = fees billed in the period less concessions (by invoice month)
+// Expenses are dated by expense.date; payroll is cash-basis on BOTH bases
+// (only paid payslips, by paid date; unpaid ones are the `payrollUnpaid` memo).
+export function computeFinancials(d, { range, branch = "all", basis = "cash" }) {
   const invoices = d.invoices.filter(i => matchesBranch(i, branch));
   const allExpenses = d.expenses.filter(e => matchesBranch(e, branch));
   const allPayslips = d.payslips.filter(p => matchesBranch(p, branch));
@@ -340,17 +372,35 @@ export function computeFinancials(d, { range, branch = "all" }) {
   const payslips = allPayslips.filter(p => inRange(p._on, range));
   const bounded = Boolean(range && (range.from || range.to));
 
-  let billed = 0, collected = 0, concessions = 0, pending = 0;
+  // Every per-invoice figure below (_paid, _concession, _outstanding, _unverified)
+  // comes from reporting.invoiceFacts, so both bases share one definition of
+  // collected / pending / unverified.
+  //   cash:    income = collected (money recorded against invoices, by paid date)
+  //   accrual: income = billed in the period less concessions on those invoices
+  //            ("earned"). It is a labelled view for budgeting / year-over-year;
+  //            `collected`, `pending` and `unverified` keep their shared meaning
+  //            and an invoice marked paid with no money is still `unverified`.
+  const accrual = basis === "accrual";
+  let billed = 0, collected = 0, concessions = 0, pending = 0, earned = 0;
   let unverified = 0, unverifiedCount = 0, unverifiedAllTime = 0, unverifiedAllTimeCount = 0, undated = 0;
   const heads = new Map();
   for (const i of invoices) {
-    if (inRange(i._billedOn, range)) billed += i._amount;
-    else if (bounded && !i._billedOn) undated++;
+    const billedHere = inRange(i._billedOn, range);
+    if (billedHere) {
+      billed += i._amount;
+      if (accrual) {
+        const net = Math.max(0, i._amount - i._concession);
+        earned += net;
+        for (const a of allocateByHead(i, net)) tally(heads, a.head, a.amount);
+      }
+    } else if (bounded && !i._billedOn) undated++;
     // Outstanding is a balance as of today: branch-scoped, not cut by the period.
     pending += i._outstanding;
-    // Concessions and unverified "paid" claims follow the settlement date.
+    // Cash basis: concessions and unverified "paid" claims follow the settlement
+    // date. Accrual basis: a concession reduces the invoice it belongs to, so it
+    // follows the billing period.
     const settled = i._settledOn || i._billedOn;
-    if (i._concession > 0 && inRange(settled, range)) concessions += i._concession;
+    if (i._concession > 0 && inRange(accrual ? i._billedOn : settled, range)) concessions += i._concession;
     if (i._unverified > 0) {
       unverifiedAllTime += i._unverified; unverifiedAllTimeCount++;
       if (inRange(settled, range)) { unverified += i._unverified; unverifiedCount++; }
@@ -358,7 +408,7 @@ export function computeFinancials(d, { range, branch = "all" }) {
     if (i._paid > 0) {
       if (inRange(i._collectedOn, range)) {
         collected += i._paid;
-        for (const a of allocateByHead(i, i._paid)) tally(heads, a.head, a.amount);
+        if (!accrual) for (const a of allocateByHead(i, i._paid)) tally(heads, a.head, a.amount);
       } else if (bounded && !i._collectedOn) undated++;
     }
   }
@@ -371,7 +421,7 @@ export function computeFinancials(d, { range, branch = "all" }) {
     tally(categories, uncategorised(e.category, "Uncategorised"), e._amount);
   }
 
-  // Cash basis: only PAID payslips are an expense. Unpaid ones are a memo.
+  // Payroll is cash-basis on both bases: only PAID payslips are an expense. Unpaid ones are a memo.
   const roles = new Map();
   let payroll = 0, payrollUnpaid = 0, paidSlips = 0;
   for (const p of payslips) {
@@ -385,10 +435,10 @@ export function computeFinancials(d, { range, branch = "all" }) {
   }
 
   const totalExpenses = opex + payroll;
-  const income = collected;
+  const income = accrual ? earned : collected;
   const net = income - totalExpenses;
   return {
-    billed, collected, concessions, pending, income,
+    basis, billed, collected, concessions, pending, income,
     unverified, unverifiedCount, unverifiedAllTime, unverifiedAllTimeCount, undated,
     opex, payroll, payrollUnpaid, totalExpenses, net,
     margin: income > 0 ? net / income : null,
@@ -400,7 +450,7 @@ export function computeFinancials(d, { range, branch = "all" }) {
 }
 
 // Income / expense / net per time bucket.
-export function buildSeries(d, { range, branch = "all", granularity }) {
+export function buildSeries(d, { range, branch = "all", granularity, basis = "cash" }) {
   const g = resolveGranularity(range, granularity);
   const buckets = makeBuckets(range, g, { income: 0, billed: 0, expenses: 0, payroll: 0, outflow: 0, net: 0 });
   const byKey = new Map(buckets.map(b => [b.key, b]));
@@ -412,7 +462,8 @@ export function buildSeries(d, { range, branch = "all", granularity }) {
   for (const i of d.invoices) {
     if (!matchesBranch(i, branch)) continue;
     add(i._billedOn, "billed", i._amount);
-    if (i._paid > 0) add(i._collectedOn, "income", i._paid);
+    if (basis === "accrual") add(i._billedOn, "income", Math.max(0, i._amount - i._concession));
+    else if (i._paid > 0) add(i._collectedOn, "income", i._paid);
   }
   for (const e of d.expenses) if (matchesBranch(e, branch)) add(e._on, "expenses", e._amount);
   for (const p of d.payslips) if (p._isPaid && matchesBranch(p, branch)) add(p._on, "payroll", p._amount);
@@ -421,17 +472,17 @@ export function buildSeries(d, { range, branch = "all", granularity }) {
 }
 
 // One row per branch, for side-by-side comparison.
-export function branchBreakdown(d, branchList, { range }) {
+export function branchBreakdown(d, branchList, { range, basis = "cash" }) {
   const list = [{ id: "main", name: "Main Office" }, ...branchList.map(b => ({ id: b.id, name: b.name }))];
   return list.map(b => {
-    const f = computeFinancials(d, { range, branch: b.id });
+    const f = computeFinancials(d, { range, branch: b.id, basis });
     const students = d.students.filter(s => matchesBranch(s, b.id)).length;
     const fee = f.billed - f.concessions;
     return {
       id: b.id, name: b.name, students,
       billed: f.billed, income: f.income, concessions: f.concessions, pending: f.pending,
       expenses: f.opex, payroll: f.payroll, net: f.net,
-      collectionRate: fee > 0 ? Math.min(1, f.income / fee) : null,
+      collectionRate: fee > 0 ? Math.min(1, f.collected / fee) : null,
     };
   });
 }
@@ -452,28 +503,37 @@ const isCashAccount = (a) => a.subType === "Bank & Cash" || a.type === "Assets";
 const liveLedger = (payments) => payments.filter(p => !p.reversed && !p.reversalOf);
 const signed = (p) => (p.type === "cash_in" ? p._amount : -p._amount);
 
+// Which account a payment belongs to: the matching chart account's id, or
+// a name-based key for postings that match no cash account (e.g. deleted).
+const accountKeyOf = (cashAccounts, p) => {
+  const a = cashAccounts.find(c => paymentInAccount(p, c));
+  return a ? a.id : `name:${p.account || "Unlinked"}`;
+};
+
 export function computeCashFlow(d, { range, branch = "all", account = "", granularity }) {
   const cashAccounts = d.accounts.filter(isCashAccount);
-  const scoped = liveLedger(d.payments).filter(p => matchesBranch(p, branch));
-  const ledger = scoped.filter(p => !account || p.account === account);
+  const scoped = liveLedger(d.payments).filter(p => matchesBranch(p, branch)).map(p => ({ p, key: accountKeyOf(cashAccounts, p) }));
   const wholeOrg = branch === "all";
+
+  // One bucket per account (even with no postings) plus any unlinked names.
+  const accounts = new Map(cashAccounts.map(a => [a.id, { key: a.id, name: a.name, base: wholeOrg ? num(a.balance) : 0, rows: [] }]));
+  for (const { p, key } of scoped) {
+    if (!accounts.has(key)) accounts.set(key, { key, name: p.account || "Unlinked", base: 0, rows: [] });
+    accounts.get(key).rows.push(p);
+  }
 
   // Opening = accounts' own opening balances (org-wide, so only when the
   // branch filter is "all") + everything posted before the range starts.
-  const openingBase = (name) => (wholeOrg ? num(cashAccounts.find(a => a.name === name)?.balance) : 0);
   const before = (p) => range.from && p._on && p._on < range.from;
+  const perAccount = [...accounts.values()].filter(a => !account || a.key === account).map(a => {
+    const opening = a.base + a.rows.filter(before).reduce((s, p) => s + signed(p), 0);
+    const inflow = a.rows.filter(p => p.type === "cash_in" && inRange(p._on, range)).reduce((s, p) => s + p._amount, 0);
+    const outflow = a.rows.filter(p => p.type === "cash_out" && inRange(p._on, range)).reduce((s, p) => s + p._amount, 0);
+    return { key: a.key, name: a.name, opening, inflow, outflow, closing: opening + inflow - outflow };
+  }).filter(a => a.opening || a.inflow || a.outflow || cashAccounts.some(c => c.id === a.key));
 
-  const names = new Set([...cashAccounts.map(a => a.name), ...scoped.map(p => p.account).filter(Boolean)]);
-  const perAccount = [...names].filter(n => !account || n === account).map(name => {
-    const rows = ledger.filter(p => p.account === name);
-    const opening = openingBase(name) + rows.filter(before).reduce((s, p) => s + signed(p), 0);
-    const inflow = rows.filter(p => p.type === "cash_in" && inRange(p._on, range)).reduce((s, p) => s + p._amount, 0);
-    const outflow = rows.filter(p => p.type === "cash_out" && inRange(p._on, range)).reduce((s, p) => s + p._amount, 0);
-    return { name, opening, inflow, outflow, closing: opening + inflow - outflow };
-  }).filter(a => a.opening || a.inflow || a.outflow || cashAccounts.some(c => c.name === a.name));
-
+  const inPeriod = scoped.filter(({ p, key }) => (!account || key === account) && inRange(p._on, range)).map(x => x.p);
   const inCat = new Map(), outCat = new Map();
-  const inPeriod = ledger.filter(p => inRange(p._on, range));
   for (const p of inPeriod) tally(p.type === "cash_in" ? inCat : outCat, uncategorised(p.category, "Uncategorised"), p._amount);
 
   const opening = perAccount.reduce((s, a) => s + a.opening, 0);
@@ -496,7 +556,7 @@ export function computeCashFlow(d, { range, branch = "all", account = "", granul
     outByCategory: withShare(sortDesc([...outCat.values()])),
     perAccount, granularity: g, buckets,
     transactions: inPeriod.slice().sort((a, b) => a._on - b._on),
-    accountNames: [...names].sort(),
+    accountOptions: [...accounts.values()].map(a => ({ value: a.key, label: a.name })).sort((a, b) => a.label.localeCompare(b.label)),
     openingExcluded: !wholeOrg,
   };
 }
@@ -511,7 +571,7 @@ export function computeBalanceSheet(d, { asAt, branch = "all" }) {
   const ledger = liveLedger(d.payments).filter(p => matchesBranch(p, branch) && (!asAt || (p._on && p._on <= asAt)));
   const live = (a) => {
     const opening = wholeOrg ? num(a.balance) : 0;
-    return opening + ledger.filter(p => p.account === a.name).reduce((s, p) => s + signed(p), 0);
+    return opening + ledger.filter(p => paymentInAccount(p, a)).reduce((s, p) => s + signed(p), 0);
   };
   const side = (types, computed) => {
     const rows = d.accounts.filter(a => types.includes(a.type)).map(a => ({
@@ -601,7 +661,7 @@ export function summarizeFees(rows, { range, granularity, today = new Date() }) 
   for (const i of cohort) {
     if (i._outstanding <= 0) continue;
     const key = i.studentId || i._student;
-    const s = owing.get(key) || { key, student: i._student, code: i._studentCode, grade: i._grade, phone: i.parentPhone || "", outstanding: 0, invoices: 0, oldestDue: null };
+    const s = owing.get(key) || { key, studentId: i.studentId || "", student: i._student, code: i._studentCode, grade: i._grade, phone: i.parentPhone || "", outstanding: 0, invoices: 0, oldestDue: null };
     s.outstanding += i._outstanding; s.invoices += 1;
     const due = parseDay(i.dueDate) || i._billedOn;
     if (due && (!s.oldestDue || due < s.oldestDue)) s.oldestDue = due;
@@ -640,15 +700,15 @@ const pctText = (v) => `${Math.abs(Math.round(v * 100))}%`;
 const rs = (n) => `Rs. ${Math.round(n).toLocaleString()}`;
 
 // Plain-English call-outs for the top of the P&L and Fee tabs.
-export function buildHighlights({ cur, prev, fees, branches, only = "" }) {
+export function buildHighlights({ cur, prev, fees, branches, only = "", vs = "the previous period" }) {
   const out = [];
   if (only !== "fees" && prev) {
     const inc = change(cur.income, prev.income);
     if (inc?.pct !== null && inc?.pct !== undefined && Math.abs(inc.pct) >= 0.05)
-      out.push({ tone: inc.pct > 0 ? "good" : "bad", text: `Income is ${inc.pct > 0 ? "up" : "down"} ${pctText(inc.pct)} on the previous period (${rs(Math.abs(inc.amount))}).` });
+      out.push({ tone: inc.pct > 0 ? "good" : "bad", text: `Income is ${inc.pct > 0 ? "up" : "down"} ${pctText(inc.pct)} on ${vs} (${rs(Math.abs(inc.amount))}).` });
     const exp = change(cur.totalExpenses, prev.totalExpenses);
     if (exp?.pct !== null && exp?.pct !== undefined && Math.abs(exp.pct) >= 0.05)
-      out.push({ tone: exp.pct > 0 ? "bad" : "good", text: `Total expenses are ${exp.pct > 0 ? "up" : "down"} ${pctText(exp.pct)} on the previous period.` });
+      out.push({ tone: exp.pct > 0 ? "bad" : "good", text: `Total expenses are ${exp.pct > 0 ? "up" : "down"} ${pctText(exp.pct)} on ${vs}.` });
   }
   const topCat = only === "fees" ? null : cur.byCategory[0];
   if (topCat && cur.totalExpenses > 0)
@@ -671,3 +731,58 @@ export function buildHighlights({ cur, prev, fees, branches, only = "" }) {
 
 export const formatRs = (n) => `Rs. ${Math.round(num(n)).toLocaleString()}`;
 export const formatPct = (v) => (v === null || v === undefined ? "—" : `${Math.round(v * 100)}%`);
+
+// ------------------------------------------------------------ class view
+
+// Every student in a class with what they were billed and still owe for
+// the invoices billed in `range`, worst balance first.
+export function classDetail(rows, grade, { range, today = new Date() }) {
+  const byStudent = new Map();
+  for (const i of rows) {
+    if (i._grade !== grade || !inRange(i._billedOn, range)) continue;
+    const key = i.studentId || i._student;
+    const s = byStudent.get(key) || {
+      key, studentId: i.studentId || "", student: i._student, code: i._studentCode, phone: i.parentPhone || "",
+      billed: 0, collected: 0, concessions: 0, outstanding: 0, invoices: 0, unpaid: 0, overdue: false, oldestDue: null,
+    };
+    s.billed += i._amount; s.collected += i._paid; s.concessions += i._concession; s.outstanding += i._outstanding;
+    s.invoices += 1;
+    if (i._outstanding > 0) {
+      s.unpaid += 1;
+      if (effectiveStatus(i, today) === "overdue") s.overdue = true;
+      const due = parseDay(i.dueDate) || i._billedOn;
+      if (due && (!s.oldestDue || due < s.oldestDue)) s.oldestDue = due;
+    }
+    byStudent.set(key, s);
+  }
+  return [...byStudent.values()].map(s => ({
+    ...s,
+    status: s.outstanding <= 0 ? "paid" : s.overdue ? "overdue" : s.collected > 0 ? "partial" : "pending",
+  })).sort((a, b) => b.outstanding - a.outstanding || a.student.localeCompare(b.student));
+}
+
+// Teachers who teach a class, from the Subjects list (subject.teacher is
+// free text; subjects with no grade apply to every class and are skipped).
+export function teachersForGrade(subjects, grade, branch = "all") {
+  const byTeacher = new Map();
+  for (const sub of subjects || []) {
+    const teacher = norm(sub.teacher);
+    if (!teacher || norm(sub.grade) !== grade || !matchesBranch(sub, branch)) continue;
+    const t = byTeacher.get(teacher) || { teacher, subjects: [] };
+    if (sub.name) t.subjects.push(norm(sub.name));
+    byTeacher.set(teacher, t);
+  }
+  return [...byTeacher.values()].sort((a, b) => a.teacher.localeCompare(b.teacher));
+}
+
+// ------------------------------------------------------- shareable summary
+
+// Plain-text summary for pasting into an email: heading, scope, a list of
+// "label: value" lines and optional highlights.
+export function buildSummaryText({ title, scope, lines, highlights = [] }) {
+  const out = [title, scope, ""];
+  for (const [label, value] of lines) out.push(`${label}: ${value}`);
+  if (highlights.length) { out.push("", "Highlights:"); highlights.forEach(h => out.push(`- ${h.text}`)); }
+  out.push("", "Generated from ZMI School ERP");
+  return out.join("\n");
+}

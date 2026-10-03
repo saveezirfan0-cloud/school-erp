@@ -10,7 +10,7 @@ import {
   gradeLabel, gradeOptions, sortStudents,
   buildStudentReport, overallPercent, dailyClassSummary, formatPercent,
   todayISO, presetRange, normaliseRange, isInRange,
-  effectiveEntry, rosterCounts, buildMarkRows, escapeHtml,
+  effectiveEntry, rosterCounts, buildMarkRows,
   ATTENDANCE_CONFLICT, studentAttendanceRows,
 } from "../utils/attendance";
 import toast from "react-hot-toast";
@@ -424,7 +424,7 @@ function HistoryTab({ students, attendanceRows, loading, isMobile, branchName })
               <button type="button" disabled={shownReport.length === 0} style={outlineBtn}
                 onClick={() => exportToCSV(`attendance-report_${fileTag}`, reportHeaders, reportCells(raw))}><Download size={14} /> CSV</button>
               <button type="button" disabled={shownReport.length === 0} style={outlineBtn}
-                onClick={() => exportToPDF(`Attendance Report — ${escapeHtml(scopeText)} (${escapeHtml(rangeText)})`, reportHeaders, reportCells(escapeHtml))}><FileText size={14} /> PDF</button>
+                onClick={() => exportToPDF(`Attendance Report — ${scopeText} (${rangeText})`, reportHeaders, reportCells(raw))}><FileText size={14} /> PDF</button>
             </div>
           </div>
           {shownReport.length === 0 ? (
@@ -488,7 +488,7 @@ function HistoryTab({ students, attendanceRows, loading, isMobile, branchName })
               <button type="button" disabled={daily.length === 0} style={outlineBtn}
                 onClick={() => exportToCSV(`attendance-daily_${fileTag}`, dailyHeaders, dailyCells(raw))}><Download size={14} /> CSV</button>
               <button type="button" disabled={daily.length === 0} style={outlineBtn}
-                onClick={() => exportToPDF(`Daily Attendance Summary — ${escapeHtml(scopeText)} (${escapeHtml(rangeText)})`, dailyHeaders, dailyCells(escapeHtml))}><FileText size={14} /> PDF</button>
+                onClick={() => exportToPDF(`Daily Attendance Summary — ${scopeText} (${rangeText})`, dailyHeaders, dailyCells(raw))}><FileText size={14} /> PDF</button>
             </div>
           </div>
           {daily.length === 0 ? (

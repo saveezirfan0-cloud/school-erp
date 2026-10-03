@@ -259,6 +259,37 @@ describe("ACC-06: books checks", () => {
     expect(trialBalance({ accounts: accs, journals: [jr], payments: rev }).postedJournals).toBe(1);
   });
 
+  it("a fee collection's or salary's auto journal is not counted on top of its payment", () => {
+    const accs = [
+      { id: "a", code: "1", name: "Cash", type: "Assets", balance: 1000 },
+      { id: "i", code: "4", name: "Fees", type: "Income", balance: 0 },
+      { id: "s", code: "5", name: "Salaries", type: "Expenses", balance: 0 },
+      { id: "e", code: "3", name: "Capital", type: "Equity", balance: 1000 },
+    ];
+    const fee = { id: "pf", type: "cash_in", account: "Cash", accountId: "a", amount: 400, source: "invoice", sourceId: "inv1" };
+    const sal = { id: "ps", type: "cash_out", account: "Cash", accountId: "a", amount: 250, source: "payslip", sourceId: "sl1" };
+    const jFee = { id: "jf", amount: 400, debitAccount: "Cash", creditAccount: "Fees", source: "payment", sourceId: "pf" };
+    const jSal = { id: "js", amount: 250, debitAccount: "Salaries", creditAccount: "Cash", source: "payment", sourceId: "ps" };
+    const tb = trialBalance({ accounts: accs, journals: [jFee, jSal], payments: [fee, sal] });
+    expect(tb.rows.find((r) => r.account.id === "a").net).toBe(1150); // 1000 + 400 - 250, once
+    expect(tb.rows.find((r) => r.account.id === "i").net).toBe(0);
+    expect(tb.postedJournals).toBe(0);
+    expect(tb.journalProblems).toHaveLength(0);
+
+    // reversed payment: the pair nets to zero cash and its journal must not survive it
+    const rev = [{ ...fee, reversed: true }, { ...fee, id: "pf2", type: "cash_out", reversalOf: "pf" }];
+    const after = trialBalance({ accounts: accs, journals: [jFee], payments: rev });
+    expect(after.postedJournals).toBe(0);
+    expect(after.rows.find((r) => r.account.id === "a").net).toBe(1000);
+
+    // a payment-keyed journal whose payment is unknown stays a standalone entry
+    expect(trialBalance({ accounts: accs, journals: [jFee], payments: [] }).postedJournals).toBe(1);
+    // a manual journal (no source) is always posted
+    expect(trialBalance({ accounts: accs, journals: [{ ...jFee, source: "", sourceId: "" }], payments: [fee] }).postedJournals).toBe(1);
+    // a trashed payment no longer stands in for its journal
+    expect(trialBalance({ accounts: accs, journals: [jFee], payments: [{ ...fee, deletedAt: "2026-01-01" }] }).postedJournals).toBe(1);
+  });
+
   it("cash movements flow into assets and into the derived equity line", () => {
     const accs = [{ id: "a", code: "1", name: "Cash", type: "Assets", balance: 0 }];
     const bs = balanceSheet({ accounts: accs, journals: [], payments });

@@ -10,11 +10,12 @@ import { useNavigate, Link } from "react-router-dom";
 import { buildBuckets, bucketKey, defaultPeriod, resolveRange, describePeriod } from "../utils/dateRange";
 import {
   profitAndLoss, invoiceFacts, invoiceDate, invoicePaidDate, expenseDate, payslipPaidDate, payslipAmount,
-  inRange, isLive, num, todayLocal, toYmd,
+  inRange, isLive, num, round2, todayLocal, toYmd,
 } from "../utils/reporting";
+import { isLedgerIncome } from "../utils/ledgerIncome";
 import DateRangeFilter from "../components/UI/DateRangeFilter";
 import DetailModal from "../components/UI/DetailModal";
-import { Users, Receipt, TrendingDown, TrendingUp, UserCheck, Building2, FileText, AlertTriangle, Clock } from "lucide-react";
+import { Users, Receipt, TrendingDown, TrendingUp, UserCheck, Building2, FileText, AlertTriangle, Clock, Wallet } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line } from "recharts";
 import AcademicsWidget from "../components/AcademicsWidget";
 
@@ -29,7 +30,7 @@ const loadPeriod = () => {
 
 const rs = (n) => `Rs. ${Number(n || 0).toLocaleString()}`;
 
-const COLLECTIONS = ["students", "employees", "invoices", "expenses", "payslips"];
+const COLLECTIONS = ["students", "employees", "invoices", "expenses", "payslips", "payments"];
 
 export default function Dashboard() {
   const { activeBranch, setActiveBranch, branches } = useBranch();
@@ -63,20 +64,28 @@ export default function Dashboard() {
       invoices: live(data.invoices).map(i => { const b = effectiveBranchId(i, studentsById); return { ...i, branchId: b, _branch: b }; }),
       expenses: live(data.expenses).map(e => ({ ...e, _branch: branchKey(e) })),
       payslips: live(data.payslips).map(p => ({ ...p, _branch: branchKey(p) })),
+      // Income recorded straight in the payments ledger (imported workbook
+      // months, welfare, donations, loans...). isLedgerIncome() skips every
+      // receipt tied to an invoice / expense / payslip, so nothing counted
+      // through an invoice's paidAmount (reporting.js) is counted again here.
+      ledgerIncome: live(data.payments).filter(isLedgerIncome).map(p => ({ ...p, _branch: branchKey(p), _on: toYmd(p.date || p.createdAt), _amount: num(p.amount) })),
     };
   }, [data]);
 
-  // EVERY money figure on this page comes from utils/reporting.js
+  // EVERY invoice / expense figure on this page comes from utils/reporting.js
   // (profitAndLoss), the same definitions Reports, Bank & Cash and the
   // Student Ledger use: collected = cash recorded, pending = what is still
   // owed (amount - paid - concession), "marked paid, no money" is separate.
+  // Fees Collected is exactly that invoice-based figure. Income that sits in
+  // the payments ledger WITHOUT an invoice (imported fee months, welfare,
+  // donations, loans) is shown separately as Other Income and added to Net.
+  // Where both exist for the same money, the invoice (reporting.js) wins.
   const money = useMemo(() => ({ invoices: base.invoices, expenses: base.expenses, payslips: base.payslips }), [base]);
   const pl = useMemo(() => profitAndLoss(money, { branch: activeBranch, range, today }), [money, activeBranch, range, today]);
   const collected = pl.collected;
   const pendingAmt = pl.outstanding;
   const overdueAmt = pl.overdue;
   const totalExp = pl.expenses + pl.salaries;
-  const netSurplus = pl.net;
   const rate = pl.collectionRate;
 
   // The entries behind each figure, for the popups. They use the same
@@ -101,31 +110,38 @@ export default function Dashboard() {
       overdue: outstanding.filter(i => { const due = toYmd(i.dueDate); return due && due < today; }),
       cohort: invoices.filter(i => inRange(i._billedOn, range)),
       expenses: expenseRows,
+      otherIncome: base.ledgerIncome.filter(r => inScope(r) && r._amount > 0 && inRange(r._on, range)),
     };
   }, [base, activeBranch, range, today]);
+
+  const otherInc = round2(scope.otherIncome.reduce((t, r) => t + r._amount, 0));
+  const netSurplus = round2(pl.net + otherInc);
 
   // One row per branch (Main Office first), drives the "All branches" breakdown.
   const breakdown = useMemo(() => ["", ...branches.map(b => b.id)].map(k => {
     const p = profitAndLoss(money, { branch: k || "main", range, today });
+    const o = round2(base.ledgerIncome.filter(r => r._branch === k && r._amount > 0 && inRange(r._on, range)).reduce((t, r) => t + r._amount, 0));
     return {
       id: k || "main",
-      name: branchName(k),
+      name: k ? branches.find(b => b.id === k)?.name || "Unknown branch" : "Main Office",
       students: base.students.filter(r => r._branch === k).length,
       employees: base.employees.filter(r => r._branch === k).length,
       collected: p.collected,
+      otherIncome: o,
       pending: p.outstanding,
       expenses: p.expenses + p.salaries,
-      net: p.net,
+      net: round2(p.net + o),
     };
   }), [money, base, branches, range, today]);
 
   // Timeline: fees vs expenses per day (short ranges) or per month.
   const chartData = useMemo(() => {
-    const dates = [...scope.collected.map(r => r._paidOn), ...scope.expenses.map(r => r._on)].filter(Boolean).sort();
+    const dates = [...scope.collected.map(r => r._paidOn), ...scope.otherIncome.map(r => r._on), ...scope.expenses.map(r => r._on)].filter(Boolean).sort();
     const { unit, buckets } = buildBuckets(range, { from: dates[0], to: dates[dates.length - 1] });
-    const rows = buckets.map(b => ({ ...b, fees: 0, expenses: 0 }));
+    const rows = buckets.map(b => ({ ...b, income: 0, expenses: 0 }));
     const idx = new Map(rows.map((r, i) => [r.key, i]));
-    scope.collected.forEach(r => { const i = idx.get(bucketKey(unit, r._paidOn)); if (i != null) rows[i].fees += r._f.paid; });
+    scope.collected.forEach(r => { const i = idx.get(bucketKey(unit, r._paidOn)); if (i != null) rows[i].income += r._f.paid; });
+    scope.otherIncome.forEach(r => { const i = idx.get(bucketKey(unit, r._on)); if (i != null) rows[i].income += r._amount; });
     scope.expenses.forEach(r => { const i = idx.get(bucketKey(unit, r._on)); if (i != null) rows[i].expenses += r._amount; });
     return rows;
   }, [scope, range]);
@@ -141,6 +157,7 @@ export default function Dashboard() {
     { key: "students", label: "Total Students", value: scope.students.length, icon: Users, color: "#7a2535", bg: "#f5eaec", hint: "Current headcount" },
     { key: "employees", label: "Employees", value: scope.employees.length, icon: UserCheck, color: "#2a8c7a", bg: "#e6f4f1", hint: "Current headcount" },
     { key: "collected", label: "Fees Collected", value: rs(collected), icon: TrendingUp, color: "#10b981", bg: "#ecfdf5", hint: "Cash recorded in period" },
+    { key: "otherIncome", label: "Other Income", value: rs(otherInc), icon: Wallet, color: "#0ea5e9", bg: "#f0f9ff", hint: "Ledger receipts not on an invoice" },
     { key: "pending", label: "Pending Fees", value: rs(pendingAmt), icon: Receipt, color: "#f59e0b", bg: "#fffbeb", hint: "Balance as of today" },
     { key: "overdue", label: "Overdue Fees", value: rs(overdueAmt), icon: Clock, color: "#dc2626", bg: "#fef2f2", hint: "Past due date, as of today" },
     { key: "expenses", label: "Total Expenses", value: rs(totalExp), icon: TrendingDown, color: "#ef4444", bg: "#fef2f2", hint: "Operating + salaries paid" },
@@ -189,6 +206,12 @@ export default function Dashboard() {
       rows: [...scope.collected].sort((a, b) => (b._paidOn || "").localeCompare(a._paidOn || "")).map(r => ({ ...r, _received: r._f.paid, onClick: openStudent(r.studentId) })),
       footer: totalFoot("Total", collected),
     },
+    otherIncome: {
+      title: "Other Income", subtitle: `${scopeTitle} · ${periodText} · ledger receipts with no invoice: imported fee months, welfare, donations, loans`,
+      columns: [{ key: "_on", label: "Date" }, { key: "description", label: "Description", render: r => r.description || "—" }, { key: "category", label: "Category", render: r => r.category || "—" }, branchCol, amountCol("amt", "Amount", "_amount")],
+      rows: [...scope.otherIncome].sort((a, b) => (b._on || "").localeCompare(a._on || "")),
+      footer: totalFoot("Total", otherInc),
+    },
     pending: {
       title: "Pending Fees", subtitle: `${scopeTitle} · ${asOfNote}`,
       columns: [studentCol, branchCol, monthCol, { key: "status", label: "Status" }, amountCol("amt", "Outstanding", "_out")],
@@ -224,6 +247,7 @@ export default function Dashboard() {
       title: netSurplus >= 0 ? "Net Surplus" : "Net Deficit", subtitle: `${scopeTitle} · ${periodText}`,
       summary: [
         { label: "Fees collected", value: rs(collected), color: "#10b981" },
+        { label: "Other income", value: rs(otherInc), color: "#0ea5e9" },
         { label: "Expenses & salaries paid", value: rs(totalExp), color: "#ef4444" },
         { label: netSurplus >= 0 ? "Net surplus" : "Net deficit", value: rs(Math.abs(netSurplus)), color: netSurplus >= 0 ? "#10b981" : "#ef4444" },
       ],
@@ -236,6 +260,7 @@ export default function Dashboard() {
       ],
       rows: [
         ...scope.collected.map(r => ({ id: `f-${r.id}`, _branch: r._branch, date: r._paidOn, type: "Fee", details: `${r.studentName || "—"} · ${r.month || ""} ${r.year || ""}`.trim(), signed: r._f.paid, onClick: openStudent(r.studentId) })),
+        ...scope.otherIncome.map(r => ({ id: `o-${r.id}`, _branch: r._branch, date: r._on, type: "Income", details: r.description || r.category || "—", signed: r._amount })),
         ...scope.expenses.map(r => ({ id: `e-${r.id}`, _branch: r._branch, date: r._on, type: r.category === "Salaries" ? "Salary" : "Expense", details: r.description || r.category || "—", signed: -r._amount })),
       ].sort((a, b) => (b.date || "").localeCompare(a.date || "")),
     },
@@ -269,6 +294,7 @@ export default function Dashboard() {
         { key: "students", label: "Students", align: "right" },
         { key: "employees", label: "Staff", align: "right" },
         { key: "collected", label: "Collected", align: "right", render: r => rs(r.collected) },
+        { key: "otherIncome", label: "Other income", align: "right", render: r => rs(r.otherIncome) },
         { key: "pending", label: "Pending", align: "right", render: r => rs(r.pending) },
         { key: "expenses", label: "Expenses", align: "right", render: r => rs(r.expenses) },
         { key: "net", label: "Net", align: "right", text: r => r.net, render: r => <strong style={{ color: r.net >= 0 ? "#10b981" : "#ef4444" }}>{rs(r.net)}</strong> },
@@ -317,7 +343,7 @@ export default function Dashboard() {
           style={{ ...tileStyle, flex: "1 1 260px", border: "none", background: "transparent", color: "inherit", padding: "20px 24px", borderRadius: 14 }}>
           <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 4, textTransform: "uppercase", letterSpacing: 1 }}>Net {netSurplus >= 0 ? "Surplus" : "Deficit"}</div>
           <div style={{ fontSize: 28, fontWeight: 700 }}>{rs(Math.abs(netSurplus))}</div>
-          <div style={{ fontSize: 12, opacity: 0.65, marginTop: 4 }}>Fees collected minus expenses &amp; salaries paid · {periodText}</div>
+          <div style={{ fontSize: 12, opacity: 0.65, marginTop: 4 }}>Income (fees + other) minus expenses &amp; salaries paid · {periodText}</div>
         </button>
         <button type="button" onClick={() => setDetail("rate")} title="View entries behind the collection rate"
           style={{ ...tileStyle, border: "none", background: "transparent", color: "inherit", padding: "20px 24px", borderRadius: 14, textAlign: "right" }}>
@@ -347,10 +373,10 @@ export default function Dashboard() {
             <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>{periodText} · click a branch to open its dashboard</p>
           </div>
           <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 640 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 720 }}>
               <thead>
                 <tr style={{ background: "#f8fafc" }}>
-                  {["Branch", "Students", "Staff", "Collected", "Pending", "Expenses", "Net"].map((h, i) => (
+                  {["Branch", "Students", "Staff", "Collected", "Other income", "Pending", "Expenses", "Net"].map((h, i) => (
                     <th key={h} style={{ padding: "10px 16px", textAlign: i === 0 ? "left" : "right", fontSize: 11, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase" }}>{h}</th>
                   ))}
                 </tr>
@@ -362,6 +388,7 @@ export default function Dashboard() {
                     <td style={{ padding: "11px 16px", fontSize: 13, textAlign: "right" }}>{b.students}</td>
                     <td style={{ padding: "11px 16px", fontSize: 13, textAlign: "right" }}>{b.employees}</td>
                     <td style={{ padding: "11px 16px", fontSize: 13, textAlign: "right" }}>{rs(b.collected)}</td>
+                    <td style={{ padding: "11px 16px", fontSize: 13, textAlign: "right" }}>{rs(b.otherIncome)}</td>
                     <td style={{ padding: "11px 16px", fontSize: 13, textAlign: "right" }}>{rs(b.pending)}</td>
                     <td style={{ padding: "11px 16px", fontSize: 13, textAlign: "right" }}>{rs(b.expenses)}</td>
                     <td style={{ padding: "11px 16px", fontSize: 13, textAlign: "right", fontWeight: 600, color: b.net >= 0 ? "#10b981" : "#ef4444" }}>{rs(b.net)}</td>
@@ -376,7 +403,7 @@ export default function Dashboard() {
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: 16, marginBottom: 20 }}>
         <div style={{ background: "white", borderRadius: 12, padding: "20px 16px", border: "1px solid var(--border)" }}>
-          <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 16 }}>Fees vs Expenses</h3>
+          <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 16 }}>Income vs Expenses</h3>
           <div style={{ overflowX: "auto" }}>
             <div style={{ minWidth: 300 }}>
               <ResponsiveContainer width="100%" height={220}>
@@ -384,7 +411,7 @@ export default function Dashboard() {
                   <XAxis dataKey="label" tick={{ fontSize: 11 }} />
                   <YAxis tick={{ fontSize: 11 }} tickFormatter={axisFmt} />
                   <Tooltip formatter={v => rs(v)} />
-                  <Bar dataKey="fees" fill="#7a2535" name="Fees" radius={[3,3,0,0]} />
+                  <Bar dataKey="income" fill="#7a2535" name="Income" radius={[3,3,0,0]} />
                   <Bar dataKey="expenses" fill="#ef4444" name="Expenses" radius={[3,3,0,0]} />
                 </BarChart>
               </ResponsiveContainer>
@@ -400,7 +427,7 @@ export default function Dashboard() {
                   <XAxis dataKey="label" tick={{ fontSize: 11 }} />
                   <YAxis tick={{ fontSize: 11 }} tickFormatter={axisFmt} />
                   <Tooltip formatter={v => rs(v)} />
-                  <Line type="monotone" dataKey="fees" stroke="#7a2535" strokeWidth={2} name="Fees" dot={{ r: 3 }} />
+                  <Line type="monotone" dataKey="income" stroke="#7a2535" strokeWidth={2} name="Income" dot={{ r: 3 }} />
                   <Line type="monotone" dataKey="expenses" stroke="#ef4444" strokeWidth={2} name="Expenses" dot={{ r: 3 }} />
                 </LineChart>
               </ResponsiveContainer>

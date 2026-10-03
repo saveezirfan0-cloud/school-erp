@@ -23,6 +23,17 @@ const mockTables = {
     { id: "p1", netPay: 2000, status: "paid", paidDate: "2026-10-05", employeeName: "T" },
     { id: "p2", netPay: 9000, status: "pending", month: "October", year: 2026 },
   ],
+  payments: [
+    // receipt of invoice A: already counted through the invoice, must NOT be counted again
+    { id: "x1", type: "cash_in", source: "invoice", sourceId: "A", amount: 5000, category: "Fee Collection", date: "2026-10-01" },
+    // ledger-only income (no invoice): counted as Other Income
+    { id: "x2", type: "cash_in", amount: 1500, category: "Donation", description: "Welfare", date: "2026-10-03" },
+    { id: "x3", type: "cash_in", amount: 700, category: "Tafseer Course Fees", date: "2026-10-03" },
+    // not income: account transfer, reversed row, cash out
+    { id: "x4", type: "cash_in", amount: 999, category: "Bank Deposit", date: "2026-10-03" },
+    { id: "x5", type: "cash_in", amount: 888, category: "Donation", reversed: true, date: "2026-10-03" },
+    { id: "x6", type: "cash_out", amount: 777, category: "Utilities", date: "2026-10-03" },
+  ],
 };
 
 jest.mock("../firebase", () => ({
@@ -65,7 +76,10 @@ test("tiles use the shared definitions and open popups", async () => {
   expect(tile(el, "Overdue Fees").textContent).toContain("Rs. 3,500");
   // expenses 1,000 + only the PAID payslip 2,000
   expect(tile(el, "Total Expenses").textContent).toContain("Rs. 3,000");
-  expect(el.textContent).toContain("Rs. 7,500"); // net surplus
+  // other income = ledger rows with no invoice: 1,500 + 700 (invoice receipt, transfer, reversal, cash out excluded)
+  expect(tile(el, "Other Income").textContent).toContain("Rs. 2,200");
+  // net = collected 10,500 + other 2,200 - expenses 3,000
+  expect(el.textContent).toContain("Rs. 9,700"); // net surplus
   // marked paid with no money recorded is flagged, not counted
   expect(el.textContent).toContain("1 invoice is marked paid (Rs. 4,000) with no money recorded");
   expect(el.querySelector('a[href="/reports?tab=books"]')).toBeTruthy();

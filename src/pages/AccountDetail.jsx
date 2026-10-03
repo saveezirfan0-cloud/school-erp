@@ -2,6 +2,8 @@ import React, { useEffect, useState } from "react";
 import { db } from "../firebase";
 import { collection, onSnapshot, addDoc, deleteDoc, doc, serverTimestamp } from "../firebase";
 import { useParams, useNavigate } from "react-router-dom";
+import ExportMenu from "../components/UI/ExportMenu";
+import { useUser } from "../context/UserContext";
 import { ArrowLeft, Plus, X } from "lucide-react";
 import toast from "react-hot-toast";
 import { logActivity } from "../utils/auditLog";
@@ -11,6 +13,7 @@ import { attributePayments, accountTotals, isCapped, isLive, todayLocal, toYmd, 
 export default function AccountDetail() {
   const { accountId } = useParams();
   const navigate = useNavigate();
+  const { can } = useUser();
   const [account, setAccount] = useState(null);
   const [payments, setPayments] = useState([]);
   const [showTransfer, setShowTransfer] = useState(false);
@@ -53,6 +56,17 @@ export default function AccountDetail() {
     else running -= Number(t.amount);
     return { ...t, runningBalance: running };
   }).reverse();
+
+  // Account statement, oldest first so the running balance reads top to bottom.
+  const getExportData = () => {
+    const ordered = [...txnsWithBalance].reverse();
+    const num = (v) => Number(v || 0);
+    return {
+      headers: ["Date", "Description", "Category", "Reference", "In", "Out", "Balance"],
+      rows: ordered.map(t => [t.date, t.description, t.category, t.reference || "", t.type === "cash_in" ? num(t.amount) : "", t.type === "cash_out" ? num(t.amount) : "", t.runningBalance]),
+      pdfRows: ordered.map(t => [t.date, t.description, t.category, t.reference || "", t.type === "cash_in" ? `Rs. ${num(t.amount).toLocaleString()}` : "", t.type === "cash_out" ? `Rs. ${num(t.amount).toLocaleString()}` : "", `Rs. ${t.runningBalance.toLocaleString()}`]),
+    };
+  };
 
   // Two legs, written one after the other (the shim has no transaction).
   // If the second leg fails the first is removed again so money never
@@ -110,10 +124,13 @@ export default function AccountDetail() {
           <h2 style={{ fontSize: 22, fontWeight: 700 }}>{account.name}</h2>
           <p style={{ color: "var(--text-muted)", fontSize: 14 }}>{account.code} — {account.subType}</p>
         </div>
-        <button onClick={() => setShowTransfer(true)}
-          style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 18px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600 }}>
-          <Plus size={16} /> Transfer Funds
-        </button>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+          {can("canExport") && <ExportMenu filename={`account-${account.code || account.name}`} title={`Account Statement - ${account.name}`} getData={getExportData} disabled={txns.length === 0} pdfOptions={{ subtitle: `Balance Rs. ${balance.toLocaleString()}` }} />}
+          <button onClick={() => setShowTransfer(true)}
+            style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 18px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600 }}>
+            <Plus size={16} /> Transfer Funds
+          </button>
+        </div>
       </div>
 
       <DataWarnings capped={capped ? ["payments"] : []} errors={errors} />

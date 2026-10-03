@@ -36,6 +36,9 @@ import { supabase } from "../lib/supabaseClient";
 import {
   toMinor, fromMinor, round2, todayLocal, isIsoDate, parsePositiveAmount, computeFeePayment,
 } from "./money";
+import {
+  SALARY_ACCOUNT_NAME, findAccountByName, feeIncomeAccount, splitPaymentByHead,
+} from "./autoJournals";
 
 // ---------------------------------------------------------------
 // Errors
@@ -135,6 +138,19 @@ export function resolvePostingAccount(accounts, { accountId, accountName } = {})
   throw new AccountingError(ERR.ACCOUNT_REQUIRED, "Select the Bank & Cash account first.");
 }
 
+// Chart of accounts (id, name, type), cached briefly because bulk flows record
+// many payments in a row. Only used to pick the income/expense account for the
+// informational journals below; the payment itself is linked by account id
+// chosen by the caller, never looked up by name.
+let acctCache = { at: 0, rows: [] };
+async function loadAccounts() {
+  if (Date.now() - acctCache.at < 60000 && acctCache.rows.length) return acctCache.rows;
+  const { data, error } = await supabase.from("accounts").select("id,name,type").is("deleted_at", null);
+  if (error) throw error;
+  acctCache = { at: Date.now(), rows: data || [] };
+  return acctCache.rows;
+}
+
 // Remembered choice of receiving account (per-browser convenience only;
 // nothing depends on it, and it is never used unless the account is
 // still a valid Bank & Cash account).
@@ -187,7 +203,7 @@ export async function recordPayment({
   const when = date || todayLocal();
   if (!isIsoDate(when)) throw new AccountingError(ERR.BAD_DATE, "Enter a valid date");
 
-  return addDoc(collection(db, "payments"), {
+  const ref = await addDoc(collection(db, "payments"), {
     ...extra,
     type,
     account,
@@ -204,6 +220,22 @@ export async function recordPayment({
     reversalOf: null,
     createdAt: serverTimestamp(),
   });
+
+  // Fee collections and salaries also get an informational double-entry journal.
+  // The payment above is the ONE row the books count for the money (trialBalance
+  // ignores the journal while the payment stands). The journal is best effort and
+  // written only AFTER the payment succeeded: its failure (e.g. no accounting
+  // permission) never fails or unposts the payment; the backfill script in
+  // supabase/ can post anything that was missed.
+  try {
+    await postPaymentJournals({
+      id: ref.id, type, account, accountId, amount: amt.value, description, branchId,
+      date: when, source, sourceId,
+    });
+  } catch (err) {
+    console.warn("Payment recorded, but its journal entry was not posted:", err);
+  }
+  return ref;
 }
 
 // A manual (not document-linked) cash movement from the Payments page.
@@ -324,6 +356,11 @@ export async function reversePayment(payment, { date } = {}) {
       reversalOf: payment.id,
       createdAt: serverTimestamp(),
     });
+    // The payment's fee/salary journal goes with it. Only now that the reversal
+    // is in the ledger (so a failed reversal never leaves a payment without its
+    // journal) and best effort: the reversal itself has already happened.
+    await deleteJournalsBySource("payment", payment.id)
+      .catch((jerr) => console.warn("Could not remove journal entries for reversed payment:", jerr));
     return res.id;
   } catch (err) {
     try { await supabase.from("payments").update({ reversed: false }).eq("id", payment.id); } catch { /* best effort */ }
@@ -782,18 +819,20 @@ export async function postExpenseJournal({
   });
 }
 
-// Move an expense's journals to Trash (used when the expense is deleted).
-export async function deleteExpenseJournals(expenseIds) {
-  const ids = [].concat(expenseIds).filter(Boolean);
+// Move auto-posted journals to Trash. `source` is "expense" (ids are expense
+// ids) or "payment" (ids are payment ids).
+export async function deleteJournalsBySource(source, ids) {
+  ids = [].concat(ids).filter(Boolean);
   if (!ids.length) return;
   const { error } = await supabase
     .from("journals")
     .update({ deleted_at: new Date().toISOString() })
-    .eq("extra->>source", "expense")
+    .eq("extra->>source", source)
     .in("extra->>sourceId", ids)
     .is("deleted_at", null);
   if (error) throw error;
 }
+export const deleteExpenseJournals = (expenseIds) => deleteJournalsBySource("expense", expenseIds);
 
 // Keep existing legacy expense journals in step with a bulk edit of their
 // expenses: `accountName` re-points the debit side, `date` moves the entry.
@@ -810,4 +849,64 @@ export async function syncExpenseJournals(expenseIds, { accountName, date } = {}
     .in("extra->>sourceId", ids)
     .is("deleted_at", null);
   if (error) throw error;
+}
+
+// ---- Journals for fee collections and salaries ----
+//
+//   fee collected   DR bank/cash account   CR fee income account (one entry per
+//                   invoice head, the payment split pro rata across them)
+//   salary paid     DR "Salaries" expense  CR bank/cash account
+//
+// INFORMATIONAL, like the expense journal above: the cash_in / cash_out payment
+// is the ONE row the books count for the money, and trialBalance ignores one of
+// these journals while its payment stands (reporting.js). They are keyed by the
+// payment (source "payment", sourceId = payment id), so reversing the payment
+// takes its journals to Trash (reversePayment) and a restore that re-posts the
+// payment journals it again. Nothing is posted when the chart has no matching
+// account; we never guess an account. Called by recordPayment only after the
+// payment row is saved, and never allowed to fail it.
+export async function postPaymentJournals(p) {
+  if (!p?.id || !(Number(p.amount) > 0)) return;
+  const isSalary = p.source === "payslip" && p.type === "cash_out";
+  const isFee = p.source === "invoice" && p.type === "cash_in";
+  if (!isSalary && !isFee) return;
+
+  const accounts = await loadAccounts();
+  const bank = (p.accountId && accounts.find((a) => a.id === p.accountId)) || findAccountByName(accounts, p.account);
+  if (!bank) return;
+  const base = {
+    date: p.date,
+    reference: (isSalary ? "SAL-" : "FEE-") + String(p.id).slice(0, 8),
+    description: p.description || "",
+    notes: "Auto-posted from " + (isSalary ? "Payslips" : "Fees"),
+    branchId: p.branchId || "",
+    source: "payment",
+    sourceId: p.id,
+  };
+  // Debit/credit are linked by id (stable across renames) and by name (legacy readers).
+  const entry = (debit, credit, amount) => addDoc(collection(db, "journals"), {
+    ...base,
+    debitAccount: debit.name, creditAccount: credit.name,
+    ...(debit.id ? { debitAccountId: debit.id } : {}),
+    ...(credit.id ? { creditAccountId: credit.id } : {}),
+    amount,
+    createdAt: serverTimestamp(),
+  });
+
+  try {
+    if (isSalary) {
+      const salary = findAccountByName(accounts, SALARY_ACCOUNT_NAME, "Expenses");
+      if (salary) await entry(salary, bank, p.amount);
+      return;
+    }
+    const { data: inv } = await supabase.from("invoices").select("extra").eq("id", p.sourceId).maybeSingle();
+    for (const part of splitPaymentByHead(p.amount, inv?.extra?.lineItems)) {
+      const income = feeIncomeAccount(part.head, accounts);
+      if (income) await entry(bank, income, part.amount);
+    }
+  } catch (err) {
+    // Do not leave half of a split behind.
+    await deleteJournalsBySource("payment", p.id).catch(() => {});
+    throw err;
+  }
 }

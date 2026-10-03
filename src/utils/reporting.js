@@ -546,17 +546,29 @@ export function checkJournals(accounts, journals) {
 // the books tie: opening balances must satisfy Dr = Cr.
 export function trialBalance({ accounts, journals, payments }) {
   const live = (accounts || []).filter(isLive);
-  // An older version also wrote a journal (source "expense") next to every
-  // paid expense's cash_out payment. The payment is the ledger entry, so such
-  // a journal is a duplicate while its payment stands and is not posted again.
+  // The cash_out / cash_in payment is the ledger entry for money. The app also
+  // writes an informational journal next to some payments, and that journal must
+  // not be posted on top of its payment or the money is counted twice:
+  //  - source "expense": a paid expense's journal, keyed by the expense id. A
+  //    duplicate while the expense's cash_out payment stands.
+  //  - source "payment": a fee collection's (invoice cash_in) or salary's
+  //    (payslip cash_out) journal, keyed by the PAYMENT id. It mirrors that
+  //    payment whether it still stands or has been reversed (a reversed payment
+  //    nets to zero cash, so its journal must not survive it either).
+  // A journal whose payment cannot be found is a standalone entry and is posted.
   const paidExpenses = new Set();
+  const journaledPayments = new Set();
   for (const p of payments || []) {
-    if (isLive(p) && p.source === "expense" && p.type === "cash_out" && !p.reversed && !p.reversalOf) paidExpenses.add(p.sourceId);
+    if (!isLive(p)) continue;
+    if (p.source === "expense" && p.type === "cash_out" && !p.reversed && !p.reversalOf) paidExpenses.add(p.sourceId);
+    if ((p.source === "invoice" && p.type === "cash_in") || (p.source === "payslip" && p.type === "cash_out")) {
+      if (!p.reversalOf) journaledPayments.add(p.id);
+    }
   }
-  const { posted, problems } = checkJournals(
-    live,
-    (journals || []).filter((j) => !(j.source === "expense" && paidExpenses.has(j.sourceId)))
-  );
+  const mirrorsPayment = (j) =>
+    (j.source === "expense" && paidExpenses.has(j.sourceId)) ||
+    (j.source === "payment" && journaledPayments.has(j.sourceId));
+  const { posted, problems } = checkJournals(live, (journals || []).filter((j) => !mirrorsPayment(j)));
   const attributed = attributePayments(live, payments);
 
   const rows = live.map((a) => {

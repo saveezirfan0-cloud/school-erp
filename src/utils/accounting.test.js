@@ -3,7 +3,7 @@
 // database that understands exactly the calls accounting.js makes.
 
 /* eslint-disable import/first */
-const mockDb = { payments: [], invoices: [], payslips: [], expenses: [], journals: [] };
+const mockDb = { payments: [], invoices: [], payslips: [], expenses: [], journals: [], accounts: [] };
 const mockFail = { addDoc: null, update: null, read: null };
 let mockSeq = 0;
 
@@ -76,7 +76,10 @@ jest.mock("../lib/supabaseClient", () => {
     constructor(table) { this.table = table; this.filters = []; this.op = "select"; }
     select() { return this; }
     update(p) { this.op = "update"; this.patch = p; return this; }
-    eq(c, v) { this.filters.push((r) => r[c] === v); return this; }
+    // "extra->>key" reads a key of the extra jsonb, like PostgREST does.
+    col(r, c) { const m = /^extra->>(.+)$/.exec(c); return m ? r.extra?.[m[1]] : r[c]; }
+    eq(c, v) { this.filters.push((r) => this.col(r, c) === v); return this; }
+    in(c, vals) { this.filters.push((r) => vals.includes(this.col(r, c))); return this; }
     is(c, v) { this.filters.push((r) => (r[c] ?? null) === v); return this; }
     or(str) {
       const preds = str.split(",").map((t) => {
@@ -126,6 +129,8 @@ const ACCOUNTS = [
 
 beforeEach(() => {
   mockDb.payments = []; mockDb.invoices = []; mockDb.payslips = []; mockDb.expenses = []; mockDb.journals = [];
+  mockDb.accounts = [...ACCOUNTS, { id: "a-fees", name: "Fees", type: "Income" }, { id: "a-adm", name: "Admission Fees", type: "Income" }, { id: "a-sal", name: "Salaries", type: "Expenses" }]
+    .map((a) => ({ ...a, deleted_at: null }));
   mockFail.addDoc = null; mockFail.update = null; mockFail.read = null;
   mockSeq = 0;
   window.localStorage.clear();
@@ -540,6 +545,90 @@ describe("createExpenseAndPost", () => {
     expect(r.posted).toBe(false);
     expect(r.error).toBeTruthy();
     expect(mockDb.expenses[0].extra.ledgerPosted).toBe(false);
+  });
+});
+
+describe("journals for fee collections and salaries are informational (payment stays the one money row)", () => {
+  const liveJournals = () => mockDb.journals.filter((j) => !j.deleted_at);
+  const seedSlip = () => { mockDb.payslips.push({ id: "ps1", deleted_at: null, status: "pending", month: "March", extra: { employeeName: "Sara", year: 2026, netPay: 25000 }, }); return { id: "ps1" }; };
+
+  test("a collected fee is ONE cash_in plus journals keyed by the payment, split by head, linked by id", async () => {
+    const inv = seedInvoice({ extra: { studentName: "Ali", month: "March", year: 2026, lineItems: [{ description: "Tuition Fee", amount: 4000 }, { description: "Admission Fees", amount: 1000 }] } });
+    const r = await collectInvoicePayment({ invoice: inv, accounts: ACCOUNTS, accountId: "a-bank", amount: 5000, date: "2026-03-05" });
+    expect(livePayments()).toHaveLength(1);
+    expect(nets()).toBe(5000);
+    expect(liveJournals().map((j) => [j.debit_account, j.credit_account, j.amount])).toEqual([
+      ["Meezan Bank", "Fees", 4000], ["Meezan Bank", "Admission Fees", 1000],
+    ]);
+    expect(liveJournals()[0].extra).toMatchObject({ source: "payment", sourceId: r.paymentId, debitAccountId: "a-bank", creditAccountId: "a-fees" });
+    expect(liveJournals()[0].date).toBe("2026-03-05");
+  });
+  test("a paid payslip is one cash_out plus Dr Salaries / Cr the account paid from", async () => {
+    const r = await payPayslip({ payslip: seedSlip(), accounts: ACCOUNTS, accountId: "a-cash", date: "2026-03-31" });
+    expect(livePayments()).toHaveLength(1);
+    expect(liveJournals()).toHaveLength(1);
+    expect(liveJournals()[0]).toMatchObject({ debit_account: "Salaries", credit_account: "Cash in Hand", amount: 25000 });
+    expect(liveJournals()[0].extra).toMatchObject({ source: "payment", sourceId: r.paymentId, debitAccountId: "a-sal", creditAccountId: "a-cash" });
+  });
+  test("a failing journal write never fails or unposts the payment", async () => {
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    mockFail.addDoc = "journals";
+    const inv = seedInvoice();
+    const r = await collectInvoicePayment({ invoice: inv, accounts: ACCOUNTS, accountId: "a-cash", amount: 5000 });
+    expect(r.status).toBe("paid");
+    expect(nets()).toBe(5000);
+    expect(mockDb.journals).toHaveLength(0);
+    await payPayslip({ payslip: seedSlip(), accounts: ACCOUNTS, accountId: "a-cash" });
+    expect(mockDb.payslips[0].status).toBe("paid");
+    expect(nets()).toBe(-20000);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+  test("an unreadable chart of accounts posts no journal and still keeps the payment", async () => {
+    mockDb.accounts = [];
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const later = Date.now() + 10 * 60000; // past the account cache's lifetime
+    const spy = jest.spyOn(Date, "now").mockReturnValue(later);
+    try {
+      const inv = seedInvoice();
+      await collectInvoicePayment({ invoice: inv, accounts: ACCOUNTS, accountId: "a-cash", amount: 1000 });
+      expect(nets()).toBe(1000);
+      expect(mockDb.journals).toHaveLength(0);
+    } finally { spy.mockRestore(); warn.mockRestore(); }
+  });
+  test("manual and expense payments get no payment journal", async () => {
+    await recordPayment({ type: "cash_in", account: "Cash in Hand", accountId: "a-cash", amount: 10, category: "Donation", description: "d" });
+    await recordPayment({ type: "cash_out", account: "Cash in Hand", accountId: "a-cash", amount: 10, category: "Rent", description: "d", source: "expense", sourceId: "e1" });
+    expect(mockDb.journals).toHaveLength(0);
+  });
+  test("reversing the payment takes its journals to Trash, and only once the reversal exists", async () => {
+    const inv = seedInvoice();
+    const r = await collectInvoicePayment({ invoice: inv, accounts: ACCOUNTS, accountId: "a-cash", amount: 5000 });
+    mockFail.addDoc = "payments";
+    await expect(reversePayment({ id: r.paymentId, type: "cash_in", account: "Cash in Hand", accountId: "a-cash", amount: 5000, source: "invoice", sourceId: inv.id })).rejects.toThrow("insert failed");
+    expect(liveJournals()).toHaveLength(1); // payment still stands, so does its journal
+    mockFail.addDoc = null;
+    await reverseSourcePayments("invoice", inv.id); // what deleting the invoice does
+    expect(nets()).toBe(0);
+    expect(liveJournals()).toHaveLength(0);
+    expect(mockDb.journals).toHaveLength(1); // trashed, not erased
+  });
+  test("restore re-posts the payment and its journal exactly once", async () => {
+    const inv = seedInvoice();
+    await collectInvoicePayment({ invoice: inv, accounts: ACCOUNTS, accountId: "a-cash", amount: 5000 });
+    await reverseSourcePayments("invoice", inv.id);
+    mockDb.invoices[0].deleted_at = "T";
+    await restoreWithLedger("invoices", inv.id);
+    expect(nets()).toBe(5000);
+    expect(liveJournals()).toHaveLength(1);
+    expect(liveJournals()[0].extra.sourceId).toBe(livePayments().find((p) => p.extra?.repostOf).id);
+  });
+  test("a rolled-back collection (invoice update failed) leaves no live journal", async () => {
+    const inv = seedInvoice();
+    mockFail.update = "invoices";
+    await expect(collectInvoicePayment({ invoice: inv, accounts: ACCOUNTS, accountId: "a-cash", amount: 5000 })).rejects.toMatchObject({ code: ERR.UPDATE_FAILED });
+    expect(nets()).toBe(0);
+    expect(liveJournals()).toHaveLength(0);
   });
 });
 

@@ -40,6 +40,7 @@ const TABLE_MAP = {
   reminderLogs: "reminder_logs",
   auditLog: "audit_log",
   attendance: "attendance",
+  budgets: "budgets",
   // LMS / academics (supabase/lms.sql)
   subjects: "subjects",
   exams: "exams",
@@ -67,6 +68,7 @@ const COLUMNS = {
   audit_log: ["id", "user", "action", "module", "details", "timestamp", "created_at"],
   subjects: ["id", "name", "code", "grade", "teacher", "branch_id", "created_at", "updated_at"],
   attendance: ["id", "subject_type", "subject_id", "date", "status", "branch_id", "created_at", "updated_at"],
+  budgets: ["id", "kind", "category", "amount", "branch_id", "created_at", "updated_at"],
   exams: ["id", "name", "term", "exam_type", "grade", "date", "total_marks", "published", "branch_id", "created_at", "updated_at"],
   exam_results: ["id", "exam_id", "student_id", "subject_id", "marks_obtained", "max_marks", "absent", "remarks", "branch_id", "created_at", "updated_at"],
   assignments: ["id", "title", "description", "subject_id", "grade", "assigned_date", "due_date", "max_marks", "attachment_url", "branch_id", "created_at", "updated_at"],

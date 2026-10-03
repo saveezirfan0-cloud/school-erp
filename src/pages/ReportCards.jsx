@@ -352,7 +352,7 @@ export default function ReportCards() {
     logActivity("exported", "Report Cards", `Result sheet CSV · ${meta.className} · ${meta.title}`);
   };
   const handlePDF = () => {
-    // exportToPDF writes cells as raw HTML, so escape everything first.
+    // exportToPDF escapes its own input, so pass plain text.
     const summary = (label, value) => [
       "", "", label, ...subjects.map(() => ""), "", "", value, "", "",
     ];
@@ -364,9 +364,9 @@ export default function ReportCards() {
       summary("Pass rate", pctText(stats.passPercent)),
     ];
     exportToPDF(
-      esc(`Result Sheet — ${meta.className} — ${meta.title}`),
-      sheetHeaders.map(esc),
-      body.map((r) => r.map(esc))
+      `Result Sheet — ${meta.className} — ${meta.title}`,
+      sheetHeaders,
+      body
     );
     logActivity("exported", "Report Cards", `Result sheet PDF · ${meta.className} · ${meta.title}`);
   };

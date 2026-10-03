@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from "react";
+import React, { useEffect, useState } from "react";
 import { useUser } from "../context/UserContext";
 import { db } from "../firebase";
 import { collection, addDoc, deleteDoc, doc, onSnapshot, serverTimestamp, updateDocs, deleteDocs } from "../firebase";
@@ -13,9 +13,11 @@ import BulkBar, { RowCheckbox, HeaderCheckbox } from "../components/UI/BulkBar";
 import BulkEditModal from "../components/UI/BulkEditModal";
 import { runBulk, bulkResultMessage } from "../utils/bulk";
 import { logActivity } from "../utils/auditLog";
-import { exportToCSV, exportToPDF } from "../utils/exportUtils";
+import ExportMenu from "../components/UI/ExportMenu";
+import DocumentViewer from "../components/UI/DocumentViewer";
+import { buildPayslipDoc } from "../utils/documents";
 import toast from "react-hot-toast";
-import { Plus, Printer, X, RefreshCw, Download, FileText, Trash2, Pencil, Banknote } from "lucide-react";
+import { Plus, Printer, X, RefreshCw, Eye, Trash2, Pencil, Banknote } from "lucide-react";
 import SearchableSelect from "../components/UI/SearchableSelect";
 
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
@@ -44,7 +46,7 @@ function useIsMobile() {
 
 export default function Payslips() {
   const { can } = useUser();
-  const { activeBranch } = useBranch();
+  const { activeBranch, branches } = useBranch();
   const isMobile = useIsMobile();
   const [payslips, setPayslips] = useState([]);
   const [employees, setEmployees] = useState([]);
@@ -55,14 +57,16 @@ export default function Payslips() {
   const [payAccount, setPayAccount] = useState("");
   const [payDate, setPayDate] = useState(todayLocal());
   const [showModal, setShowModal] = useState(false);
-  const [showPrint, setShowPrint] = useState(null);
+  const [viewDocs, setViewDocs] = useState(null); // payslip documents open in the viewer
   const [showRecurring, setShowRecurring] = useState(false);
   const [form, setForm] = useState(empty);
   const [filterMonth, setFilterMonth] = useState("");
   const [filterEmployee, setFilterEmployee] = useState("");
   const [recurringMonth, setRecurringMonth] = useState(MONTHS[new Date().getMonth()]);
   const [recurringYear, setRecurringYear] = useState(new Date().getFullYear());
-  const printRef = useRef();
+
+  const branchName = (p) => branches?.find(b => b.id === p.branchId)?.name || "";
+  const openPayslips = (items) => setViewDocs(items.map(p => buildPayslipDoc(p, { branchName: branchName(p) })));
 
   useEffect(() => {
     const u1 = onSnapshot(collection(db, "payslips"), snap =>
@@ -251,25 +255,12 @@ export default function Payslips() {
     } catch (err) { toast.error(err?.message || "Error deleting"); }
   };
 
-  const handlePrint = () => {
-    const content = printRef.current.innerHTML;
-    const w = window.open("", "_blank");
-    w.document.write(`<html><head><title>Payslip</title>
-      <style>body{font-family:Arial,sans-serif;padding:40px;color:#1e293b}table{width:100%;border-collapse:collapse}td{padding:10px 16px;border:1px solid #e2e8f0;font-size:14px}.label{background:#f8fafc;font-weight:600;width:40%}.total{background:#7a2535;color:white;font-weight:700;font-size:16px}.footer{margin-top:40px;display:flex;justify-content:space-between;font-size:13px;color:#64748b}</style>
-    </head><body>${content}</body></html>`);
-    w.document.close();
-    w.print();
-  };
-
-  const handleCSV = () => exportToCSV("payslips",
-    ["Employee", "Role", "Month", "Year", "Basic", "Allowances", "Deductions", "Net Pay"],
-    filtered.map(p => [p.employeeName, p.role, p.month, p.year, p.basicSalary, p.allowances || 0, p.deductions || 0, p.netPay])
-  );
-
-  const handlePDF = () => exportToPDF("Payslips Report",
-    ["Employee", "Role", "Month", "Basic", "Net Pay"],
-    filtered.map(p => [p.employeeName, p.role, `${p.month} ${p.year}`, `Rs. ${Number(p.basicSalary).toLocaleString()}`, `Rs. ${Number(p.netPay).toLocaleString()}`])
-  );
+  const getExportData = () => ({
+    headers: ["Employee", "Role", "Month", "Year", "Basic", "Allowances", "Deductions", "Net Pay", "Status"],
+    rows: filtered.map(p => [p.employeeName, p.role, p.month, p.year, Number(p.basicSalary || 0), Number(p.allowances || 0), Number(p.deductions || 0), Number(p.netPay || 0), p.status === "paid" ? "paid" : "pending"]),
+    pdfHeaders: ["Employee", "Role", "Month", "Basic", "Allowances", "Deductions", "Net Pay", "Status"],
+    pdfRows: filtered.map(p => [p.employeeName, p.role, `${p.month} ${p.year}`, `Rs. ${Number(p.basicSalary || 0).toLocaleString()}`, `Rs. ${Number(p.allowances || 0).toLocaleString()}`, `Rs. ${Number(p.deductions || 0).toLocaleString()}`, `Rs. ${Number(p.netPay || 0).toLocaleString()}`, p.status === "paid" ? "paid" : "pending"]),
+  });
 
   const modalStyle = {
     position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)",
@@ -283,10 +274,7 @@ export default function Payslips() {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, flexWrap: "wrap", gap: 10 }}>
         <h2 style={{ fontSize: 20, fontWeight: 700 }}>Payslips</h2>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          {!isMobile && <>
-            {can("canExport") && <button onClick={handleCSV} style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13 }}><Download size={14} /> CSV</button>}
-            {can("canExport") && <button onClick={handlePDF} style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13 }}><FileText size={14} /> PDF</button>}
-          </>}
+          {can("canExport") && <ExportMenu filename="payslips" title="Payslips Report" getData={getExportData} disabled={filtered.length === 0} />}
           <button onClick={() => setShowRecurring(true)}
             style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13 }}>
             <RefreshCw size={14} /> {!isMobile && "Recurring"}
@@ -329,9 +317,9 @@ export default function Payslips() {
                   </div>
                 </div>
                 <div style={{ display: "flex", gap: 6 }}>
-                  <button onClick={() => setShowPrint(p)}
+                  <button onClick={() => openPayslips([p])}
                     style={{ border: "none", background: "var(--primary-light)", color: "var(--primary)", padding: "7px 10px", borderRadius: 8, cursor: "pointer", display: "flex", alignItems: "center", gap: 4, fontSize: 12 }}>
-                    <Printer size={13} /> Print
+                    <Eye size={13} /> View
                   </button>
                   {can("canDeletePayslips") && <button onClick={() => handleDelete(p)} title="Delete"
                     style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "7px 9px", borderRadius: 8, cursor: "pointer" }}>
@@ -391,9 +379,9 @@ export default function Payslips() {
                             Pay
                           </button>
                         )}
-                        <button onClick={() => setShowPrint(p)}
+                        <button onClick={() => openPayslips([p])} title="View, print or download PDF"
                           style={{ border: "none", background: "var(--primary-light)", color: "var(--primary)", padding: "6px 10px", borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", gap: 4, fontSize: 12 }}>
-                          <Printer size={13} /> Print
+                          <Eye size={13} /> View
                         </button>
                         {can("canDeletePayslips") && <button onClick={() => handleDelete(p)} title="Delete payslip"
                           style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "6px 9px", borderRadius: 6, cursor: "pointer" }}>
@@ -419,6 +407,7 @@ export default function Payslips() {
         onSelectAll={() => bulk.selectAll(filtered.map(p => p.id))}
         onClear={bulk.clear}
         actions={[
+          { label: "Print / PDF", icon: Printer, onClick: () => openPayslips(filtered.filter(p => bulk.selected.has(p.id))) },
           { label: "Edit", icon: Pencil, onClick: () => setShowBulkEdit(true) },
           { label: "Pay Salaries", icon: Banknote, variant: "success", onClick: () => { setBulkPayAccount(pickDefaultAccountId(postable)); setBulkPayDate(todayLocal()); setBulkPayOpen(true); } },
           ...(can("canDeletePayslips") ? [{ label: "Delete", icon: Trash2, variant: "danger", onClick: handleBulkDelete }] : []),
@@ -625,57 +614,13 @@ export default function Payslips() {
         </div>
       )}
 
-      {/* Print Preview */}
-      {showPrint && (
-        <div style={modalStyle}>
-          <div style={{ background: "white", borderRadius: isMobile ? "20px 20px 0 0" : 16, padding: isMobile ? "24px 20px" : 32, width: "100%", maxWidth: 560, maxHeight: "90vh", overflow: "auto" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 20 }}>
-              <h3 style={{ fontSize: 17, fontWeight: 700 }}>Payslip Preview</h3>
-              <div style={{ display: "flex", gap: 8 }}>
-                <button onClick={handlePrint} style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 16px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600 }}>
-                  <Printer size={14} /> Print
-                </button>
-                <button onClick={() => setShowPrint(null)} style={{ border: "none", background: "none", cursor: "pointer" }}><X size={20} /></button>
-              </div>
-            </div>
-            <div ref={printRef}>
-              <div style={{ textAlign: "center", borderBottom: "2px solid #7a2535", paddingBottom: 16, marginBottom: 24 }}>
-                <div style={{ fontSize: 20, fontWeight: 700, color: "#7a2535" }}>Zohra Majeed Islamic Institute</div>
-                <div style={{ color: "#64748b", fontSize: 13, marginTop: 4 }}>PAYSLIP — {showPrint.month} {showPrint.year}</div>
-              </div>
-              <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                <tbody>
-                  {[
-                    ["Employee Name", showPrint.employeeName],
-                    ["Role / Position", showPrint.role],
-                    ["Pay Period", `${showPrint.month} ${showPrint.year}`],
-                    ["Basic Salary", `Rs. ${Number(showPrint.basicSalary).toLocaleString()}`],
-                    ["Allowances", `Rs. ${Number(showPrint.allowances || 0).toLocaleString()}`],
-                    ["Deductions", `Rs. ${Number(showPrint.deductions || 0).toLocaleString()}`],
-                  ].map(([label, value]) => (
-                    <tr key={label}>
-                      <td style={{ padding: "10px 16px", border: "1px solid #e2e8f0", background: "#f8fafc", fontWeight: 600, fontSize: 14, width: "40%" }}>{label}</td>
-                      <td style={{ padding: "10px 16px", border: "1px solid #e2e8f0", fontSize: 14 }}>{value}</td>
-                    </tr>
-                  ))}
-                  <tr>
-                    <td style={{ padding: "12px 16px", background: "#7a2535", color: "white", fontWeight: 700, fontSize: 15 }}>NET PAY</td>
-                    <td style={{ padding: "12px 16px", background: "#7a2535", color: "white", fontWeight: 700, fontSize: 15 }}>Rs. {Number(showPrint.netPay).toLocaleString()}</td>
-                  </tr>
-                </tbody>
-              </table>
-              {showPrint.notes && (
-                <div style={{ marginTop: 16, padding: 12, background: "#f8fafc", borderRadius: 8, fontSize: 13, color: "#64748b" }}>
-                  Notes: {showPrint.notes}
-                </div>
-              )}
-              <div style={{ marginTop: 40, display: "flex", justifyContent: "space-between", fontSize: 13, color: "#94a3b8" }}>
-                <div>Employee Signature: _______________</div>
-                <div>Authorized By: _______________</div>
-              </div>
-            </div>
-          </div>
-        </div>
+      {/* Payslip viewer: preview, print, PDF */}
+      {viewDocs && (
+        <DocumentViewer
+          docs={viewDocs}
+          title={viewDocs.length === 1 ? "Payslip" : `${viewDocs.length} Payslips`}
+          onClose={() => setViewDocs(null)}
+        />
       )}
     </div>
   );

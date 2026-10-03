@@ -12,9 +12,9 @@ import BulkEditModal from "../components/UI/BulkEditModal";
 import BulkAddStudentsModal from "../components/UI/BulkAddStudentsModal";
 import { bulkResultMessage } from "../utils/bulk";
 import { logActivity } from "../utils/auditLog";
-import { exportToCSV, exportToPDF } from "../utils/exportUtils";
+import ExportMenu from "../components/UI/ExportMenu";
 import toast from "react-hot-toast";
-import { Plus, Users, Edit2, Trash2, X, Download, FileText, Receipt, CalendarCheck, GraduationCap } from "lucide-react";
+import { Plus, Users, Edit2, Trash2, X, Receipt, CalendarCheck, GraduationCap } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { isLeftStudent, leftStatusFields } from "../utils/studentStatus";
 import { useUser } from "../context/UserContext";
@@ -146,24 +146,20 @@ export default function Students() {
     } finally { setBulkBusy(false); }
   };
 
-  const handleCSV = () => exportToCSV("students",
-    ["ID", "Name", "Grade", "Parent", "Phone", "Fee", "Branch"],
-    filtered.map((s) => [s.studentId, s.name, s.grade, s.parentName, s.parentPhone, s.monthlyFee, branches.find((b) => b.id === s.branchId)?.name || "Main"])
-  );
-  const handlePDF = () => exportToPDF("Students Report",
-    ["ID", "Name", "Grade", "Parent", "Phone", "Fee"],
-    filtered.map((s) => [s.studentId, s.name, s.grade, s.parentName, s.parentPhone, `Rs. ${s.monthlyFee || 0}`])
-  );
+  const branchLabel = (s) => branches.find((b) => b.id === s.branchId)?.name || "Main";
+  const getExportData = () => ({
+    headers: ["ID", "Name", "Grade", "Parent", "Phone", "Fee", "Branch"],
+    rows: filtered.map((s) => [s.studentId, s.name, s.grade, s.parentName, s.parentPhone, Number(s.monthlyFee || 0), branchLabel(s)]),
+    pdfHeaders: ["ID", "Name", "Grade", "Parent", "Phone", "Fee", "Branch"],
+    pdfRows: filtered.map((s) => [s.studentId, s.name, s.grade, s.parentName, s.parentPhone, `Rs. ${Number(s.monthlyFee || 0).toLocaleString()}`, branchLabel(s)]),
+  });
 
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 10 }}>
         <h2 style={{ fontSize: 20, fontWeight: 700 }}>Students <span style={{ fontSize: 13, fontWeight: 400, color: "var(--text-muted)" }}>({total})</span></h2>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          {!isMobile && <>
-            {can("canExport") && <button onClick={handleCSV} style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13 }}><Download size={14} /> CSV</button>}
-            {can("canExport") && <button onClick={handlePDF} style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13 }}><FileText size={14} /> PDF</button>}
-          </>}
+          {can("canExport") && <ExportMenu filename="students" title="Students Report" getData={getExportData} disabled={filtered.length === 0} />}
           <button onClick={() => setShowBulkAdd(true)}
             style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 14px", background: "white", color: "var(--primary)", border: "1px solid var(--primary)", borderRadius: 8, cursor: "pointer", fontWeight: 600, fontSize: 13 }}>
             <Users size={15} /> Bulk Add

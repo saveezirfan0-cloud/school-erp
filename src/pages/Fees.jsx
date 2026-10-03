@@ -18,16 +18,18 @@ import { logActivity } from "../utils/auditLog";
 import { sendWhatsAppMessage } from "../utils/whatsapp";
 import {
   collectInvoicePayment, createInvoiceAndCollect, postUnpostedInvoice, reverseSourcePayments,
-  getSourcePaidTotal, needsPosting, pickDefaultAccountId, rememberAccountChoice,
+  getSourcePaidTotal, getSourcePayments, needsPosting, pickDefaultAccountId, rememberAccountChoice,
 } from "../utils/accounting";
 import { parsePositiveAmount, sumMoney, subMoney, round2, todayLocal, formatMoney } from "../utils/money";
 import { useAccounts } from "../utils/useAccounts";
 import { useSubmitLock } from "../utils/useSubmitLock";
-import { exportToCSV, exportToPDF } from "../utils/exportUtils";
+import ExportMenu from "../components/UI/ExportMenu";
+import DocumentViewer from "../components/UI/DocumentViewer";
+import { buildInvoiceDoc, buildReceiptDoc, downloadDocsPDF } from "../utils/documents";
 import { summarizeInvoices, invoiceFacts } from "../utils/reporting";
 import InvoiceModal from "../components/UI/InvoiceModal";
 import toast from "react-hot-toast";
-import { Plus, MessageCircle, CheckCircle, X, Trash2, Download, FileText, RefreshCw, Users, Pencil, AlertTriangle, Search } from "lucide-react";
+import { Plus, MessageCircle, CheckCircle, X, Trash2, Receipt, Printer, RefreshCw, Users, Pencil, AlertTriangle, Search } from "lucide-react";
 
 const DEFAULT_LINE_ITEMS = [{ description: "Tuition Fee", amount: "" }];
 const LINE_ITEM_PRESETS = ["Tuition Fee", "Registration Fee", "Exam Fee", "Transport Fee", "Custom"];
@@ -106,6 +108,7 @@ export default function Fees() {
   const [bulkPayDate, setBulkPayDate] = useState(todayLocal());
   const [bulkPayWhatsApp, setBulkPayWhatsApp] = useState(false);
   const [bulkBusy, setBulkBusy] = useState(false);
+  const [viewDocs, setViewDocs] = useState(null); // invoice/receipt documents open in the viewer
 
   useEffect(() => {
     const u1 = onSnapshot(collection(db, "invoices"), snap =>
@@ -490,15 +493,46 @@ export default function Fees() {
     return true;
   };
 
-  const handleCSV = () => can("canExport") && exportToCSV("fees",
-    ["Student", "Month", "Year", "Amount", "Status", "Due Date"],
-    filtered.map(i => [i.studentName, i.month, i.year, i.amount, i.status, i.dueDate])
-  );
+  // Paid / Balance come from the shared definition (reporting.invoiceFacts), so
+  // an invoice marked paid with no money recorded exports as Paid 0, not as collected.
+  const getExportData = () => ({
+    headers: ["Student", "Month", "Year", "Amount", "Paid", "Balance", "Status", "Due Date"],
+    rows: filtered.map(i => { const f = invoiceFacts(i); return [i.studentName, i.month, i.year, f.billed, f.paid, f.outstanding, i.status, i.dueDate]; }),
+    pdfHeaders: ["Student", "Month", "Amount", "Paid", "Balance", "Status", "Due Date"],
+    pdfRows: filtered.map(i => { const f = invoiceFacts(i); return [i.studentName, `${i.month} ${i.year}`, `Rs. ${f.billed.toLocaleString()}`, `Rs. ${f.paid.toLocaleString()}`, `Rs. ${f.outstanding.toLocaleString()}`, i.status, i.dueDate || ""]; }),
+  });
 
-  const handlePDF = () => can("canExport") && exportToPDF("Fees & Invoices",
-    ["Student", "Month", "Amount", "Status", "Due Date"],
-    filtered.map(i => [i.studentName, `${i.month} ${i.year}`, `Rs. ${Number(i.amount).toLocaleString()}`, i.status, i.dueDate])
-  );
+  // ---- printable invoices & receipts ----
+  const docContext = (inv) => ({
+    student: students.find(st => st.id === inv.studentId),
+    branchName: branches?.find(b => b.id === inv.branchId)?.name || "",
+  });
+  const openInvoices = (items) => setViewDocs(items.map(inv => buildInvoiceDoc(inv, docContext(inv))));
+  const loadReceipts = async (items) => {
+    // payments are looked up per invoice; limited concurrency like other bulk jobs
+    const docs = [];
+    const { failed } = await runBulk(items, async (inv) => {
+      const pays = await getSourcePayments("invoice", inv.id);
+      docs.push({ inv, doc: buildReceiptDoc(inv, pays, docContext(inv)) });
+    }, { chunkSize: 5 });
+    if (failed.length) toast.error(`Couldn't load payments for ${failed.length} invoice${failed.length === 1 ? "" : "s"}`);
+    // keep the on-screen order of the selection
+    return items.map(inv => docs.find(d => d.inv === inv)?.doc).filter(Boolean);
+  };
+  const openReceipts = async (items) => {
+    // A receipt needs money actually recorded. "Marked paid, no money" is not a receipt.
+    const withMoney = items.filter(i => invoiceFacts(i).paid > 0);
+    if (withMoney.length === 0) return toast("None of these invoices has a recorded payment yet");
+    const t = toast.loading("Preparing receipts…");
+    try {
+      const docs = await loadReceipts(withMoney);
+      toast.dismiss(t);
+      if (docs.length) setViewDocs(docs);
+      if (withMoney.length < items.length) toast(`${items.length - withMoney.length} invoice${items.length - withMoney.length === 1 ? "" : "s"} with no recorded payment skipped`);
+    } catch (err) {
+      toast.error(err?.message || "Couldn't prepare receipts", { id: t });
+    }
+  };
 
   const modalStyle = {
     position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)",
@@ -518,12 +552,7 @@ export default function Fees() {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 10 }}>
         <h2 style={{ fontSize: 20, fontWeight: 700 }}>Fees & Invoices</h2>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          {!isMobile && (
-            <>
-              {can("canExport") && <button onClick={handleCSV} style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13 }}><Download size={14} /> CSV</button>}
-              {can("canExport") && <button onClick={handlePDF} style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13 }}><FileText size={14} /> PDF</button>}
-            </>
-          )}
+          {can("canExport") && <ExportMenu filename="fees" title="Fees & Invoices" getData={getExportData} disabled={filtered.length === 0} />}
           <button onClick={() => setShowRecurring(true)} style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13 }}><RefreshCw size={14} />{!isMobile && " Recurring"}</button>
           <button onClick={openBulk} style={{ display: "flex", alignItems: "center", gap: 5, padding: "9px 14px", background: "#2a8c7a", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600, fontSize: 13 }}><Users size={14} />{!isMobile && " Bulk"}</button>
           <button onClick={openCreate}
@@ -723,6 +752,8 @@ export default function Fees() {
         onSelectAll={() => bulk.selectAll(filtered.map(i => i.id))}
         onClear={bulk.clear}
         actions={[
+          { label: "Invoices PDF", icon: Printer, onClick: () => openInvoices(selectedInvoices()) },
+          { label: "Receipts", icon: Receipt, onClick: () => openReceipts(selectedInvoices()) },
           { label: "Edit", icon: Pencil, onClick: () => setShowBulkEdit(true) },
           { label: "Mark Paid", icon: CheckCircle, variant: "success", onClick: () => { setBulkPayAccount(defaultAccountId()); setBulkPayDate(todayLocal()); setBulkPayWhatsApp(false); setBulkPayModal(true); } },
           ...(can("canDeleteFees") ? [{ label: "Delete", icon: Trash2, variant: "danger", onClick: handleBulkDelete }] : []),
@@ -1156,11 +1187,22 @@ export default function Fees() {
         student={students.find(st => st.id === selectedInvoice?.studentId)}
         figures={selectedInvoice ? invoiceFigures(selectedInvoice) : undefined}
         onEdit={() => { if (openEdit(selectedInvoice)) setSelectedInvoice(null); }}
+        onPdf={() => downloadDocsPDF(buildInvoiceDoc(selectedInvoice, docContext(selectedInvoice)))}
+        onReceipt={() => { const inv = selectedInvoice; setSelectedInvoice(null); openReceipts([inv]); }}
         onClose={() => setSelectedInvoice(null)}
       />
 
       {editInvoice && (
         <InvoiceEditModal invoice={editInvoice} branches={branches} isMobile={isMobile} onClose={() => setEditInvoice(null)} />
+      )}
+
+      {/* Invoice / receipt viewer: preview, print, PDF */}
+      {viewDocs && (
+        <DocumentViewer
+          docs={viewDocs}
+          title={viewDocs.length === 1 ? viewDocs[0].title.charAt(0) + viewDocs[0].title.slice(1).toLowerCase() : `${viewDocs.length} ${viewDocs[0].kind === "receipt" ? "Receipts" : "Invoices"}`}
+          onClose={() => setViewDocs(null)}
+        />
       )}
     </div>
   );

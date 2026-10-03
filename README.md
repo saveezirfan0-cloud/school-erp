@@ -39,6 +39,8 @@ The optional WhatsApp variables are listed in `.env.example` with a warning.
 4. `supabase/security.sql` baseline role and branch policies (includes the `teacher` role)
 5. `supabase/realtime.sql` live updates (never publishes `users` or `audit_log`)
 6. `supabase/attendance.sql` attendance table (profile pages and the Attendance page)
+   `supabase/budgets.sql` budgets table + RLS (only for Reports -> Budget vs Actual; the rest of Reports works without it).
+   It uses the `has_perm` / `branch_visible` helpers from `security.sql`, so run it after step 4.
 7. `supabase/lms.sql` academic tables and teacher permissions (needs step 6; see *Academics / LMS* below)
 8. `supabase/migrations/0001` to `0013`, in number order (hardening: policies, keys, audit triggers,
    money functions, storage, academic tables). Then create your first admin (see the runbook).
@@ -66,6 +68,22 @@ allow-all policy. The current one cannot. `supabase/legacy/` holds old one-off s
 - Create a `receipts` storage bucket for receipt uploads (the app limits uploads to JPG, PNG, WebP or PDF up to 5 MB; public for now;
   `supabase/migrations/0012_storage_receipts.sql` creates it if missing and adds size,
   type and branch-folder rules; making it private with signed URLs is an optional later step)
+
+## Exports & printable documents
+- Every list page (Fees, Payments, Expenses, Students, Employees,
+  Payslips, Activity Log) has an **Export** menu: PDF, Excel (.xlsx) or
+  CSV of the rows currently filtered on screen. Reports and the bank/cash
+  account page export too.
+- Single documents open in a viewer with **Print** and **PDF** download:
+  invoices and fee receipts (Fees → View, or select rows → *Invoices PDF* /
+  *Receipts*), payslips (Payslips → View), payment receipts/vouchers
+  (Payments). A student's ledger exports to PDF/Excel/CSV from its Export menu.
+  Selecting several rows produces one combined PDF, one document per page.
+- PDFs are built in the browser (jsPDF, loaded on demand). Text outside
+  Latin characters (e.g. Urdu) can't be drawn by jsPDF's built-in fonts, so
+  those documents open in the print dialog instead — choose "Save as PDF".
+- Layouts live in `src/utils/documents.js`; table export helpers in
+  `src/utils/exportUtils.js`.
 
 ## Academics / LMS
 Staff-side learning features: attendance, exams and report cards,

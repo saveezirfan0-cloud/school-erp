@@ -1,19 +1,19 @@
 import React, { useEffect, useState } from "react";
 import { useUser } from "../context/UserContext";
 import { db } from "../firebase";
-import { collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot, serverTimestamp, updateDocs, deleteDocs } from "../firebase";
+import { collection, addDoc, updateDoc, deleteDoc, doc, serverTimestamp, updateDocs, deleteDocs } from "../firebase";
 import { useBranch } from "../context/BranchContext";
 import { useCollection } from "../hooks/useCollection";
 import { useBulkSelect } from "../hooks/useBulkSelect";
 import ListToolbar from "../components/UI/ListToolbar";
 import Pagination from "../components/UI/Pagination";
-import BulkBar, { RowCheckbox } from "../components/UI/BulkBar";
+import BulkBar, { RowCheckbox, HeaderCheckbox } from "../components/UI/BulkBar";
 import BulkEditModal from "../components/UI/BulkEditModal";
 import { bulkResultMessage } from "../utils/bulk";
 import { logActivity } from "../utils/auditLog";
-import { exportToCSV, exportToPDF } from "../utils/exportUtils";
+import ExportMenu from "../components/UI/ExportMenu";
 import toast from "react-hot-toast";
-import { Plus, Trash2, X, Edit2, Download, FileText, CalendarCheck } from "lucide-react";
+import { Plus, Trash2, X, Edit2, CalendarCheck, LayoutGrid, List } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import RollCallModal from "../components/Profile/RollCallModal";
 
@@ -28,6 +28,15 @@ function useIsMobile() {
   }, []);
   return isMobile;
 }
+
+const VIEW_KEY = "employeesView";
+const readView = () => {
+  try { return localStorage.getItem(VIEW_KEY) === "list" ? "list" : "cards"; } catch { return "cards"; }
+};
+
+const HistoricalTag = () => (
+  <span title="Imported from the old books — hidden when History is off" style={{ display: "inline-block", marginLeft: 6, padding: "1px 7px", borderRadius: 20, fontSize: 10, fontWeight: 600, background: "#f1f5f9", color: "#64748b", verticalAlign: "middle" }}>Historical</span>
+);
 
 export default function Employees() {
   const { can } = useUser();
@@ -44,6 +53,11 @@ export default function Employees() {
   const [sortDir, setSortDir] = useState("asc");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
+  const [view, setView] = useState(readView);
+  const changeView = (v) => {
+    setView(v);
+    try { localStorage.setItem(VIEW_KEY, v); } catch { /* storage blocked */ }
+  };
 
   const { rows: employees, filtered, paged, total, pageCount, page: safePage } = useCollection("employees", {
     activeBranch,
@@ -61,6 +75,7 @@ export default function Employees() {
 
   // multi-select for bulk actions
   const bulk = useBulkSelect(employees.map(e => e.id), activeBranch);
+  const pagedIds = paged.map(e => e.id);
   const [showBulkEdit, setShowBulkEdit] = useState(false);
   const [bulkBusy, setBulkBusy] = useState(false);
 
@@ -121,25 +136,20 @@ export default function Employees() {
     } catch { toast.error("Error saving"); }
   };
 
-  const handleCSV = () => exportToCSV("employees",
-    ["Name", "Role", "Phone", "Email", "Branch", "Salary", "Auto Payslip"],
-    filtered.map(e => [e.name, e.role, e.phone, e.email, branches.find(b => b.id === e.branchId)?.name || "Main", e.salary, e.recurringPayslip ? "Yes" : "No"])
-  );
-
-  const handlePDF = () => exportToPDF("Employees Report",
-    ["Name", "Role", "Phone", "Branch", "Salary"],
-    filtered.map(e => [e.name, e.role, e.phone, branches.find(b => b.id === e.branchId)?.name || "Main", `Rs. ${Number(e.salary || 0).toLocaleString()}`])
-  );
+  const branchLabel = (e) => branches.find(b => b.id === e.branchId)?.name || "Main";
+  const getExportData = () => ({
+    headers: ["Name", "Role", "Phone", "Email", "Branch", "Salary", "Auto Payslip"],
+    rows: filtered.map(e => [e.name, e.role, e.phone, e.email, branchLabel(e), Number(e.salary || 0), e.recurringPayslip ? "Yes" : "No"]),
+    pdfHeaders: ["Name", "Role", "Phone", "Email", "Branch", "Salary"],
+    pdfRows: filtered.map(e => [e.name, e.role, e.phone, e.email, branchLabel(e), `Rs. ${Number(e.salary || 0).toLocaleString()}`]),
+  });
 
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, flexWrap: "wrap", gap: 10 }}>
         <h2 style={{ fontSize: 20, fontWeight: 700 }}>Employees / Teachers <span style={{ fontSize: 13, fontWeight: 400, color: "var(--text-muted)" }}>({total})</span></h2>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          {!isMobile && <>
-            {can("canExport") && <button onClick={handleCSV} style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13 }}><Download size={14} /> CSV</button>}
-            {can("canExport") && <button onClick={handlePDF} style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13 }}><FileText size={14} /> PDF</button>}
-          </>}
+          {can("canExport") && <ExportMenu filename="employees" title="Employees Report" getData={getExportData} disabled={filtered.length === 0} />}
           {can("canEditEmployees") && (
             <button onClick={() => setShowRollCall(true)} style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13 }}>
               <CalendarCheck size={14} /> Attendance
@@ -171,8 +181,61 @@ export default function Employees() {
         }}
         active={active}
         onClear={() => { setSearch(""); setFilterRole(""); setSortField(""); setSortDir("asc"); }}
+        rightSlot={
+          <div style={{ display: "flex", border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden", background: "white" }} role="group" aria-label="View">
+            {[["cards", "Card view", LayoutGrid], ["list", "List view", List]].map(([k, label, Icon]) => (
+              <button key={k} onClick={() => changeView(k)} title={label} aria-label={label} aria-pressed={view === k}
+                style={{ border: "none", cursor: "pointer", padding: "8px 10px", display: "flex", alignItems: "center", background: view === k ? "var(--primary-light)" : "white", color: view === k ? "var(--primary)" : "var(--text-muted)" }}>
+                <Icon size={15} />
+              </button>
+            ))}
+          </div>
+        }
       />
 
+      {view === "list" ? (
+        <div style={{ background: "white", borderRadius: 12, border: "1px solid var(--border)", overflow: "hidden" }}>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 760 }}>
+              <thead>
+                <tr style={{ background: "#f8fafc" }}>
+                  <th style={{ padding: "11px 6px 11px 14px", width: 34 }}>
+                    <HeaderCheckbox checked={bulk.pageChecked(pagedIds)} indeterminate={bulk.pageIndeterminate(pagedIds)} onChange={() => bulk.togglePage(pagedIds)} />
+                  </th>
+                  {["Name", "Role", "Phone", "Email", "Branch", "Salary", ""].map((h, i) => (
+                    <th key={i} style={{ padding: "11px 14px", textAlign: h === "Salary" ? "right" : "left", fontSize: 11, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", whiteSpace: "nowrap" }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {paged.map(emp => (
+                  <tr key={emp.id} onClick={() => navigate(`/employees/${emp.id}`)} title="Open employee profile"
+                    style={{ borderTop: "1px solid var(--border)", cursor: "pointer", background: bulk.isSelected(emp.id) ? "var(--primary-light)" : undefined }}>
+                    <td style={{ padding: "9px 6px 9px 14px" }} onClick={(e) => e.stopPropagation()}>
+                      <RowCheckbox checked={bulk.isSelected(emp.id)} onChange={() => bulk.toggle(emp.id)} label={`Select ${emp.name}`} />
+                    </td>
+                    <td style={{ padding: "9px 14px", fontSize: 14, fontWeight: 600, color: "var(--primary)", whiteSpace: "nowrap" }}>
+                      {emp.name}{emp.historical === true && <HistoricalTag />}
+                      {emp.recurringPayslip && <span style={{ marginLeft: 6, padding: "1px 7px", borderRadius: 20, fontSize: 10, background: "#ecfdf5", color: "#10b981", fontWeight: 600, verticalAlign: "middle" }}>Auto payslip</span>}
+                    </td>
+                    <td style={{ padding: "9px 14px", fontSize: 13, color: "var(--text-muted)", whiteSpace: "nowrap" }}>{emp.role || "—"}</td>
+                    <td style={{ padding: "9px 14px", fontSize: 13, whiteSpace: "nowrap" }}>{emp.phone || "—"}</td>
+                    <td style={{ padding: "9px 14px", fontSize: 13, maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{emp.email || "—"}</td>
+                    <td style={{ padding: "9px 14px", fontSize: 13, color: "var(--text-muted)", whiteSpace: "nowrap" }}>{branches.find(b => b.id === emp.branchId)?.name || "Main Office"}</td>
+                    <td style={{ padding: "9px 14px", fontSize: 13, fontWeight: 600, color: "#10b981", textAlign: "right", whiteSpace: "nowrap" }}>Rs. {Number(emp.salary || 0).toLocaleString()}/mo</td>
+                    <td style={{ padding: "9px 14px" }} onClick={(e) => e.stopPropagation()}>
+                      <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+                        <button onClick={() => { setForm(emp); setEditing(emp.id); setShowModal(true); }} title="Edit" style={{ border: "none", background: "var(--primary-light)", color: "var(--primary)", padding: "6px 8px", borderRadius: 6, cursor: "pointer" }}><Edit2 size={13} /></button>
+                        <button onClick={() => handleDeleteOne(emp)} title="Delete" style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "6px 8px", borderRadius: 6, cursor: "pointer" }}><Trash2 size={13} /></button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : (
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 16 }}>
         {paged.map(emp => (
           <div key={emp.id} onClick={() => navigate(`/employees/${emp.id}`)} title="Open employee profile" style={{ background: "white", borderRadius: 12, padding: 20, cursor: "pointer", border: bulk.isSelected(emp.id) ? "1.5px solid var(--primary)" : "1px solid var(--border)" }}>
@@ -189,7 +252,7 @@ export default function Employees() {
               </div>
             </div>
             <div style={{ marginTop: 12 }}>
-              <div style={{ fontWeight: 600, fontSize: 15, color: "var(--primary)" }}>{emp.name}</div>
+              <div style={{ fontWeight: 600, fontSize: 15, color: "var(--primary)" }}>{emp.name}{emp.historical === true && <HistoricalTag />}</div>
               <div style={{ color: "var(--text-muted)", fontSize: 13, marginTop: 2 }}>{emp.role}</div>
               <div style={{ color: "var(--text-muted)", fontSize: 13 }}>{emp.phone}</div>
               <div style={{ marginTop: 10, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -201,6 +264,7 @@ export default function Employees() {
           </div>
         ))}
       </div>
+      )}
       {total === 0 && <div style={{ padding: 40, textAlign: "center", color: "var(--text-muted)", background: "white", borderRadius: 12, border: "1px solid var(--border)", marginTop: 8 }}>No employees found</div>}
 
       <Pagination

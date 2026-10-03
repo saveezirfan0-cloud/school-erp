@@ -1,11 +1,14 @@
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { db, supabase, doc, getDoc, isHistoryVisible } from "../firebase";
-import { toMillis, formatDate } from "../utils/dates";
+import { toMillis, formatDate, localISODate } from "../utils/dates";
 import { studentName } from "../utils/studentLabel";
 import { decodeRow, studentStatement, invoiceFacts, isEffectiveInvoiceReceipt } from "../utils/reporting";
+import { buildStatement, printStatements } from "../utils/studentStatement";
 import { DataWarnings } from "../components/ReportControls";
-import { ArrowLeft, FileText, TrendingUp, Wallet, Percent, AlertTriangle, RefreshCw } from "lucide-react";
+import ExportMenu from "../components/UI/ExportMenu";
+import toast from "react-hot-toast";
+import { ArrowLeft, FileText, TrendingUp, Wallet, Percent, AlertTriangle, RefreshCw, Printer } from "lucide-react";
 
 // Per-student financial history: every invoice raised, every payment
 // received, and the running balance. The single most useful screen
@@ -87,6 +90,25 @@ export default function StudentLedger() {
     })),
   ].sort((a, b) => toMillis(a.date) - toMillis(b.date));
 
+  // Rows for the Export menu: the timeline (reversed / reversing entries are
+  // listed but not counted), then totals taken from the SAME shared figures as
+  // the cards above (reporting.studentStatement), so an export can never
+  // disagree with the screen. Received is what the invoices record
+  // (paidAmount); "marked paid, no money recorded" is its own line.
+  const getExportData = () => {
+    const rows = events.map((e) => {
+      const isInvoice = e.kind === "invoice";
+      const counted = isInvoice || e.counted;
+      const type = isInvoice ? e.label : e.label.split(" — ")[0] + (counted ? "" : " (reversed)");
+      const detail = isInvoice ? e.detail : (e.detail || e.label.split(" — ")[1] || "");
+      return [formatDate(e.date), type, detail, isInvoice ? e.amount : "", !isInvoice && counted ? e.amount : "", ""];
+    });
+    if (st.concessions > 0) rows.push(["", "Concession (waived)", "", "", st.concessions, ""]);
+    if (st.unverified > 0) rows.push(["", "Marked paid, no money recorded", `Rs. ${st.unverified.toLocaleString()} not counted as received`, "", "", ""]);
+    rows.push(["", "TOTAL", "", st.billed, st.received + st.concessions, st.outstanding]);
+    return { headers: ["Date", "Type", "Details", "Billed", "Received / Waived", "Balance"], rows };
+  };
+
   const card = (label, value, color, Icon) => (
     <div style={{ flex: 1, minWidth: 150, background: "white", border: "1px solid var(--border)", borderRadius: 12, padding: 16 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, color: "var(--text-muted)", fontSize: 13, marginBottom: 6 }}>
@@ -102,9 +124,22 @@ export default function StudentLedger() {
         <ArrowLeft size={16} /> Back
       </button>
 
-      <div style={{ marginBottom: 16 }}>
-        <h2 style={{ fontSize: 22, fontWeight: 700 }}>{name} <span style={{ fontSize: 14, fontWeight: 400, color: "var(--text-muted)", fontFamily: "monospace" }}>{student?.studentId}</span></h2>
-        <div style={{ fontSize: 13, color: "var(--text-muted)" }}>{student?.grade} {student?.parentName ? `• Parent: ${student.parentName}` : ""}</div>
+      <div style={{ marginBottom: 16, display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
+        <div>
+          <h2 style={{ fontSize: 22, fontWeight: 700 }}>{name} <span style={{ fontSize: 14, fontWeight: 400, color: "var(--text-muted)", fontFamily: "monospace" }}>{student?.studentId}</span></h2>
+          <div style={{ fontSize: 13, color: "var(--text-muted)" }}>{student?.grade} {student?.parentName ? `• Parent: ${student.parentName}` : ""}</div>
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button disabled={!student || loading}
+            onClick={() => {
+              const statement = buildStatement({ student, invoices, payments, today: localISODate() });
+              if (!printStatements([statement])) toast.error("Allow pop-ups to print the statement");
+            }}
+            style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 14px", border: "1px solid var(--border)", borderRadius: 8, background: "white", cursor: "pointer", fontSize: 13 }}>
+            <Printer size={14} /> Print statement
+          </button>
+          <ExportMenu filename={`ledger-${student?.studentId || id}`} title={`Fee Ledger - ${name}`} getData={getExportData} disabled={!student || events.length === 0} />
+        </div>
       </div>
 
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 20 }}>
@@ -161,6 +196,7 @@ export default function StudentLedger() {
       <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 10 }}>
         Invoices add to what's billed; payments reduce the balance. Reversed payments and their reversing entries are shown faded and cancel out. Concessions forgive part of an invoice's balance. Balance due counts only invoices that are not marked paid.
       </p>
+
     </div>
   );
 }

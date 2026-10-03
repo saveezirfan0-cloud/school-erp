@@ -1,7 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { useUser } from "../context/UserContext";
-import { db } from "../firebase";
-import { doc, getDoc, serverTimestamp, updateDocs } from "../firebase";
+import { serverTimestamp, updateDocs } from "../firebase";
 import { useBranch } from "../context/BranchContext";
 import { useCollection } from "../hooks/useCollection";
 import { useBulkSelect } from "../hooks/useBulkSelect";
@@ -15,11 +14,12 @@ import { postManualPayment, reversePayment, isReversalRow, isPostedBySource, pic
 import { parsePositiveAmount, sumMoney, todayLocal, isIsoDate, formatMoney } from "../utils/money";
 import { useAccounts } from "../utils/useAccounts";
 import { useSubmitLock } from "../utils/useSubmitLock";
-import { receiptFromPayment, buildReceiptHtml, openPrintWindow } from "../utils/invoiceGenerator";
-import { exportToCSV, exportToPDF } from "../utils/exportUtils";
+import ExportMenu from "../components/UI/ExportMenu";
+import DocumentViewer from "../components/UI/DocumentViewer";
+import { buildPaymentDoc } from "../utils/documents";
 import { EXTRA_PAYMENT_CATEGORIES } from "../config/statementHeads";
 import toast from "react-hot-toast";
-import { Plus, X, ArrowUpCircle, ArrowDownCircle, Undo2, Download, FileText, Pencil, Printer, Trash2 } from "lucide-react";
+import { Plus, X, ArrowUpCircle, ArrowDownCircle, Undo2, FileText, Pencil, Printer, Trash2 } from "lucide-react";
 
 const CATEGORIES = ["Fee Collection", "Salary Payment", "Rent", "Utilities", "Supplies", "Maintenance", "Bank Deposit", "Bank Withdrawal", "Other", ...EXTRA_PAYMENT_CATEGORIES];
 const emptyLine = { accountId: "", description: "", category: "", amount: "", type: "cash_out" };
@@ -35,7 +35,8 @@ const reverseBlockReason = (p) => {
   if (isPostedBySource(p)) return `This payment belongs to ${p.source === "payslip" ? "a payslip" : p.source === "expense" ? "an expense" : "an invoice"}. Delete or edit that document instead; its payments are reversed for you.`;
   return "";
 };
-const canPrintReceipt = (p) => p.type === "cash_in" && !p.reversed && !isReversalRow(p) && !!p.id && isIsoDate(p.date) && (p.source === "invoice" || p.category === "Fee Collection");
+// A reversal entry is a bookkeeping row, not a receipt or voucher (reversed originals print marked REVERSED).
+const canPrintReceipt = (p) => !!p.id && !isReversalRow(p);
 
 function useIsMobile() {
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
@@ -202,37 +203,21 @@ export default function Payments() {
     } finally { setBulkBusy(false); }
   };
 
-  const handlePrintReceipt = async (p) => {
-    try {
-      let invoice = null;
-      if (p.source === "invoice" && p.sourceId) {
-        try {
-          const snap = await getDoc(doc(db, "invoices", p.sourceId));
-          if (snap.exists()) invoice = snap.data();
-        } catch { /* fall back to the payment description */ }
-      }
-      const data = receiptFromPayment({ payment: p, invoice, branches, printedOn: todayLocal() });
-      if (!openPrintWindow(buildReceiptHtml(data))) toast.error("Pop-up blocked. Allow pop-ups for this site to print the receipt.");
-      else logActivity("printed", "Payments", `Receipt ${data.receiptNo}`);
-    } catch (err) {
-      toast.error(err?.message || "Could not build the receipt");
-    }
-  };
-
   const updateBulkLine = (idx, field, value) =>
     setBulkLines(p => p.map((l, i) => i === idx ? { ...l, [field]: value } : l));
 
   const bulkTotal = sumMoney(bulkLines.map(l => l.amount));
 
-  const handleCSV = () => exportToCSV("payments",
-    ["Date", "Type", "Account", "Category", "Description", "Reference", "Amount"],
-    filtered.map(p => [p.date, p.type === "cash_in" ? "Cash In" : "Cash Out", p.account, p.category, p.description, p.reference, p.amount])
-  );
+  const getExportData = () => ({
+    headers: ["Date", "Type", "Account", "Category", "Description", "Reference", "Amount"],
+    rows: filtered.map(p => [p.date, p.type === "cash_in" ? "Cash In" : "Cash Out", p.account, p.category, p.description, p.reference, Number(p.amount || 0)]),
+    pdfHeaders: ["Date", "Type", "Account", "Category", "Description", "Amount"],
+    pdfRows: filtered.map(p => [p.date, p.type === "cash_in" ? "Cash In" : "Cash Out", p.account, p.category, p.description, `${p.type === "cash_in" ? "+" : "-"}Rs. ${Number(p.amount || 0).toLocaleString()}`]),
+  });
 
-  const handlePDF = () => exportToPDF("Payments Report",
-    ["Date", "Type", "Account", "Description", "Amount"],
-    filtered.map(p => [p.date, p.type === "cash_in" ? "Cash In" : "Cash Out", p.account, p.description, `Rs. ${Number(p.amount).toLocaleString()}`])
-  );
+  // ---- printable receipts / vouchers ----
+  const [viewDocs, setViewDocs] = useState(null);
+  const openVouchers = (items) => items.length === 0 ? toast.error("Nothing printable in the selection (reversal entries are skipped)") : setViewDocs(items.map(p => buildPaymentDoc(p, { branchName: branches?.find(b => b.id === p.branchId)?.name || "" })));
 
   const clearFilters = () => { setSearch(""); setFilterType(""); setFilterCategory(""); setFilterDateFrom(""); setFilterDateTo(""); };
   const hasFilters = search || filterType || filterCategory || filterDateFrom || filterDateTo;
@@ -249,10 +234,7 @@ export default function Payments() {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, flexWrap: "wrap", gap: 10 }}>
         <h2 style={{ fontSize: 20, fontWeight: 700 }}>Cash & Bank Payments</h2>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          {!isMobile && <>
-            {can("canExport") && <button onClick={handleCSV} style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13 }}><Download size={14} /> CSV</button>}
-            {can("canExport") && <button onClick={handlePDF} style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13 }}><FileText size={14} /> PDF</button>}
-          </>}
+          {can("canExport") && <ExportMenu filename="payments" title="Payments Report" getData={getExportData} disabled={filtered.length === 0} />}
           <button onClick={openModal}
             style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 18px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600 }}>
             <Plus size={16} /> Add Payment
@@ -325,7 +307,7 @@ export default function Payments() {
                   <div style={{ fontSize: 18, fontWeight: 700, color: p.type === "cash_in" ? "#10b981" : "#ef4444" }}>
                     {p.type === "cash_in" ? "+" : "-"}Rs. {Number(p.amount).toLocaleString()}
                   </div>
-                  {canPrintReceipt(p) && <button onClick={() => handlePrintReceipt(p)} title="Print receipt" style={{ border: "none", background: "var(--primary-light)", color: "var(--primary)", padding: "6px 9px", borderRadius: 6, cursor: "pointer" }}><Printer size={13} /></button>}
+                  {canPrintReceipt(p) && <button onClick={() => openVouchers([p])} title={p.type === "cash_in" ? "Receipt" : "Voucher"} style={{ border: "none", background: "var(--primary-light)", color: "var(--primary)", padding: "6px 9px", borderRadius: 6, cursor: "pointer" }}><FileText size={13} /></button>}
                   <button onClick={() => handleReverse(p)} disabled={submitting} title={reverseBlockReason(p) || "Reverse this payment"} style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "6px 9px", borderRadius: 6, cursor: "pointer", opacity: reverseBlockReason(p) ? 0.45 : 1 }}><Undo2 size={13} /></button>
                 </div>
               </div>
@@ -373,7 +355,7 @@ export default function Payments() {
                       {p.type === "cash_in" ? "+" : "-"}Rs. {Number(p.amount).toLocaleString()}
                     </td>
                     <td style={{ padding: "11px 14px", textAlign: "right", whiteSpace: "nowrap" }}>
-                      {canPrintReceipt(p) && <button onClick={() => handlePrintReceipt(p)} title="Print receipt" style={{ border: "none", background: "var(--primary-light)", color: "var(--primary)", padding: "7px 9px", borderRadius: 8, cursor: "pointer", marginRight: 6 }}><Printer size={14} /></button>}
+                      {canPrintReceipt(p) && <button onClick={() => openVouchers([p])} title={p.type === "cash_in" ? "View / print receipt" : "View / print voucher"} style={{ border: "none", background: "var(--primary-light)", color: "var(--primary)", padding: "7px 9px", borderRadius: 8, cursor: "pointer", marginRight: 6 }}><FileText size={14} /></button>}
                       <button onClick={() => handleReverse(p)} disabled={submitting} title={reverseBlockReason(p) || "Reverse this payment"} style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "7px 9px", borderRadius: 8, cursor: "pointer", opacity: reverseBlockReason(p) ? 0.45 : 1 }}><Undo2 size={14} /></button>
                     </td>
                   </tr>
@@ -399,6 +381,7 @@ export default function Payments() {
         onSelectAll={() => bulk.selectAll(filtered.map(p => p.id))}
         onClear={bulk.clear}
         actions={[
+          { label: "Print / PDF", icon: Printer, onClick: () => openVouchers(filtered.filter(p => bulk.selected.has(p.id) && canPrintReceipt(p))) },
           { label: "Edit", icon: Pencil, onClick: () => setShowBulkEdit(true) },
           { label: "Reverse", icon: Undo2, variant: "danger", onClick: handleBulkReverse },
         ]}
@@ -575,6 +558,15 @@ export default function Payments() {
             )}
           </div>
         </div>
+      )}
+
+      {/* Receipt / voucher viewer: preview, print, PDF */}
+      {viewDocs && (
+        <DocumentViewer
+          docs={viewDocs}
+          title={viewDocs.length === 1 ? viewDocs[0].title.charAt(0) + viewDocs[0].title.slice(1).toLowerCase() : `${viewDocs.length} documents`}
+          onClose={() => setViewDocs(null)}
+        />
       )}
     </div>
   );
