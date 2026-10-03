@@ -17,6 +17,7 @@
 // which section each head sits in.
 
 import { toDate } from "./dates";
+import { paymentInAccount } from "./paymentAccount";
 import { invoiceCollected, invoicePaymentDate } from "./invoiceTotals";
 import {
   INCOME_GROUPS, EXPENSE_GROUPS, INCOME_SUBTYPE_GROUP, EXPENSE_SUBTYPE_GROUP,
@@ -182,7 +183,7 @@ export function buildMonthlyStatement({
   const cashAccounts = accounts
     .filter((a) => a.subType === "Bank & Cash")
     .map((a) => {
-      const mine = scopedPayments.filter((p) => p.account === a.name && ymd(p.date) !== "");
+      const mine = scopedPayments.filter((p) => paymentInAccount(p, a) && ymd(p.date) !== "");
       const signed = (p) => (p.type === "cash_in" ? num(p.amount) : -num(p.amount));
       const before = mine.filter((p) => ymd(p.date) < from).reduce((s, p) => s + signed(p), 0);
       const during = mine.filter((p) => inMonth(p.date));
@@ -251,15 +252,20 @@ export function statementCsvRows(s) {
 
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
-function sectionTable(title, section, tone, emptyText) {
+function sectionTable(title, section, tone, emptyText, options) {
   const body = section.groups.length === 0
     ? `<tr><td colspan="2" class="empty">${esc(emptyText)}</td></tr>`
     : section.groups.map((g) => `
-        <tr class="g"><td>${esc(g.label)}</td><td class="n">${fmtNum(g.total)}</td></tr>
+        <tr class="g"><td>${esc(g.label)}${g.excluded ? ' <span class="tag">not counted in total</span>' : ""}</td><td class="n">${fmtNum(g.total)}</td></tr>
         ${g.heads.map((h) => `
-        <tr><td class="h">${esc(h.label)}${h.branches.length > 1 ? `<span class="br">${h.branches.map((b) => `${esc(b.name)} ${fmtNum(b.amount)}`).join(" · ")}</span>` : ""}</td><td class="n">${fmtNum(h.amount)}</td></tr>`).join("")}`).join("");
+        <tr><td class="h">${esc(h.label)}${options.branchSplit !== false && h.branches.length > 1 ? `<span class="br">${h.branches.map((b) => `${esc(b.name)} ${fmtNum(b.amount)}`).join(" · ")}</span>` : ""}</td><td class="n">${fmtNum(h.amount)}</td></tr>`).join("")}`).join("");
+  const notes = [
+    section.hiddenAmount ? `Rs. ${fmtNum(section.hiddenAmount)} hidden by report layout` : "",
+    section.excludedAmount ? `Rs. ${fmtNum(section.excludedAmount)} shown but not counted` : "",
+  ].filter(Boolean);
   return `<h3 class="sec ${tone}">${esc(title)}</h3>
-  <table>${body}<tr class="total ${tone}"><td>Total ${esc(title)}</td><td class="n">Rs. ${fmtNum(section.total)}</td></tr></table>`;
+  <table>${body}<tr class="total ${tone}"><td>Total ${esc(title)}</td><td class="n">Rs. ${fmtNum(section.total)}</td></tr></table>
+  ${notes.length ? `<div class="note">${esc(notes.join(" · "))}</div>` : ""}`;
 }
 
 // Opens a print window in the app's theme; "Save as PDF" in the print dialog
@@ -267,8 +273,9 @@ function sectionTable(title, section, tone, emptyText) {
 export function printMonthlyStatement(s, { orgName = "Zohra Majeed Islamic Institute", scopeLabel = "" } = {}) {
   const w = window.open("", "_blank");
   if (!w) return false;
+  const options = s.options || {};
   const kpi = (label, value, cls = "") => `<div class="kpi ${cls}"><div class="k">${esc(label)}</div><div class="v">Rs. ${fmtNum(value)}</div></div>`;
-  const accounts = s.cashAccounts.length === 0 ? "" : `
+  const accounts = options.accounts === false || s.cashAccounts.length === 0 ? "" : `
   <h3 class="sec">Bank &amp; Cash accounts</h3>
   <table>
     <tr class="g"><td>Account</td><td class="n">Opening</td><td class="n">In</td><td class="n">Out</td><td class="n">Closing</td></tr>
@@ -298,6 +305,8 @@ export function printMonthlyStatement(s, { orgName = "Zohra Majeed Islamic Insti
     tr.g td { background: #f5eaec; font-weight: 700; color: #4a1520; }
     tr.total td { font-weight: 700; font-size: 13px; border-bottom: none; color: #fff; background: #7a2535; }
     tr.total.in td { background: #047857; } tr.total.out td { background: #b91c1c; }
+    .tag { font-size: 9px; font-weight: 600; color: #92400e; background: #fffbeb; border: 1px solid #fde68a; border-radius: 10px; padding: 1px 6px; margin-left: 6px; }
+    .note { font-size: 10px; color: #64748b; margin-top: 4px; }
     td.empty { color: #64748b; text-align: center; padding: 12px; }
     tr { page-break-inside: avoid; }
     .foot { margin-top: 14px; font-size: 10px; color: #94a3b8; text-align: center; }
@@ -310,8 +319,8 @@ export function printMonthlyStatement(s, { orgName = "Zohra Majeed Islamic Insti
   <div class="kpis">
     ${kpi("Opening balance", s.openingBalance)}${kpi("Total income", s.totalIncome, "in")}${kpi("Total expense", s.totalExpense, "out")}${kpi("Closing balance", s.closingBalance, "close")}
   </div>
-  ${sectionTable("Income", s.income, "in", "No income recorded this month")}
-  ${sectionTable("Expense", s.expense, "out", "No expenses recorded this month")}
+  ${sectionTable("Income", s.income, "in", "No income recorded this month", options)}
+  ${sectionTable("Expense", s.expense, "out", "No expenses recorded this month", options)}
   ${accounts}
   <div class="foot">Generated ${esc(new Date().toLocaleDateString("en-GB"))} — ZMI School Management System</div>
   <script>window.onload = function () { window.focus(); window.print(); };</script>

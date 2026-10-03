@@ -37,6 +37,13 @@ const ReminderLogs = lazy(() => import("./pages/ReminderLogs"));
 const Import = lazy(() => import("./pages/Import"));
 const Trash = lazy(() => import("./pages/Trash"));
 const ActivityLog = lazy(() => import("./pages/ActivityLog"));
+const Attendance = lazy(() => import("./pages/Attendance"));
+const Exams = lazy(() => import("./pages/Exams"));
+const ReportCards = lazy(() => import("./pages/ReportCards"));
+const Subjects = lazy(() => import("./pages/Subjects"));
+const Homework = lazy(() => import("./pages/Homework"));
+const Materials = lazy(() => import("./pages/Materials"));
+const StudentAcademics = lazy(() => import("./pages/StudentAcademics"));
 
 const PageLoader = () => (
   <div style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: 60 }}>
@@ -45,8 +52,9 @@ const PageLoader = () => (
   </div>
 );
 
-// "/" shows the dashboard when the user may see it; otherwise it sends
-// them to the first page of their own menu instead of "Access Denied".
+// Landing page: the Dashboard for roles that may see it, otherwise the first
+// page of the user's own menu (e.g. teachers land on Attendance, fee collectors
+// on Students) instead of being bounced to "Access Denied".
 function Home() {
   const { can, isAdmin, menuLayout } = useUser();
   if (can("canViewDashboard")) return <Dashboard />;
@@ -100,11 +108,7 @@ export default function App() {
                   <Layout />
                 </PrivateRoute>
               }>
-                <Route index element={
-                  <PrivateRoute>
-                    <Home />
-                  </PrivateRoute>
-                } />
+                <Route index element={<Home />} />
                 <Route path="students" element={
                   <PrivateRoute permission="canViewStudents">
                     <Students />
@@ -118,6 +122,41 @@ export default function App() {
                 <Route path="students/:id/ledger" element={
                   <PrivateRoute permission="canViewStudents">
                     <StudentLedger />
+                  </PrivateRoute>
+                } />
+                <Route path="students/:id/academics" element={
+                  <PrivateRoute permission="canViewStudents">
+                    <StudentAcademics />
+                  </PrivateRoute>
+                } />
+                <Route path="attendance" element={
+                  <PrivateRoute permission="canViewAttendance">
+                    <Attendance />
+                  </PrivateRoute>
+                } />
+                <Route path="exams" element={
+                  <PrivateRoute permission="canViewExams">
+                    <Exams />
+                  </PrivateRoute>
+                } />
+                <Route path="report-cards" element={
+                  <PrivateRoute permission="canViewExams">
+                    <ReportCards />
+                  </PrivateRoute>
+                } />
+                <Route path="subjects" element={
+                  <PrivateRoute permission="canViewLearning">
+                    <Subjects />
+                  </PrivateRoute>
+                } />
+                <Route path="homework" element={
+                  <PrivateRoute permission="canViewLearning">
+                    <Homework />
+                  </PrivateRoute>
+                } />
+                <Route path="materials" element={
+                  <PrivateRoute permission="canViewLearning">
+                    <Materials />
                   </PrivateRoute>
                 } />
                 <Route path="employees" element={

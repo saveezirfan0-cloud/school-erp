@@ -15,12 +15,29 @@
 import { db, addDoc, collection, serverTimestamp } from "../firebase";
 import { supabase } from "../lib/supabaseClient";
 
+export { paymentInAccount } from "./paymentAccount";
+
+// Look up a chart-of-accounts id by account name, so callers that only know
+// the name (fee collection, payslips...) still link payments by id. Cached
+// briefly because bulk flows record many payments against one account.
+const idCache = new Map(); // name -> { id, at }
+async function findAccountId(name) {
+  const hit = idCache.get(name);
+  if (hit && Date.now() - hit.at < 60000) return hit.id;
+  const { data } = await supabase
+    .from("accounts").select("id").eq("name", name).is("deleted_at", null).limit(1);
+  const id = data?.[0]?.id || "";
+  idCache.set(name, { id, at: Date.now() });
+  return id;
+}
+
 /**
  * Record a money movement against a bank/cash account.
  *
  * @param {object} p
  * @param {"cash_in"|"cash_out"} p.type   money in or out of the account
  * @param {string} p.account              account NAME (matches accounts.name)
+ * @param {string} [p.accountId]          chart-of-accounts id of that account (stable across renames)
  * @param {number} p.amount
  * @param {string} p.category             e.g. "Fee Collection", "Salary", "Expense"
  * @param {string} p.description
@@ -31,15 +48,17 @@ import { supabase } from "../lib/supabaseClient";
  * @param {string} [p.sourceId]           source document id
  */
 export async function recordPayment({
-  type, account, amount, category, description,
+  type, account, accountId = "", amount, category, description,
   reference = "", branchId = "", date, source = "", sourceId = "",
 }) {
   if (!account) throw new Error("No account selected");
   if (!amount || Number(amount) <= 0) throw new Error("Invalid amount");
+  if (!accountId) accountId = await findAccountId(account);
 
   return addDoc(collection(db, "payments"), {
     type,
     account,
+    accountId,     // stored in `extra`; lets us link back to the chart of accounts
     amount: Number(amount),
     category: category || "",
     description: description || "",
@@ -79,7 +98,8 @@ export async function getSourcePayments(source, sourceId) {
   if (error) throw error;
   // decode snake_case -> camelCase minimally for what callers use
   return (data || []).map(r => ({
-    id: r.id, type: r.type, account: r.account, amount: Number(r.amount),
+    id: r.id, type: r.type, account: r.account, accountId: r.extra?.accountId || "",
+    amount: Number(r.amount),
     reversed: r.reversed === true, reversalOf: r.reversal_of || null,
     category: r.category, description: r.description,
     branchId: r.branch_id, date: r.date,
@@ -110,6 +130,7 @@ export async function reversePayment(payment) {
   return addDoc(collection(db, "payments"), {
     type: payment.type === "cash_in" ? "cash_out" : "cash_in",
     account: payment.account,
+    accountId: payment.accountId || "",
     amount: Number(payment.amount),
     category: (payment.category || "") + " (reversal)",
     description: "Reversal: " + (payment.description || ""),

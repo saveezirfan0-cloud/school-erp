@@ -3,6 +3,7 @@ import {
   Building2, Settings, BookOpen, CreditCard, FileText,
   BarChart2, Landmark, BookMarked, ShieldCheck, MessageCircle,
   Upload, Trash2, History, KeyRound,
+  CalendarCheck, ClipboardList, GraduationCap, BookOpenCheck, FolderOpen, Library,
 } from "lucide-react";
 
 // Every navigable page, keyed by a stable id. `perm` is the permission
@@ -13,6 +14,12 @@ export const MENU_ITEMS = {
   students:        { to: "/students",          label: "Students",          icon: Users,           perm: "canViewStudents", keywords: "pupils children admission" },
   employees:       { to: "/employees",         label: "Employees",         icon: UserCheck,       perm: "canViewEmployees", keywords: "staff teachers hr" },
   fees:            { to: "/fees",              label: "Fees & Invoices",   icon: Receipt,         perm: "canViewFees", keywords: "invoice billing tuition" },
+  attendance:      { to: "/attendance",         label: "Attendance",        icon: CalendarCheck,   perm: "canViewAttendance", keywords: "present absent roll call register" },
+  exams:           { to: "/exams",              label: "Exams & Results",   icon: ClipboardList,   perm: "canViewExams", keywords: "tests marks results grades" },
+  reportCards:     { to: "/report-cards",       label: "Report Cards",      icon: GraduationCap,   perm: "canViewExams", keywords: "results transcript grades" },
+  subjects:        { to: "/subjects",           label: "Subjects",          icon: Library,         perm: "canViewLearning", keywords: "courses classes curriculum" },
+  homework:        { to: "/homework",           label: "Homework",          icon: BookOpenCheck,     perm: "canViewLearning", keywords: "assignments tasks" },
+  materials:       { to: "/materials",          label: "Learning Materials",icon: FolderOpen,      perm: "canViewLearning", keywords: "lessons resources files notes" },
   payments:        { to: "/payments",          label: "Payments",          icon: CreditCard,      perm: "canViewPayments", keywords: "receipts income cash received" },
   expenses:        { to: "/expenses",          label: "Expenses",          icon: TrendingDown,    perm: "canViewExpenses", keywords: "spending costs bills" },
   payslips:        { to: "/payslips",          label: "Payslips",          icon: FileText,        perm: "canViewPayslips", keywords: "salary payroll wages" },
@@ -34,6 +41,7 @@ export const MENU_ITEMS = {
 export const DEFAULT_SECTIONS = [
   { id: "main",       label: "",                items: ["dashboard"] },
   { id: "people",     label: "People",          items: ["students", "employees"] },
+  { id: "academics",  label: "Academics",       items: ["attendance", "exams", "reportCards", "subjects", "homework", "materials"] },
   { id: "billing",    label: "Fees & Payments", items: ["fees", "payments", "expenses", "payslips"] },
   { id: "accounting", label: "Accounting",      items: ["chartOfAccounts", "bankCash", "journals"] },
   { id: "insights",   label: "Reports & Logs",  items: ["reports", "reminderLogs", "activityLog"] },

@@ -21,8 +21,8 @@ const iconBtn = (disabled) => ({
   cursor: disabled ? "default" : "pointer",
 });
 
-const ROLE_LABELS = { admin: "Admin", branch_manager: "Branch manager", accountant: "Accountant", fee_collector: "Fee collector" };
-const BUILT_IN_ROLES = ["admin", "branch_manager", "accountant", "fee_collector"];
+const ROLE_LABELS = { admin: "Admin", branch_manager: "Branch manager", accountant: "Accountant", fee_collector: "Fee collector", teacher: "Teacher" };
+const BUILT_IN_ROLES = ["admin", "branch_manager", "accountant", "fee_collector", "teacher"];
 
 export default function MenuEditor({ onClose }) {
   const {

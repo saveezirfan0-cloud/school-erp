@@ -11,6 +11,7 @@ export const ROLES = {
   BRANCH_MANAGER: "branch_manager",
   ACCOUNTANT: "accountant",
   FEE_COLLECTOR: "fee_collector",
+  TEACHER: "teacher",
 };
 
 export const PERMISSIONS = {
@@ -35,6 +36,12 @@ export const PERMISSIONS = {
     canEditAccounting: true,
     canViewReports: true,
     canExport: true,
+    canViewAttendance: true,
+    canEditAttendance: true,
+    canViewExams: true,
+    canEditExams: true,
+    canViewLearning: true,
+    canEditLearning: true,
     canManageBranches: true,
     canManageUsers: true,
     canViewAllBranches: true,
@@ -60,6 +67,12 @@ export const PERMISSIONS = {
     canEditAccounting: false,
     canViewReports: false,
     canExport: false,
+    canViewAttendance: true,
+    canEditAttendance: true,
+    canViewExams: true,
+    canEditExams: true,
+    canViewLearning: true,
+    canEditLearning: true,
     canManageBranches: false,
     canManageUsers: false,
     canViewAllBranches: false,
@@ -85,6 +98,12 @@ export const PERMISSIONS = {
     canEditAccounting: true,
     canViewReports: true,
     canExport: false,
+    canViewAttendance: false,
+    canEditAttendance: false,
+    canViewExams: false,
+    canEditExams: false,
+    canViewLearning: false,
+    canEditLearning: false,
     canManageBranches: false,
     canManageUsers: false,
     canViewAllBranches: true,
@@ -110,6 +129,43 @@ export const PERMISSIONS = {
     canEditAccounting: false,
     canViewReports: false,
     canExport: false,
+    canViewAttendance: false,
+    canEditAttendance: false,
+    canViewExams: false,
+    canEditExams: false,
+    canViewLearning: false,
+    canEditLearning: false,
+    canManageBranches: false,
+    canManageUsers: false,
+    canViewAllBranches: false,
+  },
+  teacher: {
+    canViewDashboard: false,
+    canViewStudents: true,
+    canEditStudents: false,
+    canDeleteStudents: false,
+    canViewEmployees: false,
+    canEditEmployees: false,
+    canDeleteEmployees: false,
+    canViewFees: false,
+    canEditFees: false,
+    canViewExpenses: false,
+    canEditExpenses: false,
+    canDeleteExpenses: false,
+    canViewPayments: false,
+    canEditPayments: false,
+    canViewPayslips: false,
+    canEditPayslips: false,
+    canViewAccounting: false,
+    canEditAccounting: false,
+    canViewReports: false,
+    canExport: true,
+    canViewAttendance: true,
+    canEditAttendance: true,
+    canViewExams: true,
+    canEditExams: true,
+    canViewLearning: true,
+    canEditLearning: true,
     canManageBranches: false,
     canManageUsers: false,
     canViewAllBranches: false,
@@ -256,8 +312,23 @@ export function UserProvider({ children }) {
     else await deleteDoc(ref);
   }, []);
 
+  // Personal layout of the Haji Sahab report (null = default). Saved the same
+  // way as the menu layout, on the user's own profile row.
+  const hajiLayout = userProfile?.hajiLayout || null;
+  const saveHajiLayout = useCallback(async (layout) => {
+    if (!userProfile?.id) return;
+    const previous = userProfile.hajiLayout ?? null;
+    setUserProfile((p) => (p ? { ...p, hajiLayout: layout } : p));
+    try {
+      await updateDocs("users", [userProfile.id], { hajiLayout: layout });
+    } catch (e) {
+      setUserProfile((p) => (p ? { ...p, hajiLayout: previous } : p));
+      throw e;
+    }
+  }, [userProfile?.id, userProfile?.hajiLayout]);
+
   // If branch_manager, restrict to their assigned branch
-  const assignedBranchId = role === "branch_manager" ? userProfile?.branchId : null;
+  const assignedBranchId = (role === "branch_manager" || role === "teacher") ? userProfile?.branchId : null;
 
   const value = useMemo(() => ({
     userProfile,
@@ -276,7 +347,9 @@ export function UserProvider({ children }) {
     saveRoleMenuDefault,
     menuPrefs,
     saveMenuPrefs,
-  }), [userProfile, loadingProfile, role, permissions, customRolePerms, can, isAdmin, assignedBranchId, menuLayout, ownMenuLayout, roleMenuLayout, roleMenuDefaults, saveMenuLayout, saveRoleMenuDefault, menuPrefs, saveMenuPrefs]);
+    hajiLayout,
+    saveHajiLayout,
+  }), [userProfile, loadingProfile, role, permissions, customRolePerms, can, isAdmin, assignedBranchId, menuLayout, ownMenuLayout, roleMenuLayout, roleMenuDefaults, saveMenuLayout, saveRoleMenuDefault, menuPrefs, saveMenuPrefs, hajiLayout, saveHajiLayout]);
 
   return (
     <UserContext.Provider value={value}>

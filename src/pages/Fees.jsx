@@ -3,6 +3,7 @@ import { db } from "../firebase";
 import { collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot, serverTimestamp, updateDocs, deleteDocs } from "../firebase";
 import { useBranch } from "../context/BranchContext";
 import { matchesBranch } from "../utils/branchFilter";
+import { isLeftStudent } from "../utils/studentStatus";
 import Pagination from "../components/UI/Pagination";
 import SearchableSelect from "../components/UI/SearchableSelect";
 import InvoiceEditModal from "../components/UI/InvoiceEditModal";
@@ -17,6 +18,7 @@ import { sendWhatsAppMessage } from "../utils/whatsapp";
 import { recordPayment, bankCashAccounts, reverseSourcePayments, getSourcePaidTotal } from "../utils/accounting";
 import { exportToCSV, exportToPDF } from "../utils/exportUtils";
 import { sumInvoices } from "../utils/invoiceTotals";
+import InvoiceModal from "../components/UI/InvoiceModal";
 import toast from "react-hot-toast";
 import { Plus, MessageCircle, CheckCircle, X, Trash2, Download, FileText, RefreshCw, Users, Pencil, Search } from "lucide-react";
 
@@ -87,7 +89,7 @@ export default function Fees() {
       // arriving mid-entry doesn't wipe the bulk form.
       setBulkStudents(prev => {
         const old = new Map(prev.map(p => [p.id, p]));
-        return s.map(st => {
+        return s.filter(st => !isLeftStudent(st)).map(st => {
           const o = old.get(st.id);
           return o
             ? { ...st, selected: o.selected, amount: o.amount, paid: o.paid }
@@ -148,7 +150,7 @@ export default function Fees() {
 
   // multi-select for bulk actions (selection only ever contains
   // currently-visible/filtered invoices)
-  const bulk = useBulkSelect(filtered.map(inv => inv.id));
+  const bulk = useBulkSelect(invoices.map(inv => inv.id), activeBranch);
   const pagedIds = paged.map(inv => inv.id);
   const totalAmount = lineItems.reduce((s, i) => s + Number(i.amount || 0), 0);
   // Same formulas as Dashboard and Reports (see utils/invoiceTotals); only the
@@ -234,7 +236,7 @@ export default function Fees() {
   };
 
   const handleGenerateRecurring = async () => {
-    const recurringStudents = students.filter(s => s.recurringFee);
+    const recurringStudents = students.filter(s => s.recurringFee && !isLeftStudent(s));
     if (recurringStudents.length === 0) return toast.error("No students have auto-recurring fees enabled");
     const existing = invoices.filter(i => i.month === recurringMonth && Number(i.year) === Number(recurringYear));
     const existingIds = new Set(existing.map(i => i.studentId));
@@ -980,7 +982,7 @@ export default function Fees() {
               <button onClick={() => setShowRecurring(false)} style={{ border: "none", background: "none", cursor: "pointer" }}><X size={20} /></button>
             </div>
             <div style={{ padding: 14, background: "#f8fafc", borderRadius: 10, marginBottom: 16, fontSize: 13, color: "var(--text-muted)" }}>
-              Will generate invoices for <strong style={{ color: "#10b981" }}>{students.filter(s => s.recurringFee).length} students</strong> with auto-recurring fees enabled. Existing invoices for this month are skipped.
+              Will generate invoices for <strong style={{ color: "#10b981" }}>{students.filter(s => s.recurringFee && !isLeftStudent(s)).length} students</strong> with auto-recurring fees enabled. Existing invoices for this month are skipped.
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 20 }}>
               <div>
@@ -1009,53 +1011,12 @@ export default function Fees() {
       )}
 
       {/* Invoice Detail Modal */}
-      {selectedInvoice && (
-        <div style={modalStyle}>
-          <div style={{ ...sheetStyle, maxWidth: isMobile ? "100%" : 480 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 20 }}>
-              <h3 style={{ fontSize: 17, fontWeight: 700 }}>Invoice Detail</h3>
-              <button onClick={() => setSelectedInvoice(null)} style={{ border: "none", background: "none", cursor: "pointer" }}><X size={20} /></button>
-            </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
-              {[
-                { label: "Student", value: selectedInvoice.studentName },
-                { label: "Period", value: `${selectedInvoice.month} ${selectedInvoice.year}` },
-                { label: "Due Date", value: selectedInvoice.dueDate || "—" },
-                { label: "Status", value: selectedInvoice.status },
-              ].map(({ label, value }) => (
-                <div key={label} style={{ padding: "10px 14px", background: "#f8fafc", borderRadius: 8 }}>
-                  <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 3 }}>{label}</div>
-                  <div style={{ fontSize: 14, fontWeight: 600 }}>{value}</div>
-                </div>
-              ))}
-            </div>
-            {selectedInvoice.lineItems && (
-              <div style={{ border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden", marginBottom: 16 }}>
-                {selectedInvoice.lineItems.map((li, i) => (
-                  <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "11px 14px", borderBottom: "1px solid var(--border)", fontSize: 14 }}>
-                    <span>{li.customDescription || li.description}</span>
-                    <span style={{ fontWeight: 600 }}>Rs. {Number(li.amount).toLocaleString()}</span>
-                  </div>
-                ))}
-                <div style={{ display: "flex", justifyContent: "space-between", padding: "12px 14px", background: "#f8fafc", fontWeight: 700, fontSize: 15 }}>
-                  <span>Total</span>
-                  <span style={{ color: "var(--primary)" }}>Rs. {Number(selectedInvoice.amount).toLocaleString()}</span>
-                </div>
-              </div>
-            )}
-            <div style={{ display: "flex", gap: 10 }}>
-              <button onClick={() => { setEditInvoice(selectedInvoice); setSelectedInvoice(null); }}
-                style={{ flex: 1, padding: "11px", background: "white", color: "var(--primary)", border: "1px solid var(--primary)", borderRadius: 8, cursor: "pointer", fontWeight: 600, fontSize: 14, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
-                <Pencil size={14} /> Edit
-              </button>
-              <button onClick={() => setSelectedInvoice(null)}
-                style={{ flex: 1, padding: "11px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600, fontSize: 14 }}>
-                Close
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <InvoiceModal
+        invoice={selectedInvoice}
+        student={students.find(st => st.id === selectedInvoice?.studentId)}
+        onEdit={() => { setEditInvoice(selectedInvoice); setSelectedInvoice(null); }}
+        onClose={() => setSelectedInvoice(null)}
+      />
 
       {editInvoice && (
         <InvoiceEditModal invoice={editInvoice} branches={branches} isMobile={isMobile} onClose={() => setEditInvoice(null)} />
