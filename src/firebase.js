@@ -446,6 +446,23 @@ export async function getDocs(ref) {
   return querySnap(data);
 }
 
+// Like getDocs(), but pages through the whole table. PostgREST caps a
+// single response at 1000 rows by default, so anything that sums over
+// a collection (reports) must page or its totals silently truncate.
+// Rows are ordered by id so range() pages are stable.
+export async function getAllDocs(ref, pageSize = 1000) {
+  const rows = [];
+  for (let from = 0; ; from += pageSize) {
+    let builder = supabase.from(ref.table).select("*");
+    builder = applyQuery(builder, ref).order("id", { ascending: true }).range(from, from + pageSize - 1);
+    const { data, error } = await builder;
+    if (error) throw error;
+    rows.push(...(data || []));
+    if (!data || data.length < pageSize) break;
+  }
+  return querySnap(rows);
+}
+
 export async function getDoc(ref) {
   const { data, error } = await supabase
     .from(ref.table)
