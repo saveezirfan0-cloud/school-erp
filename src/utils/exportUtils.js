@@ -12,7 +12,14 @@ export function exportToCSV(filename, headers, rows) {
   URL.revokeObjectURL(url);
 }
 
-export function exportToPDF(title, headers, rows) {
+// Cells and titles are data (student names, branch names…): escape them
+// before they go into the printable document.
+const esc = (v) => String(v ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+export function exportToPDF(rawTitle, rawHeaders, rawRows) {
+  const title = esc(rawTitle);
+  const headers = rawHeaders.map(esc);
+  const rows = rawRows.map(row => row.map(esc));
   const w = window.open("", "_blank");
   w.document.write(`<html><head><title>${title}</title>
   <style>
