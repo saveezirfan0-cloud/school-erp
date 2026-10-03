@@ -16,6 +16,10 @@
 --                * Payslips: marking status 'paid' directly          -> refused
 --                * Trashing an invoice/payslip/expense that still has live
 --                  payments (reverse first, or use trash_invoice)    -> refused
+--                * the browser helpers in src/utils/accounting.js (claim `reversed`
+--                  first, re-post after restore, update status/paid_amount),
+--                  InvoiceEditModal moving payments to another branch
+--                  -> refused; replace each by its 0009 RPC (table in README 3)
 --              Reads, creating pending invoices, expenses, payslips, editing
 --              descriptions/categories/notes keep working.
 -- Rollback   : drop trigger trg_payments_immutable on public.payments;

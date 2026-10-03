@@ -148,6 +148,11 @@ each call is replaced by its RPC:
 * **branch_manager / fee_collector** can read the Bank & Cash / Assets accounts (rows only; the
   opening `balance` column is visible too, RLS cannot hide a column). `list_pay_accounts()` is the
   alternative that returns only id/code/name; drop policy `accounts_select_pay` to use only that.
+* **teacher** (main's role; also accepted by the role guards): views students of their branch, attendance, exams,
+  marks and learning material, and edits attendance, marks and learning material of **their branch only** (there is no
+  class-level scoping in the database; `grade` is a filter). No finance, no employee data, cannot edit or trash
+  students, cannot manage users. Branch managers have the same academic permissions; accountants and fee collectors
+  have none (fee collectors can still read student attendance because they can view students, as in `lms.sql`).
 * **accounts / journals** need `canViewAccounting` (or edit) **and** `canViewAllBranches`.
 * **branches** are readable by any user with a role; **custom_roles**: admin sees all, others
   only their own role.
@@ -292,6 +297,7 @@ first, and remember that rolling back a security file re-opens what it closed.
 * **0011** `drop trigger trg_payments_immutable on public.payments; drop trigger trg_invoices_money_guard on public.invoices; drop trigger trg_payslips_money_guard on public.payslips; drop trigger trg_expenses_money_guard on public.expenses;`
 * **0010** `alter publication supabase_realtime add table public.users, public.audit_log;`
 * **0012** `drop policy receipts_insert on storage.objects;` (and `receipts_select`, `receipts_delete`); `update storage.buckets set file_size_limit=null, allowed_mime_types=null where id='receipts';`
+* **0013** policies: re-run `supabase/lms.sql` (original policy set); `drop trigger trg_ref_* / trg_restrict_* / trg_exams_history / trg_exam_results_history` on the academic tables; drop the `attendance_*_chk`, `exam_results_marks_chk`, `exams_total_chk`, `submissions_status_chk` constraints; `alter table ... replica identity full`.
 * **0020** nothing to undo.
 * **9000** `alter table public.users add column pin text;` and restore from `migration_backup` (see the file header).
 
