@@ -398,10 +398,26 @@ export function UserProvider({ children }) {
     else await deleteDoc(ref);
   }, []);
 
-  // Personal layout of the Haji Sahab report (null = default). Saved the same
-  // way as the menu layout, on the user's own profile row.
-  const hajiLayout = userProfile?.hajiLayout || null;
-  const saveHajiLayout = useCallback((layout) => saveProfileExtra("hajiLayout", layout), [saveProfileExtra]);
+  // Haji Sahab report preferences, saved on the user's own profile row like
+  // the menu layout: personal presets plus which preset is active. (Older
+  // accounts only have a single `hajiLayout`, which personalPresets() surfaces.)
+  const hajiPrefs = useMemo(() => ({
+    presets: userProfile?.hajiPresets,
+    legacyLayout: userProfile?.hajiLayout,
+    active: userProfile?.hajiActive || null,
+  }), [userProfile?.hajiPresets, userProfile?.hajiLayout, userProfile?.hajiActive]);
+  const saveHajiPrefs = useCallback(async ({ presets, active }) => {
+    if (!userDocId || !uid) return;
+    const previous = { hajiPresets: userProfile?.hajiPresets, hajiActive: userProfile?.hajiActive };
+    const next = { hajiPresets: presets, hajiActive: active ?? null };
+    patchProfile(next);
+    try {
+      await updateDocs("users", [userDocId], next);
+    } catch (e) {
+      patchProfile(previous);
+      throw e;
+    }
+  }, [userDocId, uid, userProfile?.hajiPresets, userProfile?.hajiActive, patchProfile]);
 
   const value = useMemo(() => ({
     userProfile,
@@ -426,12 +442,12 @@ export function UserProvider({ children }) {
     saveRoleMenuDefault,
     menuPrefs,
     saveMenuPrefs,
-    hajiLayout,
-    saveHajiLayout,
+    hajiPrefs,
+    saveHajiPrefs,
   }), [userProfile, loadingProfile, profileError, accessProblem, user, homeRoute, role, permissions,
     customRolePerms, can, canAny, canDeleteAny, isAdmin, assignedBranchId, menuLayout, ownMenuLayout,
     roleMenuLayout, roleMenuDefaults, saveMenuLayout, saveRoleMenuDefault, menuPrefs, saveMenuPrefs,
-    hajiLayout, saveHajiLayout]);
+    hajiPrefs, saveHajiPrefs]);
 
   return (
     <UserContext.Provider value={value}>

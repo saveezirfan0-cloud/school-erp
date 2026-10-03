@@ -20,7 +20,7 @@ import { DataWarnings } from "../components/ReportControls";
 import { BalanceSheetTab, BooksCheckTab } from "./ReportsBooks";
 import { computeBudget } from "../utils/budgetData";
 import { buildStatements, printStatements } from "../utils/studentStatement";
-import HajiSahabReport from "../components/reports/HajiSahabReport";
+import HajiSahabReport from "../components/hajiSahab/HajiSahabReport";
 import ReportFilters, { Field, Select, controlStyle } from "../components/Reports/ReportFilters";
 import BudgetTab from "../components/Reports/BudgetTab";
 import ClassDrilldown from "../components/Reports/ClassDrilldown";

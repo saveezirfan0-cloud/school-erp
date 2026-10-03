@@ -59,6 +59,10 @@ migrations; see the notes in the migrations README.
 Never paste an old copy of `schema.sql` over a live database: the old version re-created an
 allow-all policy. The current one cannot. `supabase/legacy/` holds old one-off scripts that must not be run.
 
+Optional (Reports -> Haji Sahab Report): run `supabase/report_docs.sql` to enable **shared report
+presets** and **Close month** snapshots. The report works without it (personal presets are saved on the
+user profile). Like `budgets.sql`, it relies on `has_perm` / `branch_visible`, so run it after `security.sql`.
+
 ### Then
 
 - Disable signups: Authentication → Sign In/Providers → Email → off
