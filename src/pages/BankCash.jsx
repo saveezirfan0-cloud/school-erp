@@ -1,33 +1,43 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { db } from "../firebase";
 import { collection, onSnapshot } from "../firebase";
 import { useNavigate } from "react-router-dom";
 import { Landmark, TrendingUp, TrendingDown, ArrowRight } from "lucide-react";
+import { DataWarnings } from "../components/ReportControls";
+import { attributePayments, accountTotals, isCapped, isLive } from "../utils/reporting";
 
 export default function BankCash() {
   const [accounts, setAccounts] = useState([]);
   const [payments, setPayments] = useState([]);
+  const [errors, setErrors] = useState({});
+  const [capped, setCapped] = useState(false);
   const navigate = useNavigate();
 
   useEffect(() => {
+    const fail = (name) => (err) => {
+      console.error(`BankCash ${name} error:`, err);
+      setErrors((e) => ({ ...e, [name]: err?.message || "Could not load" }));
+    };
     const u1 = onSnapshot(collection(db, "accounts"), snap =>
-      setAccounts(snap.docs.map(d => ({ id: d.id, ...d.data() })).filter(a => a.subType === "Bank & Cash" || a.type === "Assets"))
+      setAccounts(snap.docs.map(d => ({ id: d.id, ...d.data() })).filter(a => isLive(a) && (a.subType === "Bank & Cash" || a.type === "Assets"))),
+      fail("accounts")
     );
-    const u2 = onSnapshot(collection(db, "payments"), snap =>
-      setPayments(snap.docs.map(d => ({ id: d.id, ...d.data() })))
-    );
+    const u2 = onSnapshot(collection(db, "payments"), snap => {
+      setPayments(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+      setCapped(isCapped(snap.size));
+    }, fail("payments"));
     return () => { u1(); u2(); };
   }, []);
+  // Payments are matched to accounts by account id, falling back to the
+  // name only for older rows, so renaming an account keeps its history
+  // and two accounts with the same name cannot double count.
+  const { rowsByAccount, unmatched, duplicateNames } = useMemo(() => {
+    const r = attributePayments(accounts, payments);
+    return { rowsByAccount: r.byAccount, unmatched: r.unmatched, duplicateNames: r.duplicateNames };
+  }, [accounts, payments]);
 
-  const getAccountBalance = (accountName) => {
-    const opening = accounts.find(a => a.name === accountName)?.balance || 0;
-    const txns = payments.filter(p => p.account === accountName);
-    const inflow = txns.filter(p => p.type === "cash_in").reduce((s, p) => s + Number(p.amount), 0);
-    const outflow = txns.filter(p => p.type === "cash_out").reduce((s, p) => s + Number(p.amount), 0);
-    return Number(opening) + inflow - outflow;
-  };
-
-  const totalBalance = accounts.reduce((s, a) => s + getAccountBalance(a.name), 0);
+  const totalsFor = (acc) => accountTotals(acc, rowsByAccount.get(acc.id));
+  const totalBalance = accounts.reduce((s, a) => s + totalsFor(a).balance, 0);
 
   return (
     <div>
@@ -38,6 +48,14 @@ export default function BankCash() {
         </p>
       </div>
 
+      <DataWarnings capped={capped ? ["payments"] : []} errors={errors} />
+      {(unmatched.length > 0 || duplicateNames.length > 0) && (
+        <div role="alert" style={{ padding: "10px 14px", marginBottom: 12, borderRadius: 10, background: "#fffbeb", border: "1px solid #fcd34d", color: "#92400e", fontSize: 13 }}>
+          {unmatched.length > 0 && <div>{unmatched.length} payment{unmatched.length === 1 ? "" : "s"} refer to an account that no longer exists (renamed or deleted) and are not in any balance below.</div>}
+          {duplicateNames.length > 0 && <div>More than one account is named {duplicateNames.join(", ")}. Payments recorded by name are counted once, against the first of them.</div>}
+        </div>
+      )}
+
       {accounts.length === 0 && (
         <div style={{ background: "white", borderRadius: 12, padding: 48, textAlign: "center", border: "1px solid var(--border)" }}>
           <Landmark size={40} color="var(--text-muted)" style={{ margin: "0 auto 16px" }} />
@@ -46,12 +64,9 @@ export default function BankCash() {
         </div>
       )}
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 16 }}>
         {accounts.map(acc => {
-          const balance = getAccountBalance(acc.name);
-          const txns = payments.filter(p => p.account === acc.name);
-          const inflow = txns.filter(p => p.type === "cash_in").reduce((s, p) => s + Number(p.amount), 0);
-          const outflow = txns.filter(p => p.type === "cash_out").reduce((s, p) => s + Number(p.amount), 0);
+          const { balance, inflow, outflow, count } = totalsFor(acc);
           return (
             <div key={acc.id} style={{ background: "white", borderRadius: 12, padding: 24, border: "1px solid var(--border)", cursor: "pointer", transition: "box-shadow 0.15s" }}
               onClick={() => navigate(`/bank-cash/${acc.id}`)}>
@@ -75,7 +90,7 @@ export default function BankCash() {
                   <TrendingDown size={13} color="#ef4444" />
                   <span style={{ color: "#ef4444", fontWeight: 600 }}>Rs. {outflow.toLocaleString()}</span>
                 </div>
-                <div style={{ fontSize: 12, color: "var(--text-muted)" }}>{txns.length} transactions</div>
+                <div style={{ fontSize: 12, color: "var(--text-muted)" }}>{count} transactions</div>
               </div>
             </div>
           );

@@ -1,6 +1,9 @@
 import React, { useEffect, useState } from "react";
 import { db } from "../firebase";
-import { collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot, serverTimestamp } from "../firebase";
+import { collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot, serverTimestamp, supabase } from "../firebase";
+import { logActivity } from "../utils/auditLog";
+import { DataWarnings } from "../components/ReportControls";
+import { isCapped, isLive } from "../utils/reporting";
 import toast from "react-hot-toast";
 import { Plus, Trash2, X, Edit2 } from "lucide-react";
 
@@ -22,10 +25,14 @@ export default function ChartOfAccounts() {
   const [submitting, setSubmitting] = useState(false);
   const [filterType, setFilterType] = useState("All");
 
+  const [capped, setCapped] = useState(false);
+  const [errors, setErrors] = useState({});
+
   useEffect(() => {
-    const unsub = onSnapshot(collection(db, "accounts"), snap =>
-      setAccounts(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => a.code?.localeCompare(b.code)))
-    );
+    const unsub = onSnapshot(collection(db, "accounts"), snap => {
+      setAccounts(snap.docs.map(d => ({ id: d.id, ...d.data() })).filter(isLive).sort((a, b) => String(a.code || "").localeCompare(String(b.code || ""))));
+      setCapped(isCapped(snap.size));
+    }, (err) => { console.error("Accounts load error:", err); setErrors({ accounts: err?.message || "Could not load" }); });
     return unsub;
   }, []);
 
@@ -37,11 +44,28 @@ export default function ChartOfAccounts() {
     if (submitting) return;
     setSubmitting(true);
     try {
+      const name = String(form.name || "").trim();
+      const clash = accounts.find(a => a.id !== editing && String(a.name || "").trim().toLowerCase() === name.toLowerCase());
+      if (clash) {
+        toast.error(`An account named "${clash.name}" already exists. Names must be unique because older records are matched by name.`);
+        return;
+      }
       if (editing) {
-        await updateDoc(doc(db, "accounts", editing), { ...form, updatedAt: serverTimestamp() });
+        const before = accounts.find(a => a.id === editing);
+        const openingChanged = before && Number(before.balance || 0) !== Number(form.balance || 0);
+        if (openingChanged && !window.confirm(`Change the opening balance of "${before.name}" from Rs. ${Number(before.balance || 0).toLocaleString()} to Rs. ${Number(form.balance || 0).toLocaleString()}? This changes the account's current balance and is recorded in the Activity Log.`)) {
+          return;
+        }
+        await updateDoc(doc(db, "accounts", editing), { ...form, name, updatedAt: serverTimestamp() });
+        const changes = before ? ["code", "name", "type", "subType", "balance"]
+          .filter(k => String(before[k] ?? "") !== String(k === "name" ? name : form[k] ?? ""))
+          .map(k => `${k}: ${before[k] ?? ""} -> ${k === "name" ? name : form[k] ?? ""}`) : [];
+        logActivity("updated", "Chart of Accounts", `${before?.name || editing}${changes.length ? " · " + changes.join("; ") : ""}`);
+        if (before && String(before.name || "").trim() !== name) await carryRename(String(before.name || "").trim(), name);
         toast.success("Account updated");
       } else {
-        await addDoc(collection(db, "accounts"), { ...form, createdAt: serverTimestamp() });
+        await addDoc(collection(db, "accounts"), { ...form, name, createdAt: serverTimestamp() });
+        logActivity("created", "Chart of Accounts", `${form.code} ${name} (${form.type}) · opening Rs. ${Number(form.balance || 0).toLocaleString()}`);
         toast.success("Account added");
       }
       setShowModal(false);
@@ -63,9 +87,42 @@ export default function ChartOfAccounts() {
     setShowModal(true);
   };
 
+  // Records that point at an account by NAME (payments, paid-from
+  // accounts, journals) are renamed with it, so a rename never cuts an
+  // account off from its history. Failures are reported, not hidden.
+  const carryRename = async (oldName, newName) => {
+    const targets = [
+      ["payments", "account"], ["invoices", "paid_account"], ["expenses", "paid_account"],
+      ["payslips", "paid_account"], ["journals", "debit_account"], ["journals", "credit_account"],
+    ];
+    const results = await Promise.allSettled(targets.map(async ([table, col]) => {
+      const { error } = await supabase.from(table).update({ [col]: newName }).eq(col, oldName);
+      if (error) throw error;
+    }));
+    const failed = results.map((r, i) => (r.status === "rejected" ? `${targets[i][0]}.${targets[i][1]}` : null)).filter(Boolean);
+    if (failed.length) {
+      toast.error(`Renamed, but these records still use the old name: ${failed.join(", ")}. Older entries may not show under the new name.`, { duration: 8000 });
+      logActivity("rename incomplete", "Chart of Accounts", `${oldName} -> ${newName}; not updated: ${failed.join(", ")}`);
+    }
+  };
+
   const handleDelete = async (id) => {
+    const acc = accounts.find(a => a.id === id);
+    // An account with transactions cannot be deleted: its history would
+    // disappear from every balance.
+    let used = null;
+    try {
+      const { count, error } = await supabase.from("payments").select("id", { count: "exact", head: true })
+        .eq("account", acc?.name || "").is("deleted_at", null);
+      if (!error) used = count;
+    } catch { /* fall through to the plain confirm */ }
+    if (used > 0) return toast.error(`"${acc?.name}" has ${used} transaction${used === 1 ? "" : "s"} and cannot be deleted. Transfer or reverse them first.`);
     if (!window.confirm("Delete this account? You can restore it from Trash.")) return;
-    try { await deleteDoc(doc(db, "accounts", id)); toast.success("Account deleted"); }
+    try {
+      await deleteDoc(doc(db, "accounts", id));
+      logActivity("deleted", "Chart of Accounts", `${acc?.code || ""} ${acc?.name || id} · opening Rs. ${Number(acc?.balance || 0).toLocaleString()}`);
+      toast.success("Account deleted");
+    }
     catch (err) { toast.error(err?.message || "Error deleting"); }
   };
 
@@ -86,6 +143,8 @@ export default function ChartOfAccounts() {
           <Plus size={16} /> Add Account
         </button>
       </div>
+
+      <DataWarnings capped={capped ? ["accounts"] : []} errors={errors} />
 
       {/* Filter tabs */}
       <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" }}>
