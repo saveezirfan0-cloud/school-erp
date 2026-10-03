@@ -1,10 +1,14 @@
 import React, { useState, useEffect } from "react";
 import { db } from "../firebase";
-import { collection, addDoc, getDocs, serverTimestamp } from "../firebase";
+import { collection, getDocs } from "../firebase";
 import { uploadReceipt } from "../lib/storage";
 import { sendWhatsAppMessage } from "../utils/whatsapp";
+import { createInvoiceAndCollect, pickDefaultAccountId, rememberAccountChoice } from "../utils/accounting";
+import { parsePositiveAmount, todayLocal, isIsoDate } from "../utils/money";
+import { useAccounts } from "../utils/useAccounts";
+import { useSubmitLock } from "../utils/useSubmitLock";
 import toast from "react-hot-toast";
-import { Search, CheckCircle, ChevronLeft, ChevronRight } from "lucide-react";
+import { Search, CheckCircle, ChevronLeft, ChevronRight, AlertTriangle } from "lucide-react";
 
 const MONTHS = [
   "January", "February", "March", "April", "May", "June",
@@ -18,16 +22,24 @@ export default function QuickPayment() {
   const [amount, setAmount] = useState("");
   const [month, setMonth] = useState(MONTHS[new Date().getMonth()]);
   const [year, setYear] = useState(new Date().getFullYear());
-  const [date, setDate] = useState(new Date().toISOString().split("T")[0]);
+  const [date, setDate] = useState(todayLocal());
   const [receipt, setReceipt] = useState(null);
-  const [loading, setLoading] = useState(false);
   const [done, setDone] = useState(false);
+  const [outcome, setOutcome] = useState(null); // { posted, notified, accountName }
+  const [accountId, setAccountId] = useState("");
+  const { accounts, postable, problem, status: accountsStatus } = useAccounts();
+  const { busy: loading, run } = useSubmitLock();
 
   useEffect(() => {
-    getDocs(collection(db, "students")).then(snap =>
-      setStudents(snap.docs.map(d => ({ id: d.id, ...d.data() })))
-    );
+    getDocs(collection(db, "students"))
+      .then(snap => setStudents(snap.docs.map(d => ({ id: d.id, ...d.data() }))))
+      .catch(() => toast.error("Could not load students"));
   }, []);
+
+  // Pre-select only a remembered (or the only) account, never an arbitrary one.
+  useEffect(() => {
+    if (!accountId && postable.length > 0) setAccountId(pickDefaultAccountId(postable));
+  }, [postable, accountId]);
 
   const filtered = search.length > 1
     ? students.filter(s =>
@@ -36,49 +48,69 @@ export default function QuickPayment() {
       )
     : [];
 
-  const handleSubmit = async (e) => {
+  const handleSubmit = (e) => {
     e.preventDefault();
-    if (!selected) return toast.error("Please select a student");
-    setLoading(true);
-    try {
-      let receiptUrl = null;
-      if (receipt) {
-        receiptUrl = await uploadReceipt(receipt);
+    return run(async () => {
+      if (!selected) return toast.error("Please select a student");
+      const amt = parsePositiveAmount(amount);
+      if (!amt.ok) return toast.error(amt.error);
+      if (!isIsoDate(date)) return toast.error("Enter a valid payment date");
+      if (accountsStatus === "loading") return toast.error("Accounts are still loading, try again in a moment");
+      if (postable.length > 0 && !accountId) return toast.error("Choose the account that received the money");
+      try {
+        let receiptUrl = null;
+        if (receipt) {
+          receiptUrl = await uploadReceipt(receipt);
+        }
+        const result = await createInvoiceAndCollect({
+          invoiceData: {
+            studentId: selected.id,
+            studentName: selected.name,
+            parentPhone: selected.parentPhone,
+            branchId: selected.branchId,
+            month,
+            year,
+            receiptUrl,
+            lineItems: [{ description: "Tuition Fee", amount: amt.value }],
+            amount: amt.value,
+          },
+          accounts,
+          accountId: postable.length > 0 ? accountId : "",
+          date,
+          // Roles that cannot read accounts can still take the money, but the
+          // invoice is stamped "unposted" so the gap is visible and fixable.
+          allowUnposted: postable.length === 0,
+        });
+        if (postable.length > 0) rememberAccountChoice(accountId);
+
+        // The payment is saved at this point. Notification is separate, so a
+        // WhatsApp failure can never look like a failed payment.
+        let notified = false;
+        if (selected.parentPhone) {
+          try {
+            const res = await sendWhatsAppMessage(
+              selected.parentPhone,
+              `✅ Payment of Rs. ${amt.value} received for ${selected.name} for ${month} ${year}. Date: ${date}. Thank you!`
+            );
+            notified = !!res?.ok;
+          } catch { notified = false; }
+        }
+        setOutcome({ posted: result.posted, notified, hasPhone: !!selected.parentPhone, accountName: result.accountName });
+        setAmount(String(amt.value));
+        setDone(true);
+        toast.success(result.posted ? "Payment recorded!" : "Payment saved, but NOT posted to the books");
+      } catch (err) {
+        toast.error(err?.message || "Error recording payment", { duration: 7000 });
       }
-      await addDoc(collection(db, "invoices"), {
-        studentId: selected.id,
-        studentName: selected.name,
-        parentPhone: selected.parentPhone,
-        branchId: selected.branchId,
-        amount: Number(amount),
-        month,
-        year,
-        paidDate: date,
-        status: "paid",
-        receiptUrl,
-        lineItems: [{ description: "Tuition Fee", amount }],
-        createdAt: serverTimestamp()
-      });
-      if (selected.parentPhone) {
-        await sendWhatsAppMessage(
-          selected.parentPhone,
-          `✅ Payment of Rs. ${amount} received for ${selected.name} for ${month} ${year}. Date: ${date}. Thank you!`
-        );
-      }
-      setDone(true);
-      toast.success("Payment recorded!");
-    } catch (err) {
-      toast.error("Error recording payment");
-    }
-    setLoading(false);
+    });
   };
 
   const reset = () => {
-    setDone(false); setSelected(null); setSearch("");
+    setDone(false); setSelected(null); setSearch(""); setOutcome(null);
     setAmount(""); setReceipt(null);
     setMonth(MONTHS[new Date().getMonth()]);
     setYear(new Date().getFullYear());
-    setDate(new Date().toISOString().split("T")[0]);
+    setDate(todayLocal());
   };
 
   if (done) return (
@@ -94,8 +126,15 @@ export default function QuickPayment() {
         <p style={{ color: "#64748b", fontSize: 14, marginBottom: 24 }}>
           Rs. {Number(amount).toLocaleString()} received
         </p>
-        <p style={{ color: "#10b981", fontSize: 13, marginBottom: 28 }}>
-          WhatsApp receipt sent to parent ✓
+        {outcome && !outcome.posted ? (
+          <p style={{ color: "#b45309", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 8, padding: "8px 10px", fontSize: 13, marginBottom: 16 }}>
+            Saved but NOT posted to the books (no Bank &amp; Cash account was available to your role). An accountant must post it from Fees.
+          </p>
+        ) : outcome?.accountName ? (
+          <p style={{ color: "#64748b", fontSize: 13, marginBottom: 10 }}>Posted to {outcome.accountName}</p>
+        ) : null}
+        <p style={{ color: outcome?.notified ? "#10b981" : "#94a3b8", fontSize: 13, marginBottom: 28 }}>
+          {outcome?.notified ? "WhatsApp receipt sent to parent ✓" : outcome?.hasPhone ? "WhatsApp receipt was not sent" : "No parent phone on record, no WhatsApp sent"}
         </p>
         <button onClick={reset}
           style={{ width: "100%", padding: "13px", background: "#7a2535", color: "white", border: "none", borderRadius: 10, cursor: "pointer", fontWeight: 600, fontSize: 15 }}>
@@ -210,12 +249,39 @@ export default function QuickPayment() {
             </label>
             <input
               type="number"
+              min="0.01"
+              step="0.01"
               value={amount}
               onChange={e => setAmount(e.target.value)}
               required
               placeholder="0"
               style={{ width: "100%", padding: "10px 12px", border: "1.5px solid #e2e8f0", borderRadius: 10, fontSize: 15, boxSizing: "border-box" }}
             />
+          </div>
+
+          {/* Receiving account: required whenever the role can see accounts */}
+          <div style={{ marginBottom: 16 }}>
+            <label style={{ display: "block", fontSize: 13, fontWeight: 600, marginBottom: 6, color: "#374151" }}>
+              Received into account{postable.length > 0 ? " *" : ""}
+            </label>
+            {postable.length > 0 ? (
+              <select
+                value={accountId}
+                onChange={e => setAccountId(e.target.value)}
+                required
+                style={{ width: "100%", padding: "10px 12px", border: "1.5px solid #e2e8f0", borderRadius: 10, fontSize: 15, background: "white", boxSizing: "border-box" }}
+              >
+                <option value="">Select account</option>
+                {postable.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+              </select>
+            ) : accountsStatus === "loading" ? (
+              <div style={{ fontSize: 13, color: "#64748b" }}>Loading accounts…</div>
+            ) : (
+              <div style={{ display: "flex", gap: 8, alignItems: "flex-start", fontSize: 12.5, color: "#92400e", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 10, padding: "9px 11px" }}>
+                <AlertTriangle size={15} style={{ flexShrink: 0, marginTop: 1 }} />
+                <span>{problem} The payment will be saved as <strong>unposted</strong> until an accountant posts it.</span>
+              </div>
+            )}
           </div>
 
           {/* Payment Date */}

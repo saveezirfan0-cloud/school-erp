@@ -457,6 +457,7 @@ const feeDescription = (inv) => `Fee — ${inv.studentName || "student"} (${inv.
  */
 export async function collectInvoicePayment({
   invoice, accounts, accountId, amount, date, concession = false, concessionNote = "", allowUnposted = false,
+  collectRemaining = false, // bulk "Mark Paid": collect whatever balance the ledger says is left
 }) {
   if (!invoice?.id) throw new AccountingError(ERR.NOT_FOUND, "Invoice not found");
   if (needsPosting(invoice)) {
@@ -466,10 +467,16 @@ export async function collectInvoicePayment({
   if (!isIsoDate(when)) throw new AccountingError(ERR.BAD_DATE, "Enter a valid payment date");
 
   const already = await readLedgerPaid("invoice", invoice.id);
+  let cashInput = amount === undefined || amount === null || amount === "" ? 0 : amount;
+  if (collectRemaining) {
+    const rem = toMinor(invoice.amount) - toMinor(already) - toMinor(invoice.concessionAmount || 0);
+    if (!(rem > 0)) throw new AccountingError(ERR.BAD_AMOUNT, "This invoice has no balance left to collect");
+    cashInput = fromMinor(rem);
+  }
   const calc = computeFeePayment({
     total: invoice.amount,
     alreadyPaid: already,
-    amount: amount === undefined || amount === null || amount === "" ? 0 : amount,
+    amount: cashInput,
     existingConcession: invoice.concessionAmount || 0,
     concession,
   });

@@ -301,6 +301,14 @@ describe("collectInvoicePayment: the one path that marks an invoice paid (ACC-01
     await expect(collectInvoicePayment({ invoice: inv, accounts: ACCOUNTS, accountId: "a-cash", amount: 5000 })).rejects.toMatchObject({ code: ERR.LEDGER_LOOKUP });
     expect(mockDb.payments).toHaveLength(0);
   });
+  test("collectRemaining takes whatever balance the ledger says is left", async () => {
+    const inv = seedInvoice();
+    await collectInvoicePayment({ invoice: inv, accounts: ACCOUNTS, accountId: "a-cash", amount: 1250.5 });
+    const r = await collectInvoicePayment({ invoice: inv, accounts: ACCOUNTS, accountId: "a-cash", collectRemaining: true });
+    expect(r).toMatchObject({ status: "paid", cash: 3749.5, paidAmount: 5000 });
+    await expect(collectInvoicePayment({ invoice: inv, accounts: ACCOUNTS, accountId: "a-cash", collectRemaining: true })).rejects.toMatchObject({ code: ERR.BAD_AMOUNT });
+    expect(nets()).toBe(5000);
+  });
   test("invalid amounts and dates never reach the ledger", async () => {
     const inv = seedInvoice();
     for (const bad of [-1, "abc", NaN]) {
