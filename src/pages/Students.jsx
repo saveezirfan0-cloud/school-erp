@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { db, addDoc, updateDoc, deleteDoc, doc, collection, serverTimestamp, updateDocs, deleteDocs } from "../firebase";
+import { db, supabase, addDoc, updateDoc, deleteDoc, doc, collection, serverTimestamp, updateDocs, deleteDocs } from "../firebase";
 import { useBranch } from "../context/BranchContext";
 import { useCollection } from "../hooks/useCollection";
 import { useBulkSelect } from "../hooks/useBulkSelect";
@@ -20,6 +20,15 @@ import { useUser } from "../context/UserContext";
 import RollCallModal from "../components/Profile/RollCallModal";
 
 const emptyStudent = { name: "", studentId: "", grade: "", parentName: "", parentPhone: "", email: "", branchId: "", monthlyFee: "", address: "", dob: "", recurringFee: false };
+
+// Invoices copy the student's branch when they are created. When a student
+// moves branch, carry their invoices along so branch-scoped fees/dashboards
+// stay correct. Best effort: the dashboard also resolves branch via the student.
+async function syncInvoiceBranch(studentIds, branchId) {
+  if (!studentIds.length) return;
+  const { error } = await supabase.from("invoices").update({ branch_id: branchId || "" }).in("student_id", studentIds);
+  if (error) console.error("Could not update invoice branch:", error);
+}
 
 function useIsMobile() {
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
@@ -80,7 +89,9 @@ export default function Students() {
     e.preventDefault();
     try {
       if (editing) {
+        const before = rows.find((r) => r.id === editing);
         await updateDoc(doc(db, "students", editing), { ...form, updatedAt: serverTimestamp() });
+        if (before && (before.branchId || "") !== (form.branchId || "")) await syncInvoiceBranch([editing], form.branchId);
         toast.success("Student updated");
         logActivity("updated", "Students", `${form.name || "Unnamed"}${form.studentId ? ` (${form.studentId})` : ""}`);
       } else {
@@ -123,6 +134,7 @@ export default function Students() {
       const n = bulk.count;
       if (changes.branchId === "main") changes.branchId = "";
       await updateDocs("students", [...bulk.selected], { ...changes, updatedAt: serverTimestamp() });
+      if ("branchId" in changes) await syncInvoiceBranch([...bulk.selected], changes.branchId);
       toast.success(`${n} student${n === 1 ? "" : "s"} updated`);
       logActivity("updated", "Students", `${n} students (bulk): ${Object.keys(changes).join(", ")}`);
       setShowBulkEdit(false);
