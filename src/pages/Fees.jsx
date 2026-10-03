@@ -16,6 +16,7 @@ import { sendWhatsAppMessage } from "../utils/whatsapp";
 import { recordPayment, bankCashAccounts, reverseSourcePayments, getSourcePaidTotal } from "../utils/accounting";
 import { exportToCSV, exportToPDF } from "../utils/exportUtils";
 import { sumInvoices } from "../utils/invoiceTotals";
+import InvoiceModal from "../components/UI/InvoiceModal";
 import toast from "react-hot-toast";
 import { Plus, MessageCircle, CheckCircle, X, Trash2, Download, FileText, RefreshCw, Users, Pencil, Search } from "lucide-react";
 
@@ -1002,47 +1003,11 @@ export default function Fees() {
       )}
 
       {/* Invoice Detail Modal */}
-      {selectedInvoice && (
-        <div style={modalStyle}>
-          <div style={{ ...sheetStyle, maxWidth: isMobile ? "100%" : 480 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 20 }}>
-              <h3 style={{ fontSize: 17, fontWeight: 700 }}>Invoice Detail</h3>
-              <button onClick={() => setSelectedInvoice(null)} style={{ border: "none", background: "none", cursor: "pointer" }}><X size={20} /></button>
-            </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
-              {[
-                { label: "Student", value: selectedInvoice.studentName },
-                { label: "Period", value: `${selectedInvoice.month} ${selectedInvoice.year}` },
-                { label: "Due Date", value: selectedInvoice.dueDate || "—" },
-                { label: "Status", value: selectedInvoice.status },
-              ].map(({ label, value }) => (
-                <div key={label} style={{ padding: "10px 14px", background: "#f8fafc", borderRadius: 8 }}>
-                  <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 3 }}>{label}</div>
-                  <div style={{ fontSize: 14, fontWeight: 600 }}>{value}</div>
-                </div>
-              ))}
-            </div>
-            {selectedInvoice.lineItems && (
-              <div style={{ border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden", marginBottom: 16 }}>
-                {selectedInvoice.lineItems.map((li, i) => (
-                  <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "11px 14px", borderBottom: "1px solid var(--border)", fontSize: 14 }}>
-                    <span>{li.customDescription || li.description}</span>
-                    <span style={{ fontWeight: 600 }}>Rs. {Number(li.amount).toLocaleString()}</span>
-                  </div>
-                ))}
-                <div style={{ display: "flex", justifyContent: "space-between", padding: "12px 14px", background: "#f8fafc", fontWeight: 700, fontSize: 15 }}>
-                  <span>Total</span>
-                  <span style={{ color: "var(--primary)" }}>Rs. {Number(selectedInvoice.amount).toLocaleString()}</span>
-                </div>
-              </div>
-            )}
-            <button onClick={() => setSelectedInvoice(null)}
-              style={{ width: "100%", padding: "11px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600, fontSize: 14 }}>
-              Close
-            </button>
-          </div>
-        </div>
-      )}
+      <InvoiceModal
+        invoice={selectedInvoice}
+        student={students.find(st => st.id === selectedInvoice?.studentId)}
+        onClose={() => setSelectedInvoice(null)}
+      />
     </div>
   );
 }
