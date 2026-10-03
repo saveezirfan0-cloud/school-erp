@@ -15,6 +15,26 @@
 import { db, addDoc, collection, serverTimestamp } from "../firebase";
 import { supabase } from "../lib/supabaseClient";
 
+// Look up a chart-of-accounts id by account name, so callers that only know
+// the name (fee collection, payslips...) still link payments by id. Cached
+// briefly because bulk flows record many payments against one account.
+const idCache = new Map(); // name -> { id, at }
+async function findAccountId(name) {
+  const hit = idCache.get(name);
+  if (hit && Date.now() - hit.at < 60000) return hit.id;
+  const { data } = await supabase
+    .from("accounts").select("id").eq("name", name).is("deleted_at", null).limit(1);
+  const id = data?.[0]?.id || "";
+  idCache.set(name, { id, at: Date.now() });
+  return id;
+}
+
+// Does this payment belong to this chart-of-accounts account? Matches by id
+// when the payment has one (survives renames); older payments fall back to name.
+export function paymentInAccount(payment, account) {
+  return payment.accountId ? payment.accountId === account.id : payment.account === account.name;
+}
+
 /**
  * Record a money movement against a bank/cash account.
  *
@@ -37,6 +57,7 @@ export async function recordPayment({
 }) {
   if (!account) throw new Error("No account selected");
   if (!amount || Number(amount) <= 0) throw new Error("Invalid amount");
+  if (!accountId) accountId = await findAccountId(account);
 
   return addDoc(collection(db, "payments"), {
     type,
