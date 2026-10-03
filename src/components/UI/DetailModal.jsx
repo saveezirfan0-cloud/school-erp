@@ -5,7 +5,8 @@ import { exportToCSV } from "../../utils/exportUtils";
 // Generic popup used by clickable dashboard metrics.
 //   columns: [{ key, label, align?, render?(row) }]
 //   footer:  optional node (e.g. totals)
-export default function DetailModal({ title, subtitle, summary, columns, rows, footer, onClose, emptyText = "Nothing to show for this period" }) {
+//   canExport: false hides the CSV button (users without the canExport permission)
+export default function DetailModal({ title, subtitle, summary, columns, rows, footer, onClose, canExport = true, emptyText = "Nothing to show for this period" }) {
   useEffect(() => {
     const onKey = (e) => { if (e.key === "Escape") onClose(); };
     window.addEventListener("keydown", onKey);
@@ -35,10 +36,12 @@ export default function DetailModal({ title, subtitle, summary, columns, rows, f
             {subtitle && <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>{subtitle}</p>}
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <button onClick={exportCsv} disabled={rows.length === 0} title="Download as CSV"
-              style={{ display: "flex", alignItems: "center", gap: 5, padding: "6px 10px", border: "1px solid var(--border)", borderRadius: 8, background: "white", cursor: rows.length ? "pointer" : "not-allowed", fontSize: 12, opacity: rows.length ? 1 : 0.5 }}>
-              <Download size={13} /> CSV
-            </button>
+            {canExport && (
+              <button onClick={exportCsv} disabled={rows.length === 0} title="Download as CSV"
+                style={{ display: "flex", alignItems: "center", gap: 5, padding: "6px 10px", border: "1px solid var(--border)", borderRadius: 8, background: "white", cursor: rows.length ? "pointer" : "not-allowed", fontSize: 12, opacity: rows.length ? 1 : 0.5 }}>
+                <Download size={13} /> CSV
+              </button>
+            )}
             <button onClick={onClose} aria-label="Close" style={{ border: "none", background: "none", cursor: "pointer", padding: 4 }}><X size={20} /></button>
           </div>
         </div>

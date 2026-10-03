@@ -1,17 +1,21 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { db } from "../firebase";
-import { collection, getDocs } from "../firebase";
 import { useBranch } from "../context/BranchContext";
+import { useUser } from "../context/UserContext";
+import { useReportData } from "../hooks/useReportData";
+import { DataWarnings } from "../components/ReportControls";
 import { effectiveBranchId, matchesBranch } from "../utils/branchFilter";
 import { toMillis } from "../utils/dates";
 import { studentName } from "../utils/studentLabel";
 import { useNavigate, Link } from "react-router-dom";
-import { invoiceCollected, invoiceOutstanding } from "../utils/invoiceTotals";
-import { buildBuckets, bucketKey, defaultPeriod, inRange, resolveRange, describePeriod, toYMD, MONTH_NAMES } from "../utils/dateRange";
-import { isLedgerIncome, isFeeHead } from "../utils/ledgerIncome";
+import { buildBuckets, bucketKey, defaultPeriod, resolveRange, describePeriod } from "../utils/dateRange";
+import {
+  profitAndLoss, invoiceFacts, invoiceDate, invoicePaidDate, expenseDate, payslipPaidDate, payslipAmount,
+  inRange, isLive, num, round2, todayLocal, toYmd,
+} from "../utils/reporting";
+import { isLedgerIncome } from "../utils/ledgerIncome";
 import DateRangeFilter from "../components/UI/DateRangeFilter";
 import DetailModal from "../components/UI/DetailModal";
-import { Users, Receipt, TrendingDown, TrendingUp, UserCheck, Building2, FileText, Wallet } from "lucide-react";
+import { Users, Receipt, TrendingDown, TrendingUp, UserCheck, Building2, FileText, AlertTriangle, Clock, Wallet } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line } from "recharts";
 import AcademicsWidget from "../components/AcademicsWidget";
 
@@ -25,136 +29,110 @@ const loadPeriod = () => {
 };
 
 const rs = (n) => `Rs. ${Number(n || 0).toLocaleString()}`;
-const sum = (rows, key) => rows.reduce((s, r) => s + Number(r[key] || 0), 0);
+
+const COLLECTIONS = ["students", "employees", "invoices", "expenses", "payslips", "payments"];
 
 export default function Dashboard() {
   const { activeBranch, setActiveBranch, branches } = useBranch();
+  const { can } = useUser();
   const navigate = useNavigate();
-  const [raw, setRaw] = useState({ students: [], employees: [], invoices: [], expenses: [], payslips: [], payments: [] });
-  const [loading, setLoading] = useState(true);
   const [period, setPeriod] = useState(loadPeriod);
   const [detail, setDetail] = useState(null); // key of the open popup
+  const { data, loading, capped, errors } = useReportData(COLLECTIONS);
 
   useEffect(() => {
     try { localStorage.setItem(PERIOD_KEY, JSON.stringify(period)); } catch (e) { /* ignore */ }
   }, [period]);
 
-  useEffect(() => {
-    const fetchAll = async () => {
-      setLoading(true);
-      try {
-        const [studentsSnap, employeesSnap, invSnap, expSnap, payslipsSnap, paymentsSnap] = await Promise.all([
-          getDocs(collection(db, "students")),
-          getDocs(collection(db, "employees")),
-          getDocs(collection(db, "invoices")),
-          getDocs(collection(db, "expenses")),
-          getDocs(collection(db, "payslips")),
-          getDocs(collection(db, "payments")),
-        ]);
-        const read = (snap) => snap.docs.map(d => ({ id: d.id, ...d.data() }));
-        setRaw({ students: read(studentsSnap), employees: read(employeesSnap), invoices: read(invSnap), expenses: read(expSnap), payslips: read(payslipsSnap), payments: read(paymentsSnap) });
-      } catch (err) { console.error("Dashboard error:", err); }
-      setLoading(false);
-    };
-    fetchAll();
-  }, []);
-
   const range = useMemo(() => resolveRange(period), [period]);
+  const today = todayLocal();
   const branchName = (id) => (id ? branches.find(b => b.id === id)?.name || "Unknown branch" : "Main Office");
 
-  // Everything below is derived from the raw rows + the period, for ALL
-  // branches. The active branch is applied afterwards ("scope"), so the
-  // per-branch breakdown can reuse the same numbers.
-  const all = useMemo(() => {
-    const studentsById = new Map(raw.students.map(s => [s.id, s]));
-
-    // Money rules live in utils/invoiceTotals so the Dashboard, Reports and
-    // Fees pages always agree.
-    const invoices = raw.invoices.map(i => ({
-      ...i,
-      _branch: effectiveBranchId(i, studentsById),
-      _received: invoiceCollected(i),
-      _outstanding: invoiceOutstanding(i),
-      _paidOn: toYMD(i.paidDate || i.createdAt),
-      _raisedOn: toYMD(i.createdAt),
-    }));
+  // Rows are normalised once: trashed rows dropped, every row carries its
+  // branch ("" = Main Office). An invoice takes its student's CURRENT branch
+  // (effectiveBranchId) because the copy on the invoice goes stale when a
+  // student moves; that branch is also written to branchId so the shared
+  // matchesBranch() in utils/reporting.js sees it.
+  const base = useMemo(() => {
+    const live = (rows) => (rows || []).filter(isLive);
     const branchKey = (r) => (!r.branchId || r.branchId === "main" ? "" : r.branchId);
-    // Total expenses = operating expenses + payroll (matches the P&L report).
-    const expenses = [
-      ...raw.expenses.map(e => ({ ...e, _branch: branchKey(e), _on: toYMD(e.date || e.createdAt) })),
-      ...raw.payslips.map(p => ({
-        id: `payslip-${p.id}`, _branch: branchKey(p), _on: toYMD(p.paidDate || p.date || p.createdAt),
-        description: `Salary — ${p.employeeName || "employee"} (${p.month || ""} ${p.year || ""})`.trim(),
-        category: "Salaries", amount: Number(p.netPay || 0),
-      })),
-    ];
-    // Income recorded straight in the payments ledger (imported workbook months,
-    // welfare, donations, loans...). Student fee heads count as fees collected;
-    // everything else is other income. Invoice receipts are skipped here because
-    // the invoice itself is already counted above.
-    const ledger = raw.payments.filter(isLedgerIncome).map(p => ({
-      ...p, _branch: branchKey(p), _on: toYMD(p.date || p.createdAt), _amount: Number(p.amount || 0),
-    }));
-    const ledgerFees = ledger.filter(p => isFeeHead(p.category)).map(p => {
-      const [y, m] = (p._on || "").split("-");
-      return {
-        id: `ledger-${p.id}`, _branch: p._branch, _received: p._amount, _paidOn: p._on,
-        studentName: p.description || p.category || "Fee income", month: MONTH_NAMES[Number(m) - 1] || "", year: y || "",
-      };
-    });
-    const otherIncome = ledger.filter(p => !isFeeHead(p.category));
-    const students = raw.students.map(s => ({ ...s, _branch: !s.branchId || s.branchId === "main" ? "" : s.branchId }));
-    const employees = raw.employees.map(e => ({ ...e, _branch: !e.branchId || e.branchId === "main" ? "" : e.branchId }));
-
+    const students = live(data.students);
+    const studentsById = new Map(students.map(s => [s.id, s]));
     return {
-      students,
-      employees,
-      collected: [...invoices.filter(i => i._received > 0), ...ledgerFees].filter(i => i._received > 0 && inRange(i._paidOn, range)),
-      otherIncome: otherIncome.filter(p => p._amount > 0 && inRange(p._on, range)),
-      pending: invoices.filter(i => i._outstanding > 0 && inRange(i._raisedOn, range)),
-      invoicesInRange: invoices.filter(i => inRange(i._raisedOn, range)),
-      expenses: expenses.filter(e => inRange(e._on, range)),
+      students: students.map(s => ({ ...s, _branch: branchKey(s) })),
+      employees: live(data.employees).map(e => ({ ...e, _branch: branchKey(e) })),
+      invoices: live(data.invoices).map(i => { const b = effectiveBranchId(i, studentsById); return { ...i, branchId: b, _branch: b }; }),
+      expenses: live(data.expenses).map(e => ({ ...e, _branch: branchKey(e) })),
+      payslips: live(data.payslips).map(p => ({ ...p, _branch: branchKey(p) })),
+      // Income recorded straight in the payments ledger (imported workbook
+      // months, welfare, donations, loans...). isLedgerIncome() skips every
+      // receipt tied to an invoice / expense / payslip, so nothing counted
+      // through an invoice's paidAmount (reporting.js) is counted again here.
+      ledgerIncome: live(data.payments).filter(isLedgerIncome).map(p => ({ ...p, _branch: branchKey(p), _on: toYmd(p.date || p.createdAt), _amount: num(p.amount) })),
     };
-  }, [raw, range]);
+  }, [data]);
 
-  const inScope = (r) => matchesBranch({ branchId: r._branch }, activeBranch);
-  const scope = useMemo(() => ({
-    students: all.students.filter(inScope),
-    employees: all.employees.filter(inScope),
-    collected: all.collected.filter(inScope),
-    otherIncome: all.otherIncome.filter(inScope),
-    pending: all.pending.filter(inScope),
-    invoices: all.invoicesInRange.filter(inScope),
-    expenses: all.expenses.filter(inScope),
-  }), [all, activeBranch]);
+  // EVERY invoice / expense figure on this page comes from utils/reporting.js
+  // (profitAndLoss), the same definitions Reports, Bank & Cash and the
+  // Student Ledger use: collected = cash recorded, pending = what is still
+  // owed (amount - paid - concession), "marked paid, no money" is separate.
+  // Fees Collected is exactly that invoice-based figure. Income that sits in
+  // the payments ledger WITHOUT an invoice (imported fee months, welfare,
+  // donations, loans) is shown separately as Other Income and added to Net.
+  // Where both exist for the same money, the invoice (reporting.js) wins.
+  const money = useMemo(() => ({ invoices: base.invoices, expenses: base.expenses, payslips: base.payslips }), [base]);
+  const pl = useMemo(() => profitAndLoss(money, { branch: activeBranch, range, today }), [money, activeBranch, range, today]);
+  const collected = pl.collected;
+  const pendingAmt = pl.outstanding;
+  const overdueAmt = pl.overdue;
+  const totalExp = pl.expenses + pl.salaries;
+  const rate = pl.collectionRate;
 
-  const collected = sum(scope.collected, "_received");
-  const otherInc = sum(scope.otherIncome, "_amount");
-  const pendingAmt = sum(scope.pending, "_outstanding");
-  const totalExp = sum(scope.expenses, "amount");
-  const netSurplus = collected + otherInc - totalExp;
-  const rate = collected + pendingAmt > 0 ? Math.round((collected / (collected + pendingAmt)) * 100) : 0;
+  // The entries behind each figure, for the popups. They use the same
+  // per-record helpers as reporting.js, so each list adds up to its tile.
+  const scope = useMemo(() => {
+    const inScope = (r) => matchesBranch({ branchId: r._branch }, activeBranch);
+    const invoices = base.invoices.filter(inScope).map(i => ({ ...i, _f: invoiceFacts(i), _paidOn: invoicePaidDate(i), _billedOn: invoiceDate(i) }));
+    const outstanding = invoices.filter(i => i._f.outstanding > 0);
+    const expenseRows = [
+      ...base.expenses.filter(inScope).map(e => ({ ...e, _on: expenseDate(e), _amount: num(e.amount) })),
+      ...base.payslips.filter(p => inScope(p) && String(p.status || "").toLowerCase() === "paid").map(p => ({
+        id: `payslip-${p.id}`, _branch: p._branch, _on: payslipPaidDate(p), _amount: payslipAmount(p),
+        description: `Salary — ${p.employeeName || "employee"} (${p.month || ""} ${p.year || ""})`.trim(), category: "Salaries",
+      })),
+    ].filter(e => inRange(e._on, range));
+    return {
+      students: base.students.filter(inScope),
+      employees: base.employees.filter(inScope),
+      invoices,
+      collected: invoices.filter(i => i._f.paid > 0 && inRange(i._paidOn, range)),
+      outstanding,
+      overdue: outstanding.filter(i => { const due = toYmd(i.dueDate); return due && due < today; }),
+      cohort: invoices.filter(i => inRange(i._billedOn, range)),
+      expenses: expenseRows,
+      otherIncome: base.ledgerIncome.filter(r => inScope(r) && r._amount > 0 && inRange(r._on, range)),
+    };
+  }, [base, activeBranch, range, today]);
 
-  // One row per branch (Main Office first) — drives the "All branches" breakdown.
-  const breakdown = useMemo(() => {
-    const keys = ["", ...branches.map(b => b.id)];
-    return keys.map(k => {
-      const c = sum(all.collected.filter(r => r._branch === k), "_received");
-      const e = sum(all.expenses.filter(r => r._branch === k), "amount");
-      const o = sum(all.otherIncome.filter(r => r._branch === k), "_amount");
-      return {
-        id: k || "main",
-        name: branchName(k),
-        students: all.students.filter(r => r._branch === k).length,
-        employees: all.employees.filter(r => r._branch === k).length,
-        collected: c,
-        otherIncome: o,
-        pending: sum(all.pending.filter(r => r._branch === k), "_outstanding"),
-        expenses: e,
-        net: c + o - e,
-      };
-    });
-  }, [all, branches]);
+  const otherInc = round2(scope.otherIncome.reduce((t, r) => t + r._amount, 0));
+  const netSurplus = round2(pl.net + otherInc);
+
+  // One row per branch (Main Office first), drives the "All branches" breakdown.
+  const breakdown = useMemo(() => ["", ...branches.map(b => b.id)].map(k => {
+    const p = profitAndLoss(money, { branch: k || "main", range, today });
+    const o = round2(base.ledgerIncome.filter(r => r._branch === k && r._amount > 0 && inRange(r._on, range)).reduce((t, r) => t + r._amount, 0));
+    return {
+      id: k || "main",
+      name: k ? branches.find(b => b.id === k)?.name || "Unknown branch" : "Main Office",
+      students: base.students.filter(r => r._branch === k).length,
+      employees: base.employees.filter(r => r._branch === k).length,
+      collected: p.collected,
+      otherIncome: o,
+      pending: p.outstanding,
+      expenses: p.expenses + p.salaries,
+      net: round2(p.net + o),
+    };
+  }), [money, base, branches, range, today]);
 
   // Timeline: fees vs expenses per day (short ranges) or per month.
   const chartData = useMemo(() => {
@@ -162,37 +140,42 @@ export default function Dashboard() {
     const { unit, buckets } = buildBuckets(range, { from: dates[0], to: dates[dates.length - 1] });
     const rows = buckets.map(b => ({ ...b, income: 0, expenses: 0 }));
     const idx = new Map(rows.map((r, i) => [r.key, i]));
-    scope.collected.forEach(r => { const i = idx.get(bucketKey(unit, r._paidOn)); if (i != null) rows[i].income += r._received; });
+    scope.collected.forEach(r => { const i = idx.get(bucketKey(unit, r._paidOn)); if (i != null) rows[i].income += r._f.paid; });
     scope.otherIncome.forEach(r => { const i = idx.get(bucketKey(unit, r._on)); if (i != null) rows[i].income += r._amount; });
-    scope.expenses.forEach(r => { const i = idx.get(bucketKey(unit, r._on)); if (i != null) rows[i].expenses += Number(r.amount || 0); });
+    scope.expenses.forEach(r => { const i = idx.get(bucketKey(unit, r._on)); if (i != null) rows[i].expenses += r._amount; });
     return rows;
   }, [scope, range]);
 
-  const recentInvoices = [...scope.invoices].sort((a, b) => toMillis(b.createdAt) - toMillis(a.createdAt)).slice(0, 6);
+  const recentInvoices = [...scope.cohort].sort((a, b) => toMillis(b.createdAt) - toMillis(a.createdAt)).slice(0, 6);
 
   const isAll = activeBranch === "all";
   const scopeTitle = isAll ? "All branches" : branchName(activeBranch === "main" ? "" : activeBranch);
   const periodText = describePeriod(period, range);
+  const asOfNote = "balance as of today, all billing periods";
 
   const cards = [
     { key: "students", label: "Total Students", value: scope.students.length, icon: Users, color: "#7a2535", bg: "#f5eaec", hint: "Current headcount" },
     { key: "employees", label: "Employees", value: scope.employees.length, icon: UserCheck, color: "#2a8c7a", bg: "#e6f4f1", hint: "Current headcount" },
-    { key: "collected", label: "Fees Collected", value: rs(collected), icon: TrendingUp, color: "#10b981", bg: "#ecfdf5" },
-    { key: "otherIncome", label: "Other Income", value: rs(otherInc), icon: Wallet, color: "#0ea5e9", bg: "#f0f9ff", hint: "Welfare, donations, loans" },
-    { key: "pending", label: "Pending Fees", value: rs(pendingAmt), icon: Receipt, color: "#f59e0b", bg: "#fffbeb" },
-    { key: "expenses", label: "Total Expenses", value: rs(totalExp), icon: TrendingDown, color: "#ef4444", bg: "#fef2f2", hint: "Operating + payroll" },
+    { key: "collected", label: "Fees Collected", value: rs(collected), icon: TrendingUp, color: "#10b981", bg: "#ecfdf5", hint: "Cash recorded in period" },
+    { key: "otherIncome", label: "Other Income", value: rs(otherInc), icon: Wallet, color: "#0ea5e9", bg: "#f0f9ff", hint: "Ledger receipts not on an invoice" },
+    { key: "pending", label: "Pending Fees", value: rs(pendingAmt), icon: Receipt, color: "#f59e0b", bg: "#fffbeb", hint: "Balance as of today" },
+    { key: "overdue", label: "Overdue Fees", value: rs(overdueAmt), icon: Clock, color: "#dc2626", bg: "#fef2f2", hint: "Past due date, as of today" },
+    { key: "expenses", label: "Total Expenses", value: rs(totalExp), icon: TrendingDown, color: "#ef4444", bg: "#fef2f2", hint: "Operating + salaries paid" },
     // Branch count only makes sense across all branches; a single-branch
     // dashboard shows its own unpaid-invoice count instead.
     isAll
       ? { key: "branches", label: "Branches", value: branches.length + 1, icon: Building2, color: "#4f46e5", bg: "#eef2ff", hint: "Including Main Office" }
-      : { key: "invoices", label: "Unpaid Invoices", value: scope.pending.length, icon: FileText, color: "#4f46e5", bg: "#eef2ff" },
+      : { key: "invoices", label: "Unpaid Invoices", value: scope.outstanding.length, icon: FileText, color: "#4f46e5", bg: "#eef2ff" },
   ];
 
   const branchCol = { key: "branch", label: "Branch", render: r => branchName(r._branch) };
   const studentCol = { key: "studentName", label: "Student", render: r => r.studentName || "—" };
+  const monthCol = { key: "month", label: "Month", render: r => `${r.month || ""} ${r.year || ""}` };
   const openStudent = (id) => (id ? () => { setDetail(null); navigate(`/students/${id}`); } : undefined);
   const amountCol = (key, label, field) => ({ key, label, align: "right", render: r => <strong>{rs(r[field])}</strong>, text: r => r[field] });
   const totalFoot = (label, value) => <strong style={{ color: "var(--text)" }}>{label}: {rs(value)}</strong>;
+  const byOutstanding = (a, b) => b._f.outstanding - a._f.outstanding;
+  const outstandingRows = (list) => [...list].sort(byOutstanding).map(r => ({ ...r, _out: r._f.outstanding, onClick: openStudent(r.studentId) }));
 
   const details = {
     students: {
@@ -218,32 +201,43 @@ export default function Dashboard() {
       rows: scope.employees,
     },
     collected: {
-      title: "Fees Collected", subtitle: `${scopeTitle} · ${periodText}`,
-      columns: [studentCol, branchCol, { key: "month", label: "Month", render: r => `${r.month || ""} ${r.year || ""}` }, { key: "_paidOn", label: "Received" }, amountCol("amt", "Received", "_received")],
-      rows: [...scope.collected].sort((a, b) => (b._paidOn || "").localeCompare(a._paidOn || "")).map(r => ({ ...r, onClick: openStudent(r.studentId) })),
+      title: "Fees Collected", subtitle: `${scopeTitle} · ${periodText} · cash recorded against invoices, by paid date`,
+      columns: [studentCol, branchCol, monthCol, { key: "_paidOn", label: "Received" }, amountCol("amt", "Received", "_received")],
+      rows: [...scope.collected].sort((a, b) => (b._paidOn || "").localeCompare(a._paidOn || "")).map(r => ({ ...r, _received: r._f.paid, onClick: openStudent(r.studentId) })),
       footer: totalFoot("Total", collected),
     },
     otherIncome: {
-      title: "Other Income", subtitle: `${scopeTitle} · ${periodText} · welfare, donations, loans and other non-fee receipts`,
+      title: "Other Income", subtitle: `${scopeTitle} · ${periodText} · ledger receipts with no invoice: imported fee months, welfare, donations, loans`,
       columns: [{ key: "_on", label: "Date" }, { key: "description", label: "Description", render: r => r.description || "—" }, { key: "category", label: "Category", render: r => r.category || "—" }, branchCol, amountCol("amt", "Amount", "_amount")],
       rows: [...scope.otherIncome].sort((a, b) => (b._on || "").localeCompare(a._on || "")),
       footer: totalFoot("Total", otherInc),
     },
     pending: {
-      title: "Pending Fees", subtitle: `${scopeTitle} · invoices raised ${periodText}`,
-      columns: [studentCol, branchCol, { key: "month", label: "Month", render: r => `${r.month || ""} ${r.year || ""}` }, { key: "status", label: "Status" }, amountCol("amt", "Outstanding", "_outstanding")],
-      rows: [...scope.pending].sort((a, b) => b._outstanding - a._outstanding).map(r => ({ ...r, onClick: openStudent(r.studentId) })),
+      title: "Pending Fees", subtitle: `${scopeTitle} · ${asOfNote}`,
+      columns: [studentCol, branchCol, monthCol, { key: "status", label: "Status" }, amountCol("amt", "Outstanding", "_out")],
+      rows: outstandingRows(scope.outstanding),
       footer: totalFoot("Outstanding", pendingAmt),
     },
+    overdue: {
+      title: "Overdue Fees", subtitle: `${scopeTitle} · unpaid and past the due date, as of today`,
+      columns: [studentCol, branchCol, monthCol, { key: "dueDate", label: "Due date", render: r => r.dueDate || "—" }, amountCol("amt", "Outstanding", "_out")],
+      rows: outstandingRows(scope.overdue),
+      footer: (
+        <span style={{ display: "flex", gap: 16, alignItems: "center", flexWrap: "wrap" }}>
+          {totalFoot("Overdue", overdueAmt)}
+          {can("canViewReports") && <Link to="/fee-aging" style={{ fontSize: 13, color: "var(--primary)", fontWeight: 500, textDecoration: "none" }}>Fee aging &amp; defaulters →</Link>}
+        </span>
+      ),
+    },
     invoices: {
-      title: "Unpaid Invoices", subtitle: `${scopeTitle} · invoices raised ${periodText}`,
-      columns: [studentCol, { key: "month", label: "Month", render: r => `${r.month || ""} ${r.year || ""}` }, { key: "status", label: "Status" }, amountCol("amt", "Outstanding", "_outstanding")],
-      rows: [...scope.pending].sort((a, b) => b._outstanding - a._outstanding).map(r => ({ ...r, onClick: openStudent(r.studentId) })),
+      title: "Unpaid Invoices", subtitle: `${scopeTitle} · ${asOfNote}`,
+      columns: [studentCol, monthCol, { key: "status", label: "Status" }, amountCol("amt", "Outstanding", "_out")],
+      rows: outstandingRows(scope.outstanding),
       footer: totalFoot("Outstanding", pendingAmt),
     },
     expenses: {
-      title: "Expenses", subtitle: `${scopeTitle} · ${periodText}`,
-      columns: [{ key: "_on", label: "Date" }, { key: "description", label: "Description", render: r => r.description || "—" }, { key: "category", label: "Category", render: r => r.category || "—" }, branchCol, amountCol("amt", "Amount", "amount")],
+      title: "Expenses", subtitle: `${scopeTitle} · ${periodText} · operating expenses plus salaries paid`,
+      columns: [{ key: "_on", label: "Date" }, { key: "description", label: "Description", render: r => r.description || "—" }, { key: "category", label: "Category", render: r => r.category || "—" }, branchCol, amountCol("amt", "Amount", "_amount")],
       rows: [...scope.expenses].sort((a, b) => (b._on || "").localeCompare(a._on || "")),
       footer: totalFoot("Total", totalExp),
     },
@@ -254,7 +248,7 @@ export default function Dashboard() {
       summary: [
         { label: "Fees collected", value: rs(collected), color: "#10b981" },
         { label: "Other income", value: rs(otherInc), color: "#0ea5e9" },
-        { label: "Expenses & payroll", value: rs(totalExp), color: "#ef4444" },
+        { label: "Expenses & salaries paid", value: rs(totalExp), color: "#ef4444" },
         { label: netSurplus >= 0 ? "Net surplus" : "Net deficit", value: rs(Math.abs(netSurplus)), color: netSurplus >= 0 ? "#10b981" : "#ef4444" },
       ],
       columns: [
@@ -265,30 +259,33 @@ export default function Dashboard() {
         { key: "signed", label: "Amount", align: "right", text: r => r.signed, render: r => <strong style={{ color: r.signed >= 0 ? "#10b981" : "#ef4444" }}>{r.signed >= 0 ? "+" : "−"}{rs(Math.abs(r.signed))}</strong> },
       ],
       rows: [
-        ...scope.collected.map(r => ({ id: `f-${r.id}`, _branch: r._branch, date: r._paidOn, type: "Fee", details: `${r.studentName || "—"} · ${r.month || ""} ${r.year || ""}`.trim(), signed: r._received, onClick: openStudent(r.studentId) })),
+        ...scope.collected.map(r => ({ id: `f-${r.id}`, _branch: r._branch, date: r._paidOn, type: "Fee", details: `${r.studentName || "—"} · ${r.month || ""} ${r.year || ""}`.trim(), signed: r._f.paid, onClick: openStudent(r.studentId) })),
         ...scope.otherIncome.map(r => ({ id: `o-${r.id}`, _branch: r._branch, date: r._on, type: "Income", details: r.description || r.category || "—", signed: r._amount })),
-        ...scope.expenses.map(r => ({ id: `e-${r.id}`, _branch: r._branch, date: r._on, type: r.category === "Salaries" ? "Salary" : "Expense", details: r.description || r.category || "—", signed: -Number(r.amount || 0) })),
+        ...scope.expenses.map(r => ({ id: `e-${r.id}`, _branch: r._branch, date: r._on, type: r.category === "Salaries" ? "Salary" : "Expense", details: r.description || r.category || "—", signed: -r._amount })),
       ].sort((a, b) => (b.date || "").localeCompare(a.date || "")),
     },
-    // Collection rate = collected / (collected + still outstanding): list both sides.
+    // Collection rate = cash received / (billed - concessions) over the
+    // invoices billed in the period (same cohort as the Fee Collection report).
     rate: {
-      title: "Collection Rate", subtitle: `${scopeTitle} · ${periodText}`,
+      title: "Collection Rate", subtitle: `${scopeTitle} · invoices billed ${periodText}`,
       summary: [
-        { label: "Collected", value: rs(collected), color: "#10b981" },
-        { label: "Outstanding", value: rs(pendingAmt), color: "#f59e0b" },
+        { label: "Billed (after concessions)", value: rs(scope.cohort.reduce((t, r) => t + r._f.billed - r._f.concession, 0)) },
+        { label: "Cash received on them", value: rs(scope.cohort.reduce((t, r) => t + r._f.paid, 0)), color: "#10b981" },
         { label: "Collection rate", value: `${rate}%` },
       ],
       columns: [
-        { key: "date", label: "Date" },
+        { key: "date", label: "Billed" },
         { key: "kind", label: "Status" },
         studentCol,
         branchCol,
-        { key: "amt", label: "Amount", align: "right", text: r => r.amt, render: r => <strong>{rs(r.amt)}</strong> },
+        { key: "net", label: "Billed (net)", align: "right", text: r => r.net, render: r => rs(r.net) },
+        { key: "amt", label: "Received", align: "right", text: r => r.amt, render: r => <strong>{rs(r.amt)}</strong> },
       ],
-      rows: [
-        ...scope.collected.map(r => ({ ...r, id: `c-${r.id}`, date: r._paidOn, kind: "Collected", amt: r._received, onClick: openStudent(r.studentId) })),
-        ...scope.pending.map(r => ({ ...r, id: `p-${r.id}`, date: r._raisedOn, kind: "Outstanding", amt: r._outstanding, onClick: openStudent(r.studentId) })),
-      ].sort((a, b) => (b.date || "").localeCompare(a.date || "")),
+      rows: scope.cohort.map(r => ({
+        ...r, id: `c-${r.id}`, date: r._billedOn, net: r._f.billed - r._f.concession, amt: r._f.paid,
+        kind: r._f.unverified > 0 ? "Marked paid, no money recorded" : r._f.outstanding > 0 ? "Outstanding" : "Settled",
+        onClick: openStudent(r.studentId),
+      })).sort((a, b) => (b.date || "").localeCompare(a.date || "")),
     },
     branches: {
       title: "Branches", subtitle: `Per-branch breakdown · ${periodText} — click a branch to open its dashboard`,
@@ -326,17 +323,31 @@ export default function Dashboard() {
       </div>
 
       <DateRangeFilter value={period} onChange={setPeriod} />
+      <p style={{ fontSize: 12, color: "var(--text-muted)", margin: "-8px 0 14px" }}>
+        The period applies to collected, expenses, collection rate and the charts. Pending and overdue are balances as of today.
+      </p>
+      <DataWarnings capped={capped} errors={errors} />
+
+      {pl.unverifiedAllTime > 0 && can("canViewReports") && (
+        <div style={{ display: "flex", gap: 10, alignItems: "flex-start", padding: "10px 14px", marginBottom: 14, borderRadius: 10, background: "#fffbeb", border: "1px solid #fcd34d", color: "#92400e", fontSize: 13 }}>
+          <AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 1 }} />
+          <span>
+            {pl.unverifiedAllTimeCount} invoice{pl.unverifiedAllTimeCount === 1 ? " is" : "s are"} marked paid (Rs. {pl.unverifiedAllTime.toLocaleString()}) with no money recorded against {pl.unverifiedAllTimeCount === 1 ? "it" : "them"}.
+            These are not counted as collected. <Link to="/reports?tab=books" style={{ color: "inherit", fontWeight: 600 }}>Open Reports, Books Check</Link>
+          </span>
+        </div>
+      )}
 
       <div style={{ background: "var(--sidebar-bg)", borderRadius: 14, marginBottom: 20, color: "white", display: "flex", justifyContent: "space-between", alignItems: "stretch", flexWrap: "wrap" }}>
         <button type="button" onClick={() => setDetail("net")} title="View entries behind the net figure"
           style={{ ...tileStyle, flex: "1 1 260px", border: "none", background: "transparent", color: "inherit", padding: "20px 24px", borderRadius: 14 }}>
           <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 4, textTransform: "uppercase", letterSpacing: 1 }}>Net {netSurplus >= 0 ? "Surplus" : "Deficit"}</div>
           <div style={{ fontSize: 28, fontWeight: 700 }}>{rs(Math.abs(netSurplus))}</div>
-          <div style={{ fontSize: 12, opacity: 0.65, marginTop: 4 }}>Income (fees + other) minus expenses &amp; payroll · {periodText}</div>
+          <div style={{ fontSize: 12, opacity: 0.65, marginTop: 4 }}>Income (fees + other) minus expenses &amp; salaries paid · {periodText}</div>
         </button>
         <button type="button" onClick={() => setDetail("rate")} title="View entries behind the collection rate"
           style={{ ...tileStyle, border: "none", background: "transparent", color: "inherit", padding: "20px 24px", borderRadius: 14, textAlign: "right" }}>
-          <div style={{ fontSize: 12, opacity: 0.65, marginBottom: 4 }}>Collection rate</div>
+          <div style={{ fontSize: 12, opacity: 0.65, marginBottom: 4 }}>Collection rate (billed in period)</div>
           <div style={{ fontSize: 22, fontWeight: 700 }}>{rate}%</div>
         </button>
       </div>
@@ -428,7 +439,10 @@ export default function Dashboard() {
       <div style={{ background: "white", borderRadius: 12, border: "1px solid var(--border)", overflow: "hidden" }}>
         <div style={{ padding: "16px 20px", borderBottom: "1px solid var(--border)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <h3 style={{ fontSize: 14, fontWeight: 600 }}>Recent Invoices</h3>
-          <Link to="/fees" style={{ fontSize: 13, color: "var(--primary)", textDecoration: "none", fontWeight: 500 }}>View all →</Link>
+          <div style={{ display: "flex", gap: 16 }}>
+            {can("canViewReports") && <Link to="/fee-aging" style={{ fontSize: 13, color: "var(--primary)", textDecoration: "none", fontWeight: 500 }}>Fee aging &amp; defaulters →</Link>}
+            <Link to="/fees" style={{ fontSize: 13, color: "var(--primary)", textDecoration: "none", fontWeight: 500 }}>View all →</Link>
+          </div>
         </div>
         <div style={{ overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 500 }}>
@@ -459,7 +473,7 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {openDetail && <DetailModal {...openDetail} onClose={() => setDetail(null)} />}
+      {openDetail && <DetailModal {...openDetail} canExport={can("canExport")} onClose={() => setDetail(null)} />}
     </div>
   );
 }

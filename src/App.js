@@ -5,7 +5,8 @@ import { AuthProvider, useAuth } from "./context/AuthContext";
 import { BranchProvider } from "./context/BranchContext";
 import { UserProvider, useUser } from "./context/UserContext";
 import Layout from "./components/Layout/Layout";
-import { normalizeLayout, homePath } from "./config/menu";
+import NoAccess from "./components/Layout/NoAccess";
+import { DELETE_PERMISSIONS } from "./context/routeAccess";
 
 // Login is needed immediately; keep it eager. Everything else is
 // lazy-loaded so the initial bundle stays small and heavy pages
@@ -27,6 +28,8 @@ const ChartOfAccounts = lazy(() => import("./pages/ChartOfAccounts"));
 const Payments = lazy(() => import("./pages/Payments"));
 const Payslips = lazy(() => import("./pages/Payslips"));
 const Reports = lazy(() => import("./pages/Reports"));
+const FeeAging = lazy(() => import("./pages/FeeAging"));
+const Collections = lazy(() => import("./pages/Collections"));
 const BankCash = lazy(() => import("./pages/BankCash"));
 const AccountDetail = lazy(() => import("./pages/AccountDetail"));
 const Journals = lazy(() => import("./pages/Journals"));
@@ -52,19 +55,9 @@ const PageLoader = () => (
   </div>
 );
 
-// Landing page: the Dashboard for roles that may see it, otherwise the first
-// page of the user's own menu (e.g. teachers land on Attendance, fee collectors
-// on Students) instead of being bounced to "Access Denied".
-function Home() {
-  const { can, isAdmin, menuLayout } = useUser();
-  if (can("canViewDashboard")) return <Dashboard />;
-  const path = homePath(normalizeLayout(menuLayout), { can, isAdmin });
-  return <Navigate to={path || "/unauthorized"} replace />;
-}
-
-function PrivateRoute({ children, permission }) {
+function PrivateRoute({ children, permission, anyOf }) {
   const { user, loading } = useAuth();
-  const { can, loadingProfile } = useUser();
+  const { can, canAny, loadingProfile, hasAccess } = useUser();
 
   if (loading || loadingProfile) return (
     <div style={{
@@ -84,8 +77,24 @@ function PrivateRoute({ children, permission }) {
   );
 
   if (!user) return <Navigate to="/login" />;
+  // Fail closed: no profile, load error or unknown role => no access
+  // screen with a sign-out button (no redirect, so no loop).
+  if (!hasAccess) return <NoAccess />;
   if (permission && !can(permission)) return <Navigate to="/unauthorized" />;
+  if (anyOf && !canAny(anyOf)) return <Navigate to="/unauthorized" />;
   return children;
+}
+
+// "/" shows the dashboard to roles that have it; everyone else is sent to
+// homeRoute: the first page of their own menu (or, failing that, the first
+// page) they may actually open, e.g. Fees for a fee collector. homeRoute is
+// computed from permissions, so it is never a page they cannot see, and it
+// is null when they may open nothing (then /unauthorized offers sign-out
+// instead of redirecting, so there is no loop).
+function HomeRoute() {
+  const { can, homeRoute } = useUser();
+  if (can("canViewDashboard")) return <Dashboard />;
+  return <Navigate to={homeRoute || "/unauthorized"} replace />;
 }
 
 export default function App() {
@@ -99,7 +108,12 @@ export default function App() {
             <Routes>
               {/* Public routes */}
               <Route path="/login" element={<Login />} />
-              <Route path="/quick-payment" element={<QuickPayment />} />
+              {/* Needs a login and the same permission as the Fees screen */}
+              <Route path="/quick-payment" element={
+                <PrivateRoute permission="canEditFees">
+                  <QuickPayment />
+                </PrivateRoute>
+              } />
               <Route path="/unauthorized" element={<Unauthorized />} />
 
               {/* Protected routes */}
@@ -108,7 +122,11 @@ export default function App() {
                   <Layout />
                 </PrivateRoute>
               }>
-                <Route index element={<Home />} />
+                <Route index element={
+                  <PrivateRoute>
+                    <HomeRoute />
+                  </PrivateRoute>
+                } />
                 <Route path="students" element={
                   <PrivateRoute permission="canViewStudents">
                     <Students />
@@ -219,6 +237,16 @@ export default function App() {
                     <Reports />
                   </PrivateRoute>
                 } />
+                <Route path="fee-aging" element={
+                  <PrivateRoute permission="canViewReports">
+                    <FeeAging />
+                  </PrivateRoute>
+                } />
+                <Route path="collections" element={
+                  <PrivateRoute permission="canViewReports">
+                    <Collections />
+                  </PrivateRoute>
+                } />
                 <Route path="users" element={
                   <PrivateRoute permission="canManageUsers">
                     <Users />
@@ -245,7 +273,7 @@ export default function App() {
                   </PrivateRoute>
                 } />
                 <Route path="trash" element={
-                  <PrivateRoute>
+                  <PrivateRoute anyOf={DELETE_PERMISSIONS}>
                     <Trash />
                   </PrivateRoute>
                 } />

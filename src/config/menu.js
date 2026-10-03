@@ -5,9 +5,11 @@ import {
   Upload, Trash2, History, KeyRound,
   CalendarCheck, ClipboardList, GraduationCap, BookOpenCheck, FolderOpen, Library,
 } from "lucide-react";
+import { DELETE_PERMISSIONS } from "../context/routeAccess";
 
 // Every navigable page, keyed by a stable id. `perm` is the permission
 // that gates it (null = everyone); `adminOnly` pages need the admin role.
+// `anyPerm` = any one of several permissions is enough.
 // Ids are what gets saved in a user's custom layout, so never rename one.
 export const MENU_ITEMS = {
   dashboard:       { to: "/",                  label: "Dashboard",         icon: LayoutDashboard, perm: "canViewDashboard", keywords: "home overview summary" },
@@ -27,13 +29,16 @@ export const MENU_ITEMS = {
   bankCash:        { to: "/bank-cash",         label: "Bank & Cash",       icon: Landmark,        perm: "canViewAccounting", keywords: "bank cash balance accounts" },
   journals:        { to: "/journals",          label: "Journals",          icon: BookMarked,      perm: "canViewAccounting", keywords: "journal entries vouchers" },
   reports:         { to: "/reports",           label: "Reports",           icon: BarChart2,       perm: "canViewReports", keywords: "statements profit loss balance sheet" },
+  feeAging:        { to: "/fee-aging",         label: "Fee Aging",         icon: FileText,        perm: "canViewReports", keywords: "overdue arrears outstanding defaulters ageing" },
+  collections:     { to: "/collections",       label: "Collections",       icon: Landmark,        perm: "canViewReports", keywords: "recovery collected daily recoveries" },
   reminderLogs:    { to: "/reminder-logs",     label: "Reminder Logs",     icon: MessageCircle,   perm: "canViewReports", keywords: "whatsapp reminders messages" },
   activityLog:     { to: "/activity-log",      label: "Activity Log",      icon: History,         adminOnly: true, keywords: "audit history changes" },
   branches:        { to: "/branches",          label: "Branches",          icon: Building2,       perm: "canManageBranches", keywords: "campus locations" },
   users:           { to: "/users",             label: "Users",             icon: ShieldCheck,     perm: "canManageUsers", keywords: "accounts staff logins roles" },
   access:          { to: "/access",            label: "Access Control",    icon: KeyRound,        perm: "canManageUsers", keywords: "permissions roles rights" },
   import:          { to: "/import",            label: "Import Data",       icon: Upload,          perm: "canManageUsers", keywords: "upload excel csv migrate" },
-  trash:           { to: "/trash",             label: "Trash",             icon: Trash2, keywords: "deleted restore recycle" },
+  // Trash is only useful to someone who can delete (and so restore) something.
+  trash:           { to: "/trash",             label: "Trash",             icon: Trash2,          anyPerm: DELETE_PERMISSIONS, keywords: "deleted restore recycle" },
   settings:        { to: "/settings",          label: "Settings",          icon: Settings, keywords: "preferences whatsapp quick payment link" },
 };
 
@@ -44,7 +49,7 @@ export const DEFAULT_SECTIONS = [
   { id: "academics",  label: "Academics",       items: ["attendance", "exams", "reportCards", "subjects", "homework", "materials"] },
   { id: "billing",    label: "Fees & Payments", items: ["fees", "payments", "expenses", "payslips"] },
   { id: "accounting", label: "Accounting",      items: ["chartOfAccounts", "bankCash", "journals"] },
-  { id: "insights",   label: "Reports & Logs",  items: ["reports", "reminderLogs", "activityLog"] },
+  { id: "insights",   label: "Reports & Logs",  items: ["reports", "feeAging", "collections", "reminderLogs", "activityLog"] },
   { id: "admin",      label: "Administration",  items: ["branches", "users", "access", "import"] },
   { id: "system",     label: "System",          items: ["trash", "settings"] },
 ];
@@ -97,6 +102,7 @@ export function isItemAllowed(key, { can, isAdmin }) {
   const item = MENU_ITEMS[key];
   if (!item) return false;
   if (item.adminOnly && !isAdmin) return false;
+  if (item.anyPerm) return item.anyPerm.some((p) => can(p));
   return item.perm ? can(item.perm) : true;
 }
 
@@ -206,10 +212,13 @@ export function searchPages(pages, query) {
 }
 
 // Where "/" should land: the dashboard if allowed, otherwise the first
-// page in the user's own menu order (null = nothing accessible).
+// page in the user's own menu order that the user may open. Settings and
+// Trash are skipped (open to nearly everyone, so they say nothing about
+// real access) and there is NO fallback to them: null = nothing usable,
+// and the caller must then show the no-access screen, never guess a page.
 export function homePath(layout, access) {
   if (isItemAllowed("dashboard", access)) return "/";
-  const first = listPages(layout, access).find((p) => p.key !== "settings" && p.key !== "trash") || listPages(layout, access)[0];
+  const first = listPages(layout, access).find((p) => p.key !== "settings" && p.key !== "trash");
   return first ? first.to : null;
 }
 

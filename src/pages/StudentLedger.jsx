@@ -1,73 +1,111 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { db, doc, getDoc } from "../firebase";
-import { useRelated } from "../hooks/useProfileData";
+import { db, supabase, doc, getDoc, isHistoryVisible } from "../firebase";
 import { toMillis, formatDate, localISODate } from "../utils/dates";
-import { summarizeInvoices, isLivePayment, netAmount } from "../utils/fees";
+import { studentName } from "../utils/studentLabel";
+import { decodeRow, studentStatement, invoiceFacts, isEffectiveInvoiceReceipt } from "../utils/reporting";
 import { buildStatement, printStatements } from "../utils/studentStatement";
+import { DataWarnings } from "../components/ReportControls";
 import ExportMenu from "../components/UI/ExportMenu";
 import toast from "react-hot-toast";
-import { ArrowLeft, FileText, TrendingUp, Wallet, Printer } from "lucide-react";
+import { ArrowLeft, FileText, TrendingUp, Wallet, Percent, AlertTriangle, RefreshCw, Printer } from "lucide-react";
 
 // Per-student financial history: every invoice raised, every payment
 // received, and the running balance. The single most useful screen
 // for answering "what does this student owe?".
+//
+// Only THIS student's rows are queried (not whole tables), so the
+// platform's 1000-row cap cannot truncate a ledger. The figures use the
+// shared definitions in utils/reporting.js, so they agree with the
+// Dashboard, Reports and Fees pages.
 export default function StudentLedger() {
   const { id } = useParams();
   const navigate = useNavigate();
   const [student, setStudent] = useState(null);
+  const [invoices, setInvoices] = useState([]);
+  const [payments, setPayments] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [errors, setErrors] = useState({});
 
-  useEffect(() => {
-    getDoc(doc(db, "students", id)).then((snap) => {
+  const load = useCallback(async () => {
+    setLoading(true);
+    // Direct queries bypass the firebase.js shim, so apply its History scope
+    // here: imported (historical) rows stay hidden unless the toggle is on.
+    const showHistory = isHistoryVisible();
+    const inScope = (r) => showHistory || r.historical !== true; // applied to invoices; payments follow their invoice
+    const errs = {};
+    try {
+      const snap = await getDoc(doc(db, "students", id));
       if (snap.exists()) setStudent({ id: snap.id, ...snap.data() });
-    });
+    } catch (e) { console.error("StudentLedger student error:", e); errs.students = e?.message || "Could not load"; }
+
+    let inv = [];
+    try {
+      const { data, error } = await supabase.from("invoices").select("*").eq("student_id", id).is("deleted_at", null);
+      if (error) throw error;
+      inv = (data || []).map(decodeRow).filter(inScope);
+    } catch (e) { console.error("StudentLedger invoices error:", e); errs.invoices = e?.message || "Could not load"; }
+    setInvoices(inv);
+
+    // Payments for these invoices only, in chunks to keep the URL short.
+    const pays = [];
+    try {
+      const ids = inv.map((i) => i.id);
+      for (let i = 0; i < ids.length; i += 50) {
+        const { data, error } = await supabase.from("payments").select("*")
+          .eq("source", "invoice").in("source_id", ids.slice(i, i + 50)).is("deleted_at", null);
+        if (error) throw error;
+        pays.push(...(data || []).map(decodeRow)); // scoped by the invoices already kept above
+      }
+    } catch (e) { console.error("StudentLedger payments error:", e); errs.payments = e?.message || "Could not load"; }
+    setPayments(pays);
+    setErrors(errs);
+    setLoading(false);
   }, [id]);
 
-  // Only this student's invoices, and only the payments made against them.
-  const { rows: invoices, loading: loadingInvoices } = useRelated("invoices", { studentId: id });
-  const invoiceIds = useMemo(() => invoices.map((i) => i.id), [invoices]);
-  const { rows: payments } = useRelated("payments", { sourceId: invoiceIds, source: "invoice" }, invoiceIds.length > 0);
-  const loading = loadingInvoices;
+  useEffect(() => { load(); }, [load]);
 
-  // Same money rules as the student profile's Fees tab (see utils/fees.js).
-  const { billed: totalBilled, received: totalReceived, concession: totalConcession, balance, payments: studentPayments } =
-    summarizeInvoices(invoices, payments, localISODate());
+  const st = useMemo(() => studentStatement(invoices, payments), [invoices, payments]);
+  const name = student ? studentName(student) : (invoices.find((i) => i.studentName)?.studentName || "Student");
 
   // Build a combined, dated timeline of invoices and payments.
   const events = [
-    ...invoices.map((i) => ({
-      kind: "invoice", date: i.date || i.createdAt, label: `Invoice — ${i.month || ""} ${i.year || ""}`.trim(),
-      detail: (i.lineItems || []).map((l) => l.description).join(", ") || "Fee", amount: Number(i.amount || 0), id: i.id,
-    })),
-    ...studentPayments.map((p) => ({
+    ...invoices.map((i) => {
+      const f = invoiceFacts(i);
+      const notes = [(i.lineItems || []).map((l) => l.description).join(", ") || "Fee"];
+      if (f.concession > 0) notes.push(`concession Rs. ${f.concession.toLocaleString()}`);
+      if (f.unverified > 0) notes.push(`marked paid, no money recorded (Rs. ${f.unverified.toLocaleString()})`);
+      else if (f.outstanding > 0) notes.push(`Rs. ${f.outstanding.toLocaleString()} outstanding`);
+      return {
+        kind: "invoice", date: i.date || i.createdAt, label: `Invoice — ${i.month || ""} ${i.year || ""}`.trim(),
+        detail: notes.join(" · "), amount: Number(i.amount || 0), id: i.id,
+      };
+    }),
+    ...payments.map((p) => ({
       kind: p.reversed ? "reversed" : (p.type === "cash_in" ? "payment" : "reversal"),
       date: p.date || p.createdAt,
       label: p.type === "cash_in" ? `Payment — ${p.account || ""}` : `Reversal — ${p.account || ""}`,
       detail: p.description || "", amount: Number(p.amount || 0), id: p.id, reversed: p.reversed,
-      live: isLivePayment(p), signed: netAmount(p),
+      counted: isEffectiveInvoiceReceipt(p),
     })),
   ].sort((a, b) => toMillis(a.date) - toMillis(b.date));
 
-  // Statement rows (billed / received with a running balance). Reversed
-  // payments and their reversal entries stay visible but don't count, and
-  // concessions are applied last: the same rules as the totals above.
-  const statementRows = events.map((e) => ({
-    date: e.date,
-    label: e.kind === "invoice" ? e.label : e.label.split(" — ")[0],
-    detail: e.kind === "invoice" ? e.detail : (e.detail || e.label.split(" — ")[1] || ""),
-    billed: e.kind === "invoice" ? e.amount : 0,
-    received: e.kind === "invoice" ? 0 : e.signed,
-    reversed: e.kind !== "invoice" && !e.live,
-  }));
-
+  // Rows for the Export menu: the timeline (reversed / reversing entries are
+  // listed but not counted), then totals taken from the SAME shared figures as
+  // the cards above (reporting.studentStatement), so an export can never
+  // disagree with the screen. Received is what the invoices record
+  // (paidAmount); "marked paid, no money recorded" is its own line.
   const getExportData = () => {
-    let billed = 0, received = 0;
-    const rows = statementRows.map((r) => {
-      if (!r.reversed) { billed += r.billed; received += r.received; }
-      return [formatDate(r.date), r.label + (r.reversed ? " (reversed)" : ""), r.detail, r.billed || "", r.received || "", billed - received];
+    const rows = events.map((e) => {
+      const isInvoice = e.kind === "invoice";
+      const counted = isInvoice || e.counted;
+      const type = isInvoice ? e.label : e.label.split(" — ")[0] + (counted ? "" : " (reversed)");
+      const detail = isInvoice ? e.detail : (e.detail || e.label.split(" — ")[1] || "");
+      return [formatDate(e.date), type, detail, isInvoice ? e.amount : "", !isInvoice && counted ? e.amount : "", ""];
     });
-    if (totalConcession > 0) rows.push(["", "Concession (waived)", "", "", totalConcession, balance]);
-    rows.push(["", "TOTAL", "", billed, received, balance]);
+    if (st.concessions > 0) rows.push(["", "Concession (waived)", "", "", st.concessions, ""]);
+    if (st.unverified > 0) rows.push(["", "Marked paid, no money recorded", `Rs. ${st.unverified.toLocaleString()} not counted as received`, "", "", ""]);
+    rows.push(["", "TOTAL", "", st.billed, st.received + st.concessions, st.outstanding]);
     return { headers: ["Date", "Type", "Details", "Billed", "Received / Waived", "Balance"], rows };
   };
 
@@ -88,38 +126,61 @@ export default function StudentLedger() {
 
       <div style={{ marginBottom: 16, display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
         <div>
-          <h2 style={{ fontSize: 22, fontWeight: 700 }}>{student?.name || "Student"} <span style={{ fontSize: 14, fontWeight: 400, color: "var(--text-muted)", fontFamily: "monospace" }}>{student?.studentId}</span></h2>
+          <h2 style={{ fontSize: 22, fontWeight: 700 }}>{name} <span style={{ fontSize: 14, fontWeight: 400, color: "var(--text-muted)", fontFamily: "monospace" }}>{student?.studentId}</span></h2>
           <div style={{ fontSize: 13, color: "var(--text-muted)" }}>{student?.grade} {student?.parentName ? `• Parent: ${student.parentName}` : ""}</div>
         </div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <button disabled={!student || loading}
             onClick={() => {
-              const statement = buildStatement({ student, invoices, payments: studentPayments, today: localISODate() });
+              const statement = buildStatement({ student, invoices, payments, today: localISODate() });
               if (!printStatements([statement])) toast.error("Allow pop-ups to print the statement");
             }}
             style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 14px", border: "1px solid var(--border)", borderRadius: 8, background: "white", cursor: "pointer", fontSize: 13 }}>
             <Printer size={14} /> Print statement
           </button>
-          <ExportMenu filename={`ledger-${student?.studentId || id}`} title={`Fee Ledger - ${student?.name || "Student"}`} getData={getExportData} disabled={!student || events.length === 0} />
+          <ExportMenu filename={`ledger-${student?.studentId || id}`} title={`Fee Ledger - ${name}`} getData={getExportData} disabled={!student || events.length === 0} />
         </div>
       </div>
 
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 20 }}>
-        {card("Total Billed", totalBilled, "var(--primary)", FileText)}
-        {card("Total Received", totalReceived, "#10b981", TrendingUp)}
-        {totalConcession > 0 && card("Concession", totalConcession, "#2563eb", FileText)}
-        {card("Balance Due", balance, balance > 0 ? "#ef4444" : "#10b981", Wallet)}
+        {card("Total Billed", st.billed, "var(--primary)", FileText)}
+        {st.concessions > 0 && card("Concessions", st.concessions, "#f59e0b", Percent)}
+        {card("Total Received", st.received, "#10b981", TrendingUp)}
+        {card("Balance Due", st.outstanding, st.outstanding > 0 ? "#ef4444" : "#10b981", Wallet)}
       </div>
+      {st.unverified > 0 && (
+        <div style={{ display: "flex", gap: 10, alignItems: "flex-start", padding: "10px 14px", marginBottom: 16, borderRadius: 10, background: "#fffbeb", border: "1px solid #fcd34d", color: "#92400e", fontSize: 13 }}>
+          <AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 1 }} />
+          <span>Rs. {st.unverified.toLocaleString()} is on invoices marked paid with no money recorded against them. It is not counted as received.</span>
+        </div>
+      )}
+      {st.ledgerGap > 0.5 && (
+        <div style={{ display: "flex", gap: 10, alignItems: "flex-start", padding: "10px 14px", marginBottom: 16, borderRadius: 10, background: "#fffbeb", border: "1px solid #fcd34d", color: "#92400e", fontSize: 13 }}>
+          <AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 1 }} />
+          <span>Invoices record Rs. {st.received.toLocaleString()} received, but only Rs. {st.postedToLedger.toLocaleString()} is in Bank &amp; Cash. The difference has no ledger entry.</span>
+        </div>
+      )}
+      {student?.historical === true && !isHistoryVisible() && (
+        <div style={{ padding: "10px 14px", marginBottom: 16, borderRadius: 10, background: "#f8fafc", border: "1px solid var(--border)", color: "var(--text-muted)", fontSize: 13 }}>
+          This is an imported historical record. Its invoices and payments are hidden while History is off, so the figures below show as empty. Turn on History in the top bar to see them.
+        </div>
+      )}
+      <DataWarnings errors={errors} />
 
       <div style={{ background: "white", border: "1px solid var(--border)", borderRadius: 12, overflow: "hidden" }}>
-        <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--border)", fontWeight: 600, fontSize: 14 }}>Statement</div>
+        <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--border)", fontWeight: 600, fontSize: 14, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          Statement
+          <button onClick={load} disabled={loading} title="Reload" style={{ display: "flex", alignItems: "center", gap: 5, border: "1px solid var(--border)", background: "white", borderRadius: 8, padding: "4px 10px", cursor: "pointer", fontSize: 12, color: "var(--text-muted)" }}>
+            <RefreshCw size={13} /> Refresh
+          </button>
+        </div>
         {loading ? (
           <div style={{ padding: 40, textAlign: "center", color: "var(--text-muted)" }}>Loading…</div>
         ) : events.length === 0 ? (
           <div style={{ padding: 40, textAlign: "center", color: "var(--text-muted)" }}>No invoices or payments yet.</div>
         ) : (
           events.map((e) => (
-            <div key={e.kind + e.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 16px", borderTop: "1px solid var(--border)", opacity: e.reversed ? 0.5 : 1 }}>
+            <div key={e.kind + e.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 16px", borderTop: "1px solid var(--border)", opacity: e.kind !== "invoice" && !e.counted ? 0.5 : 1 }}>
               <div style={{ minWidth: 0 }}>
                 <div style={{ fontWeight: 600, fontSize: 14, textDecoration: e.reversed ? "line-through" : "none" }}>{e.label}</div>
                 <div style={{ fontSize: 12, color: "var(--text-muted)" }}>{formatDate(e.date)} {e.detail ? `• ${e.detail}` : ""}</div>
@@ -133,7 +194,7 @@ export default function StudentLedger() {
         )}
       </div>
       <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 10 }}>
-        Invoices add to what's billed; payments reduce the balance. Reversed payments (and their reversal entries) are shown for the record but don't count. Concessions forgive part of an invoice's balance.
+        Invoices add to what's billed; payments reduce the balance. Reversed payments and their reversing entries are shown faded and cancel out. Concessions forgive part of an invoice's balance. Balance due counts only invoices that are not marked paid.
       </p>
 
     </div>

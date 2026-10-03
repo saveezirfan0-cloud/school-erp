@@ -1,3 +1,4 @@
+/* eslint-disable testing-library/no-unnecessary-act */
 // Smoke test: mount the Reports page with fake data, click through every
 // tab and change the main filters. Catches render-time crashes the pure
 // reportData tests can't.
@@ -55,9 +56,11 @@ jest.mock("recharts", () => {
   return new Proxy({}, { get: () => Stub });
 });
 
+// eslint-disable-next-line import/first
+// eslint-disable-next-line import/first
 import Reports from "./Reports";
 
-globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+global.IS_REACT_ACT_ENVIRONMENT = true;
 
 async function mount() {
   const el = document.createElement("div");
@@ -115,6 +118,7 @@ test("every tab renders real numbers and the filters respond", async () => {
   await click(el, "Balance Sheet");
   expect(el.textContent).toContain("1000 — Cash");
   expect(el.textContent).toContain("Rs. 1,100"); // 100 opening + 1,000 received
+  expect(el.textContent).toContain("Balance Sheet (derived, cash basis)"); // journal-aware cross-check
 
   await click(el, "Cash Flow");
   expect(el.textContent).toContain("Closing balance");
@@ -132,6 +136,11 @@ test("every tab renders real numbers and the filters respond", async () => {
   expect(el.textContent).not.toContain("Sara");
   await click(el, "Reset");
   expect(el.textContent).toContain("Sara");
+
+  // Books Check: the paid invoice has no invoice-linked ledger entry
+  await click(el, "Books Check");
+  expect(el.textContent).toContain("Invoices marked paid with no matching ledger entry");
+  expect(el.querySelectorAll('input[type="date"]').length).toBe(0); // no period on this tab
 
   await act(async () => { root.unmount(); });
 });

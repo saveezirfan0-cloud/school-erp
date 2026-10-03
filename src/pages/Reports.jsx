@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import toast from "react-hot-toast";
 import { db } from "../firebase";
 import { collection, getAllDocs } from "../firebase";
@@ -15,6 +15,9 @@ import {
   filterFeeRows, summarizeFees, classDetail, teachersForGrade, buildHighlights, buildSummaryText,
   change, formatRs, formatPct, COMPARE_MODES,
 } from "../utils/reportData";
+import { isCapped } from "../utils/reporting";
+import { DataWarnings } from "../components/ReportControls";
+import { BalanceSheetTab, BooksCheckTab } from "./ReportsBooks";
 import { computeBudget } from "../utils/budgetData";
 import { buildStatements, printStatements } from "../utils/studentStatement";
 import HajiSahabReport from "../components/hajiSahab/HajiSahabReport";
@@ -31,8 +34,11 @@ const TABS = [
   { id: "cf", label: "Cash Flow" },
   { id: "fees", label: "Fee Collection" },
   { id: "budget", label: "Budget vs Actual" },
+  { id: "books", label: "Books Check" },
   { id: "hs", label: "Haji Sahab Report" },
 ];
+const LOAD_NAMES = ["invoices", "expenses", "payslips", "payments", "students", "accounts", "journals"];
+const linkBtn = { display: "inline-flex", alignItems: "center", gap: 5, padding: "7px 14px", border: "1px solid var(--border)", borderRadius: 8, background: "white", cursor: "pointer", fontSize: 13, color: "var(--primary)", textDecoration: "none", fontWeight: 500 };
 const STATUS_OPTIONS = [
   { value: "paid", label: "Paid" }, { value: "partial", label: "Partially paid" },
   { value: "pending", label: "Pending" }, { value: "overdue", label: "Overdue" },
@@ -46,6 +52,7 @@ const fmtDate = (d) => (d ? d.toLocaleDateString("en-GB", { day: "2-digit", mont
 export default function Reports() {
   const { activeBranch, branches } = useBranch();
   const { can } = useUser();
+  const location = useLocation();
   const navigate = useNavigate();
   const today = useMemo(() => new Date(), []);
 
@@ -55,21 +62,28 @@ export default function Reports() {
   const [budgetError, setBudgetError] = useState(false);
   const [subjects, setSubjects] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
+  const [loadIssues, setLoadIssues] = useState({ capped: [], errors: {} });
 
+  // Every collection loads on its own, so a table this user cannot read does
+  // not blank the page. A failed query is reported (never treated as "no
+  // rows"), and so is a result of exactly the 1,000-row platform cap.
   const load = useCallback(async () => {
     setLoading(true);
-    setError("");
-    try {
-      const names = ["invoices", "expenses", "payslips", "payments", "students", "accounts", "journals"];
-      const snaps = await Promise.all(names.map(n => getAllDocs(collection(db, n))));
-      const next = {};
-      names.forEach((n, i) => { next[n] = snaps[i].docs.map(d => ({ id: d.id, ...d.data() })); });
-      setRaw(next);
-    } catch (e) {
-      console.error("Reports load error:", e);
-      setError(e?.message || "Could not load report data");
-    }
+    const results = await Promise.allSettled(LOAD_NAMES.map(n => getAllDocs(collection(db, n))));
+    const next = {}, errors = {}, capped = [];
+    results.forEach((r, i) => {
+      const n = LOAD_NAMES[i];
+      if (r.status === "fulfilled") {
+        next[n] = r.value.docs.map(d => ({ id: d.id, ...d.data() }));
+        if (isCapped(next[n].length)) capped.push(n);
+      } else {
+        next[n] = [];
+        errors[n] = r.reason?.message || "Could not load";
+        console.error(`Reports load error (${n}):`, r.reason);
+      }
+    });
+    setRaw(next);
+    setLoadIssues({ capped, errors });
     // Optional tables: a missing table (SQL not run yet) must not break the core reports.
     const [b, sub] = await Promise.allSettled([getAllDocs(collection(db, "budgets")), getAllDocs(collection(db, "subjects"))]);
     const rows = (r) => r.value.docs.map(d => ({ id: d.id, ...d.data() }));
@@ -80,8 +94,16 @@ export default function Reports() {
   }, []);
   useEffect(() => { load(); }, [load]);
 
+  // The Books Check / Balance Sheet components take their data in this shape.
+  // Warnings are shown once, at page level, so they get none of their own.
+  const books = useMemo(() => ({ data: raw || {}, loading: !raw, capped: [], errors: {} }), [raw]);
+
   // ---- filters ----
-  const [activeTab, setActiveTab] = useState("pl");
+  // /reports?tab=books opens a tab directly (the Dashboard links to Books Check).
+  const [activeTab, setActiveTab] = useState(() => {
+    const t = new URLSearchParams(location.search).get("tab");
+    return TABS.some(x => x.id === t) ? t : "pl";
+  });
   const [branch, setBranch] = useState(activeBranch);
   useEffect(() => { setBranch(activeBranch); }, [activeBranch]); // follow the header switcher
   const [preset, setPreset] = useState(DEFAULT_PRESET);
@@ -207,6 +229,7 @@ export default function Reports() {
     };
   };
   const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
+  const canExport = can("canExport");
   const handleCSV = () => { const s = exportSpec(); exportToCSV(`report-${activeTab}-${slug(branchName(branch))}-${isoDay(today)}`, s.headers, s.rows); };
   const handleExcel = () => { const s = exportSpec(); exportToExcel(`report-${activeTab}-${slug(branchName(branch))}-${isoDay(today)}`, s.headers, s.rows, TABS.find(t => t.id === activeTab).label); };
   const handlePDF = () => { const s = exportSpec(); exportToPDF(s.title, s.headers, s.rows.map(r => r.map(c => (typeof c === "number" ? c.toLocaleString() : c)))); };
@@ -247,9 +270,15 @@ export default function Reports() {
 
   return (
     <div>
-      <div style={{ marginBottom: 24 }}>
-        <h2 style={{ fontSize: 22, fontWeight: 700 }}>Reports</h2>
-        <p style={{ color: "var(--text-muted)", fontSize: 14, marginTop: 4 }}>Financial statements and analytics</p>
+      <div style={{ marginBottom: 24, display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 10 }}>
+        <div>
+          <h2 style={{ fontSize: 22, fontWeight: 700 }}>Reports</h2>
+          <p style={{ color: "var(--text-muted)", fontSize: 14, marginTop: 4 }}>Financial statements and analytics for {branchName(branch)}</p>
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <Link to="/fee-aging" style={linkBtn}>Fee aging &amp; defaulters</Link>
+          <Link to="/collections" style={linkBtn}>Collections report</Link>
+        </div>
       </div>
 
       <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
@@ -264,11 +293,15 @@ export default function Reports() {
       {activeTab !== "hs" && <ReportFilters
         branchOptions={branchOptions} branch={branch} onBranch={setBranch}
         preset={preset} onPreset={setPreset} custom={custom} onCustom={setCustom}
+        showPeriod={activeTab !== "books"}
         periodLabel={activeTab === "bs" ? "As at (end of period)" : "Period"}
-        granularity={activeTab === "bs" || activeTab === "budget" ? undefined : granularity} onGranularity={setGranularity}
+        granularity={activeTab === "bs" || activeTab === "books" || activeTab === "budget" ? undefined : granularity} onGranularity={setGranularity}
         showCompare={activeTab === "pl" || activeTab === "fees"} compareMode={compareMode} onCompareMode={setCompareMode}
         dirty={Boolean(dirty)} onReset={reset} summary={summary}
-        onRefresh={load} refreshing={loading} onCSV={raw ? handleCSV : undefined} onExcel={raw ? handleExcel : undefined} onPDF={raw ? handlePDF : undefined} onEmail={raw ? handleEmail : undefined}
+        onRefresh={load} refreshing={loading} onCSV={raw && canExport && activeTab !== "books" ? handleCSV : undefined}
+        onExcel={raw && canExport && activeTab !== "books" ? handleExcel : undefined}
+        onPDF={raw && canExport && activeTab !== "books" ? handlePDF : undefined}
+        onEmail={raw && canExport && activeTab !== "books" ? handleEmail : undefined}
       >
         {activeTab === "pl" && <Select label="Income basis" value={basis} onChange={setBasis} options={BASIS_OPTIONS} />}
         {activeTab === "cf" && <Select label="Account" value={account} onChange={setAccount} allLabel="All accounts" options={cash.accountOptions} />}
@@ -284,25 +317,32 @@ export default function Reports() {
         )}
       </ReportFilters>}
 
-      {error && (
-        <div style={{ ...cardStyle, padding: 16, marginBottom: 24, borderColor: "#fecaca", background: "#fef2f2", color: "#991b1b", fontSize: 14 }}>
-          Could not load report data: {error}{" "}
-          <button onClick={load} style={{ marginLeft: 8, cursor: "pointer", border: "1px solid #fecaca", background: "white", borderRadius: 6, padding: "4px 10px" }}>Retry</button>
+      <DataWarnings capped={loadIssues.capped} errors={loadIssues.errors} />
+      {raw && activeTab === "pl" && fin.undated > 0 && (
+        <div style={{ padding: "8px 14px", marginBottom: 16, borderRadius: 10, background: "#fffbeb", border: "1px solid #fcd34d", color: "#92400e", fontSize: 13 }}>
+          {fin.undated} record{fin.undated === 1 ? " has" : "s have"} no date and {fin.undated === 1 ? "is" : "are"} left out of this period. Choose "All time" to include them.
         </div>
       )}
-      {!raw && !error && <div style={{ ...cardStyle, padding: 32, textAlign: "center", color: "var(--text-muted)" }}>Loading reports…</div>}
+      {!raw && <div style={{ ...cardStyle, padding: 32, textAlign: "center", color: "var(--text-muted)" }}>Loading reports…</div>}
 
       {raw && activeTab === "pl" && (
         <ProfitLoss fin={fin} prevFin={prevFin} chartData={chartData} granularity={series.granularity} branchRows={branchRows} range={range}
           basis={basis} compareShort={compareShort}
           highlights={buildHighlights({ cur: fin, prev: prevFin, fees: null, branches: branchRows, vs: vsText })} />
       )}
-      {raw && activeTab === "bs" && <BalanceSheet sheet={sheet} />}
+      {raw && activeTab === "bs" && (
+        <>
+          <BalanceSheet sheet={sheet} />
+          {/* Journal-aware cross-check (audit ACC-06): opening balances + journals + cash book, with the difference shown. */}
+          <div style={{ marginTop: 24 }}><BalanceSheetTab books={books} branch={branch} /></div>
+        </>
+      )}
       {raw && activeTab === "cf" && <CashFlow cash={cash} branchLabelOf={branchLabelOf} />}
       {raw && activeTab === "budget" && (
         <BudgetTab budgets={budgets} budgetError={budgetError} result={budget} branch={branch} categories={expenseCategories}
           canEdit={canEditBudget} onSaved={load} />
       )}
+      {raw && activeTab === "books" && <BooksCheckTab books={books} branch={branch} branchName={branchName(branch)} />}
       {raw && activeTab === "hs" && <HajiSahabReport raw={raw} branches={branches} activeBranch={activeBranch} />}
       {raw && activeTab === "fees" && (
         <FeeCollection fees={fees} prevFees={prevFees} drill={drill} openGrade={openGrade}
@@ -326,26 +366,26 @@ function plLines(cur, prev, detail) {
   L.push({ kind: "section", label: "Income" });
   if (cur.basis === "accrual") {
     line("Fees billed (face value)", cur.billed, prev?.billed);
-    line("Concessions (waived)", cur.concessions, prev?.concessions, { color: AMBER, goodWhen: "down" });
+    line("Concessions (waived, not income)", cur.concessions, prev?.concessions, { color: AMBER, goodWhen: "down" });
     line("Fee revenue (billed less concessions)", cur.income, prev?.income, { color: GREEN });
     subs("byHead");
     line("Cash received in period", cur.collected, prev?.collected, { muted: true });
-    line("Pending fees (outstanding)", cur.pending, prev?.pending, { muted: true, goodWhen: "down" });
   } else {
     line("Total billed (face value)", cur.billed, prev?.billed, { muted: true });
     line("Fee collections (received)", cur.collected, prev?.collected, { color: GREEN });
     subs("byHead");
-    line("Concessions (waived)", cur.concessions, prev?.concessions, { color: AMBER, goodWhen: "down" });
-    line("Pending fees (outstanding)", cur.pending, prev?.pending, { muted: true, goodWhen: "down" });
+    line("Concessions (waived, not income)", cur.concessions, prev?.concessions, { color: AMBER, goodWhen: "down" });
   }
+  if (cur.unverified > 0 || prev?.unverified > 0) line(`Marked paid, no money recorded (${cur.unverifiedCount} invoice${cur.unverifiedCount === 1 ? "" : "s"}, not counted as collected)`, cur.unverified, prev?.unverified, { color: "#b45309", goodWhen: "down" });
+  line("Pending fees: balance as of today (all periods)", cur.pending, prev?.pending, { muted: true, goodWhen: "down" });
   L.push({ kind: "total", label: "Total income", value: cur.income, prev: prev?.income, color: GREEN });
 
   L.push({ kind: "section", label: "Expenses" });
   line("Operating expenses", cur.opex, prev?.opex, { color: RED, goodWhen: "down" });
   subs("byCategory");
-  line("Salaries & payroll", cur.payroll, prev?.payroll, { color: RED, goodWhen: "down" });
+  line("Salaries paid", cur.payroll, prev?.payroll, { color: RED, goodWhen: "down" });
   subs("byRole");
-  if (cur.payrollUnpaid > 0) L.push({ kind: "sub", label: "   of which not yet paid", value: cur.payrollUnpaid, prev: prev?.payrollUnpaid, goodWhen: "down" });
+  if (cur.payrollUnpaid > 0) L.push({ kind: "sub", label: "   Memo: payroll for the period not yet paid (not counted above)", value: cur.payrollUnpaid, prev: prev?.payrollUnpaid, goodWhen: "down" });
   L.push({ kind: "total", label: "Total expenses", value: cur.totalExpenses, prev: prev?.totalExpenses, color: RED, goodWhen: "down" });
   return L;
 }
@@ -368,7 +408,7 @@ function ProfitLoss({ fin, prevFin, chartData, granularity, branchRows, range, b
 
       <Highlights items={highlights} />
 
-      <Card title="Profit & Loss Statement" subtitle={`${rangeLabel(range)} · income is ${basis === "accrual" ? "fees billed less concessions" : "cash received"}, expenses by date / payslip period`} style={{ marginBottom: 24 }} pad={0}
+      <Card title="Profit & Loss Statement" subtitle={`${rangeLabel(range)} · ${basis === "accrual" ? "accrual basis: fees billed less concessions" : "cash basis: fees as recorded"}, expenses by date, salaries when paid`} style={{ marginBottom: 24 }} pad={0}
         right={<label style={{ fontSize: 13, display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}><input type="checkbox" checked={detail} onChange={e => setDetail(e.target.checked)} /> Show breakdown</label>}>
         <div className="table-scroll">
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
@@ -577,15 +617,16 @@ function FeeCollection({ fees, prevFees, highlights, drill, openGrade, onToggleG
 
   return (
     <div>
-      <KpiGrid columns={5}>
+      <KpiGrid columns={fees.unverified > 0 ? 6 : 5}>
         <KpiCard label="Billed" value={formatRs(fees.billed)} sub={`${fees.cohort.length.toLocaleString()} invoices`} delta={prevFees && change(fees.billed, prevFees.billed)} />
         <KpiCard label="Collected" value={formatRs(fees.collected)} color={GREEN} bg="#ecfdf5" sub="against these invoices" delta={prevFees && change(fees.collected, prevFees.collected)} />
         <KpiCard label="Outstanding" value={formatRs(fees.outstanding)} color={AMBER} bg="#fffbeb" goodWhen="down" sub={fees.overdue > 0 ? `${formatRs(fees.overdue)} overdue` : "none overdue"} delta={prevFees && change(fees.outstanding, prevFees.outstanding)} />
         <KpiCard label="Collection rate" value={formatPct(fees.rate)} color={INDIGO} bg="#eef2ff" sub="after concessions" delta={prevFees && fees.rate !== null && prevFees.rate !== null ? { amount: (fees.rate - prevFees.rate) * 100, pct: null, unit: "pts" } : null} />
         <KpiCard label="Cash received in period" value={formatRs(fees.receivedInPeriod)} color={BRAND} bg="var(--primary-light)" sub="by payment date" />
+        {fees.unverified > 0 && <KpiCard label="Marked paid, no money recorded" value={formatRs(fees.unverified)} color="#b45309" bg="#fffbeb" sub={`${fees.unverifiedCount} invoice${fees.unverifiedCount === 1 ? "" : "s"}, not counted as collected`} />}
       </KpiGrid>
       <p style={{ fontSize: 12, color: "var(--text-muted)", margin: "-12px 0 24px" }}>
-        Billed, collected, outstanding and collection rate describe the invoices billed in the selected period (by invoice month). “Cash received” counts payments made in the period, whichever month they were billed for.
+        Billed, collected, outstanding and collection rate describe the invoices billed in the selected period (by invoice month). “Cash received” counts payments made in the period, whichever month they were billed for. Collected is money recorded against invoices; invoices marked paid with no money recorded are not counted (see Books Check).
       </p>
 
       <Highlights items={highlights} />

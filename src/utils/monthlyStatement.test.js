@@ -53,10 +53,23 @@ test("fee income is split by line item, with a branch breakdown", () => {
   expect(head(s.income, "fees", "Registration Fee").amount).toBe(200);
 });
 
-test("an invoice marked paid with no recorded amount counts in full, less concession, by created date", () => {
+// DEFINITION CHANGE (audit ACC-04, utils/reporting.js): this used to expect
+// 900, i.e. an invoice marked paid with no recorded amount was treated as
+// collected in full less concession. Income is now cash actually recorded
+// against the invoice; "marked paid, no money" is reported separately
+// (Books Check) and is not income.
+test("an invoice marked paid with no recorded amount is NOT income", () => {
   const s = buildMonthlyStatement({
     ...base, expenses: [], payslips: [], payments: [], journals: [],
     invoices: [{ branchId: "b1", status: "paid", amount: 1000, concessionAmount: 100, createdAt: "2026-09-12T08:00:00Z", lineItems: [{ description: "Tuition Fee", amount: 1000 }] }],
+  });
+  expect(s.totalIncome).toBe(0);
+});
+
+test("an invoice with money recorded is income by its paid date, concession excluded", () => {
+  const s = buildMonthlyStatement({
+    ...base, expenses: [], payslips: [], payments: [], journals: [],
+    invoices: [{ branchId: "b1", status: "paid", amount: 1000, paidAmount: 900, concessionAmount: 100, createdAt: "2026-09-12T08:00:00Z", lineItems: [{ description: "Tuition Fee", amount: 1000 }] }],
   });
   expect(s.totalIncome).toBe(900);
 });

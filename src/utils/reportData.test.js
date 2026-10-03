@@ -4,6 +4,7 @@ import {
   allocateByHead, computeCashFlow, computeBalanceSheet, filterFeeRows, summarizeFees, buildHighlights,
   yearAgoRange, comparisonRange, classDetail, teachersForGrade, buildSummaryText,
 } from "./reportData";
+import { summarizeInvoices, profitAndLoss } from "./reporting";
 
 const TODAY = new Date(2026, 2, 15); // 15 Mar 2026
 const d = (y, m, day) => new Date(y, m - 1, day);
@@ -63,6 +64,10 @@ describe("dates and ranges", () => {
     expect(m.to.getDate()).toBe(31);
     expect(presetRange("lastMonth", TODAY).to.getMonth()).toBe(1);
     expect(presetRange("thisQuarter", TODAY).from).toEqual(d(2026, 1, 1));
+    // year to date is Jan 1 to today, not the whole calendar year
+    const ytd = presetRange("ytd", TODAY);
+    expect(ytd.from).toEqual(d(2026, 1, 1));
+    expect([ytd.to.getMonth(), ytd.to.getDate()]).toEqual([2, 15]);
     expect(presetRange("lastQuarter", TODAY).from).toEqual(d(2025, 10, 1));
     // March is before July, so the FY started last July
     expect(presetRange("thisFY", TODAY).from).toEqual(d(2025, 7, 1));
@@ -107,16 +112,70 @@ describe("dates and ranges", () => {
   });
 });
 
-describe("shared invoice totals", () => {
-  test("a paid invoice with no recorded paidAmount counts as collected in full, less concession", () => {
+describe("shared invoice totals (one definition, utils/reporting.js)", () => {
+  // DEFINITION CHANGE (audit ACC-04): this test used to expect that a paid
+  // invoice with no recorded paidAmount counted as collected in full, less
+  // concession (900 + 500). Collected is now cash recorded; those invoices
+  // are reported as `unverified` and are neither collected nor pending.
+  test("a paid invoice with no recorded paidAmount is NOT collected; it is unverified", () => {
     const legacy = prepareData({ invoices: [
       { id: "L1", studentId: "s1", status: "paid", amount: 1000, concessionAmount: 100, month: "March", year: 2026, paidDate: "2026-03-02" },
       { id: "L2", studentId: "s1", status: "paid", amount: 500, month: "March", year: 2026, paidDate: "2026-03-03" },
     ] });
     const f = computeFinancials(legacy, { range: ALL, branch: "all" });
-    expect(f.collected).toBe(900 + 500);
+    expect(f.collected).toBe(0);
     expect(f.pending).toBe(0);
+    expect(f.unverified).toBe(900 + 500);
+    expect(f.unverifiedCount).toBe(2);
     expect(legacy.invoices[0]._outstanding).toBe(0);
+    expect(legacy.invoices[0]._unverified).toBe(900);
+  });
+
+  // The ACC-04 fixture from reporting.test.js / docs/audit/accounting-auditor.md.
+  const acc04 = [
+    { id: "A", amount: 5000, status: "paid", paidAmount: 5000, studentId: "s1", paidDate: "2026-10-01" },
+    { id: "B", amount: 5000, status: "paid", paidAmount: 3000, concessionAmount: 2000, studentId: "s2", paidDate: "2026-10-02" },
+    { id: "C", amount: 4000, status: "paid", studentId: "s2", paidDate: "2026-10-03" },
+    { id: "D", amount: 6000, status: "partial", paidAmount: 2500, studentId: "s3", paidDate: "2026-10-04", dueDate: "2026-08-15" },
+    { id: "E", amount: 3000, status: "paid", studentId: "s4", paidDate: "2026-10-05" },
+  ];
+
+  test("Reports and reporting.js agree on the ACC-04 fixture (10,500 / 3,500, not 17,000 / 0)", () => {
+    const f = computeFinancials(prepareData({ invoices: acc04 }), { range: ALL, branch: "all" });
+    const r = summarizeInvoices(acc04, { today: "2026-10-10" });
+    expect(f.collected).toBe(10500);
+    expect(f.pending).toBe(3500);
+    expect(f.concessions).toBe(2000);
+    expect(f.unverified).toBe(7000);
+    expect(f).toMatchObject({ collected: r.collected, pending: r.outstanding, concessions: r.concessions, unverified: r.unverified });
+    // Fee tab: same cohort numbers and the same rate as the Dashboard (50%)
+    const s = summarizeFees(prepareData({ invoices: acc04 }).invoices, { range: ALL, today: new Date(2026, 9, 10) });
+    expect(s.collected).toBe(10500);
+    expect(s.outstanding).toBe(3500);
+    expect(Math.round(s.rate * 100)).toBe(r.collectionRate);
+  });
+
+  test("a bounded range reports collected the same way reporting.js does", () => {
+    const range = { from: d(2026, 10, 2), to: new Date(2026, 9, 4, 23, 59, 59, 999) };
+    const f = computeFinancials(prepareData({ invoices: acc04 }), { range, branch: "all" });
+    const r = summarizeInvoices(acc04, { today: "2026-10-10", range: { from: "2026-10-02", to: "2026-10-04" } });
+    expect(f.collected).toBe(r.collected);
+    expect(f.concessions).toBe(r.concessions);
+    expect(f.unverified).toBe(r.unverified);
+    expect(f.pending).toBe(r.outstanding); // a balance as of today, not cut by the period
+  });
+
+  test("payroll is cash basis like reporting.js: only paid payslips, by paid date", () => {
+    const slips = [
+      { id: "p1", netPay: 600, status: "paid", paidDate: "2026-02-03", month: "January", year: 2026 },
+      { id: "p2", netPay: 900, status: "pending", month: "February", year: 2026 },
+    ];
+    const f = computeFinancials(prepareData({ payslips: slips }), { range: FEB, branch: "all" });
+    const r = profitAndLoss({ payslips: slips }, { range: { from: "2026-02-01", to: "2026-02-28" } });
+    expect(f.payroll).toBe(600);
+    expect(f.payroll).toBe(r.salaries);
+    expect(f.payrollUnpaid).toBe(900); // memo only, not an expense
+    expect(f.totalExpenses).toBe(600);
   });
 });
 
@@ -145,9 +204,12 @@ describe("computeFinancials", () => {
     expect(f.concessions).toBe(100);
     expect(f.pending).toBe(500 + 500); // i2: 1000-400-100 = 500, i3: 500
     expect(f.opex).toBe(600);
-    expect(f.payroll).toBe(1200);
+    // DEFINITION CHANGE (audit ACC-05): payroll used to include the unpaid
+    // February payslip (1200, net 1400 - 600 - 1200). It is now cash basis,
+    // like fees: only paid payslips are an expense; unpaid is a memo.
+    expect(f.payroll).toBe(600);
     expect(f.payrollUnpaid).toBe(600);
-    expect(f.net).toBe(1400 - 600 - 1200);
+    expect(f.net).toBe(1400 - 600 - 600);
   });
 
   test("date range limits every line", () => {
@@ -155,7 +217,8 @@ describe("computeFinancials", () => {
     expect(f.billed).toBe(1000);
     expect(f.collected).toBe(400);
     expect(f.opex).toBe(300);
-    expect(f.payroll).toBe(600);
+    expect(f.payroll).toBe(0); // Feb payslip is unpaid
+    expect(f.payrollUnpaid).toBe(600);
     expect(f.byCategory.map(c => c.label)).toEqual(["Utilities", "Repairs"]);
   });
 
@@ -179,8 +242,8 @@ describe("computeFinancials", () => {
     expect(granularity).toBe("month");
     expect(buckets.map(b => b.income)).toEqual([1000, 400, 0]);
     expect(buckets.map(b => b.expenses)).toEqual([300, 300, 0]);
-    expect(buckets.map(b => b.payroll)).toEqual([600, 600, 0]);
-    expect(buckets[1].net).toBe(400 - 300 - 600);
+    expect(buckets.map(b => b.payroll)).toEqual([600, 0, 0]); // unpaid Feb payslip is not cash out
+    expect(buckets[1].net).toBe(400 - 300);
   });
 
   test("branch breakdown lists the main office plus each branch", () => {
@@ -315,7 +378,12 @@ describe("accrual basis", () => {
     expect(f.income).toBe(2500 - 100);
     expect(f.concessions).toBe(100);
     expect(f.collected).toBe(1400); // cash still reported for reference
-    expect(f.net).toBe(2400 - 600 - 1200);
+    // DEFINITION CHANGE vs main (audited, ACC-05): payroll is cash basis on BOTH
+    // bases (only paid payslips, 600). Main's test expected the unpaid February
+    // payslip (1200 total) to be accrued here; it is the `payrollUnpaid` memo instead.
+    expect(f.payroll).toBe(600);
+    expect(f.payrollUnpaid).toBe(600);
+    expect(f.net).toBe(2400 - 600 - 600);
   });
   test("period limits follow the billing month, not the paid date", () => {
     const f = computeFinancials(data, { range: FEB, branch: "all", basis: "accrual" });

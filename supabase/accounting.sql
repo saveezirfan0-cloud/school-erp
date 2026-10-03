@@ -1,6 +1,6 @@
 -- ============================================================
 -- Accounting integrity columns for ZMI School ERP
--- Run once in the SQL Editor, AFTER schema.sql. Safe to re-run.
+-- Baseline script: run once, AFTER schema.sql. Safe to re-run.
 --
 -- Adds reversal tracking to payments so financial edits/deletes are
 -- handled by posting equal-and-opposite reversing entries instead of
@@ -45,6 +45,13 @@ alter table public.expenses add column if not exists paid_account  text;
 -- accounts: opening balance as a real column (was stored in extra jsonb).
 -- Migrate any existing value out of extra into the column.
 alter table public.accounts add column if not exists balance numeric default 0;
+-- One-time move of the old extra->>'balance' into the column. The key is
+-- removed from extra afterwards so a re-run can NEVER overwrite a balance
+-- that was edited since (previously every re-run reset balances to the
+-- stale jsonb value).
 update public.accounts
-  set balance = coalesce((extra->>'balance')::numeric, balance, 0)
+  set balance = coalesce(
+        case when extra->>'balance' ~ '^-?[0-9]+(\.[0-9]+)?$' then (extra->>'balance')::numeric end,
+        balance, 0),
+      extra = extra - 'balance'
   where extra ? 'balance';

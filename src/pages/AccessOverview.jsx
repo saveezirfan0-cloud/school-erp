@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from "react";
-import { db, collection, onSnapshot, updateDocs } from "../firebase";
+import { db, collection, onSnapshot, doc, updateDoc } from "../firebase";
 import { useUser } from "../context/UserContext";
-import { PERMISSIONS } from "../context/UserContext";
+import { PERMISSIONS, isBuiltinRole } from "../context/UserContext";
+import { logActivity } from "../utils/auditLog";
 import toast from "react-hot-toast";
-import { Search, Check, X, ShieldCheck } from "lucide-react";
+import { Search, Check, X, ShieldCheck, AlertTriangle } from "lucide-react";
 
 // The same catalog the Users page uses, grouped for display.
 const ALL_PERMISSIONS = [
@@ -19,6 +20,10 @@ const ALL_PERMISSIONS = [
   { key: "canViewExpenses", label: "View Expenses", group: "Expenses" },
   { key: "canEditExpenses", label: "Add / Edit Expenses", group: "Expenses" },
   { key: "canDeleteExpenses", label: "Delete Expenses", group: "Expenses" },
+  { key: "canDeleteFees", label: "Delete Invoices", group: "Fees" },
+  { key: "canDeletePayslips", label: "Delete Payslips", group: "Payslips" },
+  { key: "canDeletePayments", label: "Delete Payments", group: "Payments" },
+  { key: "canDeleteJournals", label: "Delete Journals", group: "Accounting" },
   { key: "canViewPayments", label: "View Payments", group: "Payments" },
   { key: "canEditPayments", label: "Add Payments", group: "Payments" },
   { key: "canViewPayslips", label: "View Payslips", group: "Payslips" },
@@ -39,15 +44,16 @@ const ALL_PERMISSIONS = [
 ];
 
 // What a role grants by default (so we can show the effective value
-// and only store the DIFFERENCE as a per-user override).
-function rolePermission(role, key) {
+// and only store the DIFFERENCE as a per-user override). Custom roles
+// are read from the loaded custom_roles rows, not only the built-ins.
+function rolePermission(role, key, customRolePerms) {
   if (role === "admin") return true;
-  const base = PERMISSIONS?.[role] || {};
+  const base = isBuiltinRole(role) ? PERMISSIONS[role] : (customRolePerms?.[role] || {});
   return base[key] === true;
 }
 
 export default function AccessOverview() {
-  const { isAdmin } = useUser();
+  const { isAdmin, userProfile, customRolePerms } = useUser();
   const [users, setUsers] = useState([]);
   const [selected, setSelected] = useState(null);
   const [search, setSearch] = useState("");
@@ -73,19 +79,28 @@ export default function AccessOverview() {
   const effective = (user, key) => {
     const overrides = user?.pagePermissions || {};
     if (key in overrides) return overrides[key] === true;
-    return rolePermission(user?.role, key);
+    return rolePermission(user?.role, key, customRolePerms);
   };
 
   const toggle = async (key) => {
     if (!selected) return;
     if (selected.role === "admin") { toast.error("Admins always have full access"); return; }
+    if (selected.id === userProfile?.id) { toast.error("You cannot change your own access"); return; }
+    const previous = selected;
     const current = effective(selected, key);
-    const overrides = { ...(selected.pagePermissions || {}), [key]: !current };
+    const overrides = { ...(selected.pagePermissions || {}) };
+    if (!current === rolePermission(selected.role, key, customRolePerms)) {
+      delete overrides[key]; // back to the role default: no override needed
+    } else {
+      overrides[key] = !current;
+    }
     // optimistic
     setSelected({ ...selected, pagePermissions: overrides });
     try {
-      await updateDocs("users", [selected.id], { pagePermissions: overrides });
+      await updateDoc(doc(db, "users", selected.id), { pagePermissions: overrides });
+      logActivity("updated", "Access Control", `${selected.name || selected.email}: ${key} set to ${!current ? "allowed" : "not allowed"} (UI only)`);
     } catch (e) {
+      setSelected(previous); // roll back
       toast.error(e?.message || "Couldn't save");
     }
   };
@@ -99,7 +114,16 @@ export default function AccessOverview() {
         <h2 style={{ fontSize: 22, fontWeight: 700, display: "flex", alignItems: "center", gap: 8 }}>
           <ShieldCheck size={20} /> Access Overview
         </h2>
-        <p style={{ color: "var(--text-muted)", fontSize: 14 }}>Pick a user, then toggle exactly which permissions they have. Overrides apply on top of their role. Changes save instantly.</p>
+        <p style={{ color: "var(--text-muted)", fontSize: 14 }}>Pick a user to see what their role allows. Overrides apply on top of their role and save instantly.</p>
+      </div>
+
+      <div style={{ display: "flex", gap: 10, alignItems: "flex-start", padding: "12px 16px", marginBottom: 16, background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 10, fontSize: 13, color: "#92400e" }}>
+        <AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 1 }} />
+        <span>
+          <strong>Overrides are UI only.</strong> They change which menus and buttons a person sees in this app, but the
+          database still enforces only their role. Removing an override does not block access through the API, and adding
+          one does not let them read or write data their role cannot. To really change access, change the person's role.
+        </span>
       </div>
 
       <div style={{ display: "flex", gap: 16, alignItems: "flex-start", flexWrap: "wrap" }}>
@@ -150,6 +174,11 @@ export default function AccessOverview() {
                   Admins always have full access; toggles are disabled.
                 </div>
               )}
+              {selected.id === userProfile?.id && selected.role !== "admin" && (
+                <div style={{ padding: "10px 20px", background: "#fffbeb", fontSize: 13, color: "#92400e", borderBottom: "1px solid var(--border)" }}>
+                  This is your own account. You cannot change your own access.
+                </div>
+              )}
 
               <div style={{ maxHeight: 540, overflow: "auto" }}>
                 {groups.map((group) => (
@@ -160,14 +189,14 @@ export default function AccessOverview() {
                       const overridden = selected.pagePermissions && (p.key in selected.pagePermissions);
                       return (
                         <div key={p.key} onClick={() => toggle(p.key)}
-                          style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 20px", borderBottom: "1px solid var(--border)", cursor: selected.role === "admin" ? "default" : "pointer" }}>
+                          style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 20px", borderBottom: "1px solid var(--border)", cursor: (selected.role === "admin" || selected.id === userProfile?.id) ? "default" : "pointer" }}>
                           <span style={{ fontSize: 14 }}>
                             {p.label}
-                            {overridden && <span style={{ marginLeft: 8, fontSize: 10, color: "#2563eb", fontWeight: 600 }}>OVERRIDE</span>}
+                            {overridden && <span style={{ marginLeft: 8, fontSize: 10, color: "#2563eb", fontWeight: 600 }}>OVERRIDE · UI ONLY</span>}
                           </span>
                           <span style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "4px 10px", borderRadius: 20, fontSize: 12, fontWeight: 600,
                             background: on ? "#ecfdf5" : "#fef2f2", color: on ? "#10b981" : "#ef4444" }}>
-                            {on ? <><Check size={13} /> Can see</> : <><X size={13} /> Hidden</>}
+                            {on ? <><Check size={13} /> Allowed</> : <><X size={13} /> Not allowed</>}
                           </span>
                         </div>
                       );

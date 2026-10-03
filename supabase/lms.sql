@@ -22,11 +22,23 @@
 
 -- ---------- permissions: re-declare has_perm with academic perms ----------
 -- (Kept identical to the copy in security.sql; running either is fine.)
+--
+-- Once supabase/migrations/ has been applied (migration_log exists), has_perm()
+-- is owned by migrations/0002 (per-user overrides, reserved canManageUsers,
+-- the teacher role and these same academic permissions). Re-declaring the old
+-- body here would silently switch those off, so it is skipped in that case.
+do $lms_perm$
+begin
+  if to_regclass('public.migration_log') is not null then
+    raise notice 'lms.sql: has_perm() left as defined by migrations/0002';
+    return;
+  end if;
+  execute $fn$
 create or replace function public.has_perm(perm text)
 returns boolean
 language plpgsql stable security definer
 set search_path = public
-as $$
+as $body$
 declare
   r text := public.current_role();
   builtin jsonb;
@@ -76,7 +88,10 @@ begin
 
   return false;
 end;
-$$;
+$body$;
+  $fn$;
+end
+$lms_perm$;
 
 -- ============================================================
 -- SUBJECTS  (a subject taught in a class/grade)

@@ -13,10 +13,24 @@ export default function Branches() {
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (branches.length >= 4) return toast.error("Maximum 4 branches allowed");
-    await addDoc(collection(db, "branches"), { ...form, createdAt: serverTimestamp() });
-    toast.success("Branch added");
-    setForm({ name: "", address: "", phone: "", manager: "" });
-    setShowForm(false);
+    try {
+      await addDoc(collection(db, "branches"), { ...form, createdAt: serverTimestamp() });
+      toast.success("Branch added");
+      setForm({ name: "", address: "", phone: "", manager: "" });
+      setShowForm(false);
+    } catch (err) {
+      toast.error(err?.message || "Could not add branch");
+    }
+  };
+
+  const handleDelete = async (b) => {
+    if (!window.confirm(`Remove branch "${b.name}"? Students and staff assigned to it will no longer match a branch.`)) return;
+    try {
+      await deleteDoc(doc(db, "branches", b.id));
+      toast.success("Branch removed");
+    } catch (err) {
+      toast.error(err?.message || "Could not remove branch");
+    }
   };
 
   return (
@@ -69,7 +83,7 @@ export default function Branches() {
           <div key={b.id} style={{ background: "white", borderRadius: 12, padding: 24, border: "1px solid var(--border)" }}>
             <div style={{ display: "flex", justifyContent: "space-between" }}>
               <Building2 size={24} color="var(--primary)" />
-              <button onClick={() => deleteDoc(doc(db, "branches", b.id))} style={{ border: "none", background: "none", cursor: "pointer", color: "var(--text-muted)" }}><Trash2 size={15} /></button>
+              <button onClick={() => handleDelete(b)} aria-label="Remove branch" style={{ border: "none", background: "none", cursor: "pointer", color: "var(--text-muted)" }}><Trash2 size={15} /></button>
             </div>
             <div style={{ fontSize: 16, fontWeight: 700, marginTop: 12 }}>{b.name}</div>
             <div style={{ color: "var(--text-muted)", fontSize: 13, marginTop: 4 }}>{b.address}</div>

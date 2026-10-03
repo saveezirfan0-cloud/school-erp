@@ -1,10 +1,10 @@
 import React, { useEffect, useState } from "react";
-import { db, auth } from "../firebase";
+import { db } from "../firebase";
 import {
-  collection, addDoc, updateDoc, deleteDoc,
+  collection, updateDoc, deleteDoc,
   doc, onSnapshot, serverTimestamp, setDoc
 } from "../firebase";
-import { createUserAsAdmin } from "../lib/adminUsers";
+import { createUserAsAdmin, deleteUserAsAdmin, MIN_PASSWORD_LENGTH } from "../lib/adminUsers";
 import { logActivity } from "../utils/auditLog";
 import { useBranch } from "../context/BranchContext";
 import { useUser } from "../context/UserContext";
@@ -36,6 +36,10 @@ const ALL_PERMISSIONS = [
   { key: "canViewExpenses", label: "View Expenses", group: "Expenses" },
   { key: "canEditExpenses", label: "Add / Edit Expenses", group: "Expenses" },
   { key: "canDeleteExpenses", label: "Delete Expenses", group: "Expenses" },
+  { key: "canDeleteFees", label: "Delete Invoices", group: "Fees" },
+  { key: "canDeletePayslips", label: "Delete Payslips", group: "Payslips" },
+  { key: "canDeletePayments", label: "Delete Payments", group: "Payments" },
+  { key: "canDeleteJournals", label: "Delete Journals", group: "Accounting" },
   { key: "canViewPayments", label: "View Payments", group: "Payments" },
   { key: "canEditPayments", label: "Add Payments", group: "Payments" },
   { key: "canViewPayslips", label: "View Payslips", group: "Payslips" },
@@ -68,7 +72,7 @@ const ROLE_COLORS = [
   { color: "#0ea5e9", bg: "#f0f9ff" },
 ];
 
-const emptyUser = { name: "", email: "", role: "fee_collector", branchId: "", pin: "" };
+const emptyUser = { name: "", email: "", role: "fee_collector", branchId: "" };
 const emptyCustomRole = {
   label: "",
   color: "#4f46e5",
@@ -78,12 +82,11 @@ const emptyCustomRole = {
 
 export default function Users() {
   const { branches } = useBranch();
-  const { userProfile } = useUser();
+  const { userProfile, isAdmin } = useUser();
   const [users, setUsers] = useState([]);
   const [customRoles, setCustomRoles] = useState([]);
   const [activeTab, setActiveTab] = useState("users");
   const [showModal, setShowModal] = useState(false);
-  const [showPinModal, setShowPinModal] = useState(false);
   const [showRoleModal, setShowRoleModal] = useState(false);
   const [showEditRoleModal, setShowEditRoleModal] = useState(false);
   const [form, setForm] = useState(emptyUser);
@@ -91,8 +94,6 @@ export default function Users() {
   const [editing, setEditing] = useState(null);
   const [showPass, setShowPass] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [pinUser, setPinUser] = useState(null);
-  const [newPin, setNewPin] = useState("");
   const [customRole, setCustomRole] = useState(emptyCustomRole);
   const [editingRole, setEditingRole] = useState(null);
   const [expandedGroups, setExpandedGroups] = useState(PERMISSION_GROUPS.reduce((a, g) => ({ ...a, [g]: true }), {}));
@@ -118,31 +119,58 @@ export default function Users() {
     ...customRoles.map(r => ({ id: r.id, label: r.label, color: r.color, bg: r.bg, isDefault: false }))
   ];
 
+  const editingSelf = !!editing && editing === userProfile?.id;
+  const adminCount = users.filter(u => u.role === "admin").length;
+
   const handleCreateUser = async (e) => {
     e.preventDefault();
-    if (!editing && !password) return toast.error("Password is required");
+    if (!editing) {
+      if (!password) return toast.error("Password is required");
+      if (password.length < MIN_PASSWORD_LENGTH) {
+        return toast.error(`Password must be at least ${MIN_PASSWORD_LENGTH} characters`);
+      }
+    }
+    // Only admins may hand out the admin role or touch an admin account.
+    const target = editing ? users.find(u => u.id === editing) : null;
+    if (!isAdmin && (form.role === "admin" || target?.role === "admin")) {
+      return toast.error("Only an admin can create or change admin accounts");
+    }
     setLoading(true);
     try {
       if (editing) {
-        await updateDoc(doc(db, "users", editing), {
-          name: form.name,
-          role: form.role,
-          branchId: form.branchId,
-          updatedAt: serverTimestamp(),
-        });
-        toast.success("User updated");
-        logActivity("updated", "Users", `${form.name || form.email} — role: ${form.role}`);
+        if (editingSelf) {
+          // You can rename yourself, but never change your own role or
+          // branch (prevents locking yourself out or self-promotion).
+          await updateDoc(doc(db, "users", editing), {
+            name: form.name,
+            updatedAt: serverTimestamp(),
+          });
+          toast.success("Name updated");
+          logActivity("updated", "Users", `${form.name || form.email} — name changed`);
+        } else {
+          if (target?.role === "admin" && form.role !== "admin" && adminCount <= 1) {
+            setLoading(false);
+            return toast.error("You cannot demote the last admin");
+          }
+          await updateDoc(doc(db, "users", editing), {
+            name: form.name,
+            role: form.role,
+            branchId: form.branchId,
+            updatedAt: serverTimestamp(),
+          });
+          toast.success("User updated");
+          logActivity("updated", "Users", `${form.name || form.email} — role: ${form.role}`);
+        }
       } else {
-        // User creation now happens server-side via a Supabase Edge
-        // Function (the browser can't create auth users with the anon
-        // key). This creates the auth account AND the profile row.
+        // User creation happens server-side via a Supabase Edge Function
+        // (the browser can't create auth users with the anon key). This
+        // creates the auth account AND the profile row.
         await createUserAsAdmin({
           name: form.name,
           email: form.email,
           password,
           role: form.role,
           branchId: form.branchId,
-          pin: form.pin || null,
         });
         toast.success("User created");
         logActivity("created", "Users", `${form.name || form.email} (${form.email}) — role: ${form.role}`);
@@ -157,61 +185,103 @@ export default function Users() {
     setLoading(false);
   };
 
-  const handleSetPin = async (e) => {
-    e.preventDefault();
-    if (newPin.length < 4) return toast.error("PIN must be at least 4 digits");
-    await updateDoc(doc(db, "users", pinUser.id), { pin: newPin });
-    toast.success("PIN updated");
-    logActivity("updated", "Users", `PIN changed for ${pinUser.name || pinUser.email}`);
-    setShowPinModal(false);
-    setPinUser(null);
-    setNewPin("");
-  };
-
   const handleDeleteUser = async (id) => {
-    if (!window.confirm("Remove this user?")) return;
     const u = users.find((x) => x.id === id);
-    await deleteDoc(doc(db, "users", id));
-    toast.success("User removed");
-    logActivity("deleted", "Users", `${u?.name || u?.email || id} removed`);
+    if (!u) return;
+    if (id === userProfile?.id) return toast.error("You cannot delete your own account");
+    if (u.role === "admin") {
+      if (!isAdmin) return toast.error("Only an admin can delete an admin");
+      if (adminCount <= 1) return toast.error("You cannot delete the last admin");
+      const typed = window.prompt(`This removes an ADMIN account. Type the email address (${u.email}) to confirm.`);
+      if (typed === null) return;
+      if (typed.trim().toLowerCase() !== (u.email || "").toLowerCase()) return toast.error("Email did not match; nothing was deleted");
+    } else if (!window.confirm(`Remove ${u.name || u.email}? They will no longer be able to sign in.`)) {
+      return;
+    }
+
+    try {
+      await deleteUserAsAdmin(id);
+      toast.success("User removed");
+      logActivity("deleted", "Users", `${u.name || u.email || id} removed`);
+    } catch (err) {
+      if (err.legacyFunction) {
+        // The Edge Function has not been redeployed yet: remove the
+        // profile row only. The sign-in account survives.
+        try {
+          await deleteDoc(doc(db, "users", id));
+          toast(
+            "Profile removed, but the login may still work until the create-user function is redeployed. The person will see a 'no access' screen.",
+            { icon: "⚠️", duration: 9000 }
+          );
+          logActivity("deleted", "Users", `${u.name || u.email || id} profile removed (login not deleted)`);
+        } catch (err2) {
+          toast.error(err2?.message || "Could not remove the user");
+        }
+      } else {
+        toast.error(err.message || "Could not remove the user");
+      }
+    }
   };
 
   const handleSaveCustomRole = async (e) => {
     e.preventDefault();
-    if (!customRole.label.trim()) return toast.error("Role name is required");
-    const roleId = customRole.label.toLowerCase().replace(/\s+/g, "_") + "_" + Date.now();
-    await addDoc(collection(db, "customRoles"), {
-      ...customRole,
-      createdAt: serverTimestamp(),
-    });
-    toast.success("Custom role created");
-    logActivity("created", "Users", `Custom role "${customRole.label}"`);
-    setShowRoleModal(false);
-    setCustomRole(emptyCustomRole);
+    const label = customRole.label.trim();
+    if (!label) return toast.error("Role name is required");
+    if (!isAdmin) return toast.error("Only an admin can create roles");
+    // custom_roles.id is a text primary key with no default, and it is the
+    // value stored in users.role, so generate it here: slug + random suffix.
+    const slug = label.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 40) || "role";
+    let roleId = "";
+    do {
+      roleId = `${slug}_${Math.random().toString(36).slice(2, 8)}`;
+    } while (customRoles.some(r => r.id === roleId) || roleId in DEFAULT_ROLE_LABELS);
+    try {
+      await setDoc(doc(db, "customRoles", roleId), {
+        label,
+        color: customRole.color,
+        bg: customRole.bg,
+        permissions: customRole.permissions,
+        createdAt: serverTimestamp(),
+      });
+      toast.success("Custom role created");
+      logActivity("created", "Users", `Custom role "${label}"`);
+      setShowRoleModal(false);
+      setCustomRole(emptyCustomRole);
+    } catch (err) {
+      toast.error(err?.message || "Could not create the role");
+    }
   };
 
   const handleUpdateRole = async (e) => {
     e.preventDefault();
-    await updateDoc(doc(db, "customRoles", editingRole.id), {
-      label: editingRole.label,
-      color: editingRole.color,
-      bg: editingRole.bg,
-      permissions: editingRole.permissions,
-      updatedAt: serverTimestamp(),
-    });
-    toast.success("Role updated");
-    logActivity("updated", "Users", `Role "${editingRole.label}" permissions changed`);
-    setShowEditRoleModal(false);
-    setEditingRole(null);
+    try {
+      await updateDoc(doc(db, "customRoles", editingRole.id), {
+        label: editingRole.label,
+        color: editingRole.color,
+        bg: editingRole.bg,
+        permissions: editingRole.permissions,
+        updatedAt: serverTimestamp(),
+      });
+      toast.success("Role updated");
+      logActivity("updated", "Users", `Role "${editingRole.label}" permissions changed`);
+      setShowEditRoleModal(false);
+      setEditingRole(null);
+    } catch (err) {
+      toast.error(err?.message || "Could not update the role");
+    }
   };
 
   const handleDeleteRole = async (id) => {
     const usersWithRole = users.filter(u => u.role === id);
     if (usersWithRole.length > 0) return toast.error(`Cannot delete — ${usersWithRole.length} user(s) have this role`);
     if (!window.confirm("Delete this custom role?")) return;
-    await deleteDoc(doc(db, "customRoles", id));
-    toast.success("Role deleted");
-    logActivity("deleted", "Users", `Custom role removed`);
+    try {
+      await deleteDoc(doc(db, "customRoles", id));
+      toast.success("Role deleted");
+      logActivity("deleted", "Users", `Custom role removed`);
+    } catch (err) {
+      toast.error(err?.message || "Could not delete the role");
+    }
   };
 
   const togglePermission = (key, target, setTarget) => {
@@ -325,7 +395,7 @@ export default function Users() {
             <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 600 }}>
               <thead>
                 <tr style={{ background: "#f8fafc" }}>
-                  {["Name", "Email", "Role", "Branch", "PIN", "Actions"].map(h => (
+                  {["Name", "Email", "Role", "Branch", "Actions"].map(h => (
                     <th key={h} style={{ padding: "12px 16px", textAlign: "left", fontSize: 11, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", whiteSpace: "nowrap" }}>{h}</th>
                   ))}
                 </tr>
@@ -358,23 +428,16 @@ export default function Users() {
                         {branches.find(b => b.id === u.branchId)?.name || "All"}
                       </td>
                       <td style={{ padding: "12px 16px" }}>
-                        {u.pin
-                          ? <span style={{ fontSize: 12, color: "#10b981", fontWeight: 600 }}>✓ Set</span>
-                          : <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Not set</span>
-                        }
-                      </td>
-                      <td style={{ padding: "12px 16px" }}>
                         <div style={{ display: "flex", gap: 6 }}>
-                          <button onClick={() => { setPinUser(u); setShowPinModal(true); }}
-                            style={{ border: "none", background: "#fffbeb", color: "#f59e0b", padding: "6px 10px", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 600, whiteSpace: "nowrap" }}>
-                            PIN
-                          </button>
+                          {(isAdmin || u.role !== "admin") && (
                           <button onClick={() => { setForm({ name: u.name, email: u.email, role: u.role, branchId: u.branchId || "" }); setEditing(u.id); setShowModal(true); }}
+                            aria-label="Edit user"
                             style={{ border: "none", background: "var(--primary-light)", color: "var(--primary)", padding: "6px 9px", borderRadius: 6, cursor: "pointer" }}>
                             <Edit2 size={13} />
                           </button>
-                          {u.id !== userProfile?.id && (
-                            <button onClick={() => handleDeleteUser(u.id)}
+                          )}
+                          {u.id !== userProfile?.id && (isAdmin || u.role !== "admin") && !(u.role === "admin" && adminCount <= 1) && (
+                            <button onClick={() => handleDeleteUser(u.id)} aria-label="Delete user"
                               style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "6px 9px", borderRadius: 6, cursor: "pointer" }}>
                               <Trash2 size={13} />
                             </button>
@@ -516,7 +579,7 @@ export default function Users() {
                     <div style={{ gridColumn: "span 2" }}>
                       <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 6 }}>Password</label>
                       <div style={{ position: "relative" }}>
-                        <input type={showPass ? "text" : "password"} value={password} onChange={e => setPassword(e.target.value)} required placeholder="Minimum 6 characters"
+                        <input type={showPass ? "text" : "password"} value={password} onChange={e => setPassword(e.target.value)} required placeholder={`Minimum ${MIN_PASSWORD_LENGTH} characters`} minLength={MIN_PASSWORD_LENGTH} maxLength={72}
                           style={{ width: "100%", padding: "9px 40px 9px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14, boxSizing: "border-box" }} />
                         <button type="button" onClick={() => setShowPass(p => !p)}
                           style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", border: "none", background: "none", cursor: "pointer", color: "var(--text-muted)" }}>
@@ -529,9 +592,10 @@ export default function Users() {
                 <div style={{ gridColumn: "span 2" }}>
                   <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 6 }}>Role</label>
                   <select value={form.role} onChange={e => setForm(p => ({ ...p, role: e.target.value }))}
+                    disabled={editingSelf}
                     style={{ width: "100%", padding: "9px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14 }}>
                     <optgroup label="Built-in Roles">
-                      {Object.entries(DEFAULT_ROLE_LABELS).map(([id, { label }]) => (
+                      {Object.entries(DEFAULT_ROLE_LABELS).filter(([id]) => isAdmin || id !== "admin").map(([id, { label }]) => (
                         <option key={id} value={id}>{label}</option>
                       ))}
                     </optgroup>
@@ -545,10 +609,16 @@ export default function Users() {
                 <div style={{ gridColumn: "span 2" }}>
                   <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 6 }}>Branch (for Branch Manager)</label>
                   <select value={form.branchId} onChange={e => setForm(p => ({ ...p, branchId: e.target.value }))}
+                    disabled={editingSelf}
                     style={{ width: "100%", padding: "9px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14 }}>
                     <option value="">All Branches / Main</option>
                     {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
                   </select>
+                  {editingSelf && (
+                    <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 6 }}>
+                      You cannot change your own role or branch. Ask another admin.
+                    </p>
+                  )}
                 </div>
               </div>
 
@@ -573,34 +643,6 @@ export default function Users() {
                   style={{ flex: 2, padding: "10px", background: loading ? "#c4a0a8" : "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600 }}>
                   {loading ? "Saving..." : editing ? "Update User" : "Create User"}
                 </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* PIN MODAL */}
-      {showPinModal && pinUser && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 16 }}>
-          <div style={{ background: "white", borderRadius: 16, padding: 32, width: "100%", maxWidth: 380 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 20 }}>
-              <h3 style={{ fontSize: 18, fontWeight: 700 }}>Set PIN — {pinUser.name}</h3>
-              <button onClick={() => { setShowPinModal(false); setPinUser(null); setNewPin(""); }} style={{ border: "none", background: "none", cursor: "pointer" }}><X size={20} /></button>
-            </div>
-            <p style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 20 }}>
-              Allows quick login without email and password. Minimum 4 digits.
-            </p>
-            <form onSubmit={handleSetPin}>
-              <input
-                type="password" inputMode="numeric" pattern="[0-9]*" maxLength={8}
-                value={newPin} onChange={e => setNewPin(e.target.value.replace(/\D/g, ""))}
-                placeholder="••••"
-                style={{ width: "100%", padding: "14px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 24, textAlign: "center", letterSpacing: 12, marginBottom: 20, boxSizing: "border-box" }}
-              />
-              <div style={{ display: "flex", gap: 10 }}>
-                <button type="button" onClick={() => { setShowPinModal(false); setPinUser(null); setNewPin(""); }}
-                  style={{ flex: 1, padding: "10px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer" }}>Cancel</button>
-                <button type="submit" style={{ flex: 2, padding: "10px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600 }}>Set PIN</button>
               </div>
             </form>
           </div>

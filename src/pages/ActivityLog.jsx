@@ -59,6 +59,7 @@ export default function ActivityLog() {
   const isMobile = useIsMobile();
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
   const [search, setSearch] = useState("");
   const [filterModule, setFilterModule] = useState("");
   const [filterAction, setFilterAction] = useState("");
@@ -70,7 +71,7 @@ export default function ActivityLog() {
     const unsub = onSnapshot(
       query(collection(db, "auditLog"), orderBy("createdAt", "desc"), limit(MAX_ROWS)),
       (snap) => { setRows(snap.docs.map((d) => ({ id: d.id, ...d.data() }))); setLoading(false); },
-      (err) => { console.error("Activity log load error:", err); setLoading(false); }
+      (err) => { console.error("Activity log load error:", err); setLoadError(err?.message || "Could not load the activity log"); setLoading(false); }
     );
     return unsub;
   }, [isAdmin]);
@@ -128,6 +129,17 @@ export default function ActivityLog() {
         </div>
         <ExportMenu filename="activity-log" title="Activity Log" getData={getExportData} disabled={filtered.length === 0} pdfOptions={{ orientation: "landscape" }} />
       </div>
+
+      {loadError && (
+        <div role="alert" style={{ padding: "10px 14px", marginBottom: 12, borderRadius: 10, background: "#fef2f2", border: "1px solid #fca5a5", color: "#991b1b", fontSize: 13 }}>
+          <strong>The activity log could not be loaded:</strong> {loadError}. An empty list below does not mean nothing happened.
+        </div>
+      )}
+      {!loadError && rows.length >= MAX_ROWS && (
+        <div role="alert" style={{ padding: "10px 14px", marginBottom: 12, borderRadius: 10, background: "#fffbeb", border: "1px solid #fcd34d", color: "#92400e", fontSize: 13 }}>
+          <strong>Results may be incomplete.</strong> Only the latest {MAX_ROWS} entries are loaded; older activity, and anything matching your search from before then, is not shown.
+        </div>
+      )}
 
       {/* Filters */}
       <ListToolbar

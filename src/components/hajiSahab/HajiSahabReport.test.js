@@ -1,3 +1,4 @@
+/* eslint-disable testing-library/no-unnecessary-act */
 // Mounts the Haji Sahab report with fake data and clicks through the main
 // features: statement, filters, period modes, drill-down, preview, year and
 // branch views.
@@ -20,9 +21,10 @@ jest.mock("recharts", () => {
   return new Proxy({}, { get: () => Stub });
 });
 
+// eslint-disable-next-line import/first
 import HajiSahabReport from "./HajiSahabReport";
 
-globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+global.IS_REACT_ACT_ENVIRONMENT = true;
 
 const branches = [{ id: "b1", name: "Baneen" }, { id: "b2", name: "Banaat" }];
 const raw = {

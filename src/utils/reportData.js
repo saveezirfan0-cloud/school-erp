@@ -6,18 +6,29 @@
 // can be unit-tested and reused (e.g. by the Dashboard later).
 //
 // Accounting conventions (kept from the original Reports page):
-//   * Income is cash-basis: money actually received (invoice.paidAmount),
-//     dated by the invoice's paid date.
-//   * Billed / outstanding are dated by the billing period (invoice
-//     month + year, falling back to date / due date / created).
+// Money definitions are NOT made here: they live in utils/reporting.js
+// (via utils/invoiceTotals.js for per-invoice figures) so Dashboard,
+// Reports, Bank & Cash and the Student Ledger can never disagree
+// (audit ACC-04):
+//   * Income is cash-basis: money actually recorded against invoices
+//     (paidAmount), dated by paid date. An invoice marked "paid" with no
+//     money recorded is NOT income; it is reported as `unverified`.
+//   * Concessions are reported on their own line, never as collected.
+//   * Outstanding (`pending`) is a balance as of today for the branch; it
+//     is not cut by the period. (The Fee Collection tab is a labelled
+//     per-period cohort of invoices billed in the period.)
+//   * Billed is dated by the billing period (month + year) when present.
 //   * Operating expenses are dated by expense.date.
-//   * Payroll is dated by the payslip period (month + year).
+//   * Payroll is cash-basis too: only PAID payslips are an expense, dated
+//     by paid date. Unpaid payslips are a memo (`payrollUnpaid`).
 
 import { toDate } from "./dates";
 import { matchesBranch } from "./branchFilter";
 // Same definitions of "collected" / "outstanding" as Dashboard and Fees & Invoices.
-import { invoiceCollected, invoiceOutstanding, invoicePaymentDate } from "./invoiceTotals";
+import { invoiceCollected, invoiceConcession, invoiceOutstanding, invoiceUnverified } from "./invoiceTotals";
+import { invoiceDate, invoicePaidDate, expenseDate, payslipPaidDate, payslipPeriodDate } from "./reporting";
 // Matches a payment to a chart account by id (survives renames), else by name.
+// Same rule as reporting.attributePayments.
 import { paymentInAccount } from "./paymentAccount";
 
 export const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
@@ -60,24 +71,22 @@ export function monthIndex(m) {
 }
 
 // The date each kind of record is reported against (see header).
+// All of these go through utils/reporting.js so a record lands in the same
+// period on every screen.
 export const recordDate = {
   invoiceBilled(inv) {
-    const mi = monthIndex(inv.month);
-    const y = Number(inv.year);
-    if (mi >= 0 && y) return new Date(y, mi, 1);
-    return parseDay(inv.date) || parseDay(inv.dueDate) || parseDay(inv.createdAt);
+    return parseDay(invoiceDate(inv));
   },
   invoiceCollected(inv) {
-    return parseDay(inv.paidDate) || invoicePaymentDate(inv);
+    return parseDay(invoicePaidDate(inv));
   },
   expense(e) {
-    return parseDay(e.date) || parseDay(e.createdAt);
+    return parseDay(expenseDate(e));
   },
+  // Paid payslips sit on their paid date (cash basis); unpaid ones on
+  // their pay period, for the "not yet paid" memo.
   payslip(p) {
-    const mi = monthIndex(p.month);
-    const y = Number(p.year);
-    if (mi >= 0 && y) return new Date(y, mi, 1);
-    return parseDay(p.date) || parseDay(p.paidDate) || parseDay(p.createdAt);
+    return parseDay(String(p.status || "").toLowerCase() === "paid" ? payslipPaidDate(p) : payslipPeriodDate(p));
   },
   payment(p) {
     return parseDay(p.date) || parseDay(p.createdAt);
@@ -92,6 +101,7 @@ export const DATE_PRESETS = [
   { id: "thisQuarter", label: "This quarter" },
   { id: "lastQuarter", label: "Last quarter" },
   { id: "thisYear", label: "This year (Jan–Dec)" },
+  { id: "ytd", label: "Year to date" },
   { id: "lastYear", label: "Last year" },
   { id: "thisFY", label: "Financial year (Jul–Jun)" },
   { id: "lastFY", label: "Last financial year" },
@@ -115,6 +125,7 @@ export function presetRange(id, today = new Date()) {
     case "thisQuarter": return monthSpan(y, m - (m % 3), 3);
     case "lastQuarter": return monthSpan(y, m - (m % 3) - 3, 3);
     case "thisYear": return monthSpan(y, 0, 12);
+    case "ytd": return { from: new Date(y, 0, 1), to: endOfDay(today) };
     case "lastYear": return monthSpan(y - 1, 0, 12);
     case "thisFY": return monthSpan(m >= 6 ? y : y - 1, 6, 12);
     case "lastFY": return monthSpan(m >= 6 ? y - 1 : y - 2, 6, 12);
@@ -306,10 +317,12 @@ export function prepareData(raw) {
       ...i,
       _billedOn: recordDate.invoiceBilled(i),
       _collectedOn: invoiceCollected(i) > 0 ? recordDate.invoiceCollected(i) : null,
+      _settledOn: recordDate.invoiceCollected(i),
       _amount: num(i.amount),
       _paid: invoiceCollected(i),
-      _concession: num(i.concessionAmount),
+      _concession: invoiceConcession(i),
       _outstanding: invoiceOutstanding(i),
+      _unverified: invoiceUnverified(i),
       _grade: norm(st?.grade) || "Unassigned",
       _student: norm(i.studentName) || norm(st?.name) || "Unknown student",
       _studentCode: st?.studentId || "",
@@ -318,7 +331,7 @@ export function prepareData(raw) {
   return {
     invoices,
     expenses: (raw.expenses || []).map(e => ({ ...e, _on: recordDate.expense(e), _amount: num(e.amount) })),
-    payslips: (raw.payslips || []).map(p => ({ ...p, _on: recordDate.payslip(p), _amount: num(p.netPay ?? p.amount) })),
+    payslips: (raw.payslips || []).map(p => ({ ...p, _on: recordDate.payslip(p), _amount: num(p.netPay ?? p.amount), _isPaid: String(p.status || "").toLowerCase() === "paid" })),
     payments: (raw.payments || []).map(p => ({ ...p, _on: recordDate.payment(p), _amount: num(p.amount) })),
     students: raw.students || [],
     accounts: raw.accounts || [],
@@ -349,35 +362,57 @@ const withShare = (rows) => {
 
 // basis: "cash"    income = money received in the period (by paid date)
 //        "accrual" income = fees billed in the period less concessions (by invoice month)
-// Expenses and payroll are always counted as incurred.
+// Expenses are dated by expense.date; payroll is cash-basis on BOTH bases
+// (only paid payslips, by paid date; unpaid ones are the `payrollUnpaid` memo).
 export function computeFinancials(d, { range, branch = "all", basis = "cash" }) {
   const invoices = d.invoices.filter(i => matchesBranch(i, branch));
-  const expenses = d.expenses.filter(e => matchesBranch(e, branch) && inRange(e._on, range));
-  const payslips = d.payslips.filter(p => matchesBranch(p, branch) && inRange(p._on, range));
+  const allExpenses = d.expenses.filter(e => matchesBranch(e, branch));
+  const allPayslips = d.payslips.filter(p => matchesBranch(p, branch));
+  const expenses = allExpenses.filter(e => inRange(e._on, range));
+  const payslips = allPayslips.filter(p => inRange(p._on, range));
+  const bounded = Boolean(range && (range.from || range.to));
 
+  // Every per-invoice figure below (_paid, _concession, _outstanding, _unverified)
+  // comes from reporting.invoiceFacts, so both bases share one definition of
+  // collected / pending / unverified.
+  //   cash:    income = collected (money recorded against invoices, by paid date)
+  //   accrual: income = billed in the period less concessions on those invoices
+  //            ("earned"). It is a labelled view for budgeting / year-over-year;
+  //            `collected`, `pending` and `unverified` keep their shared meaning
+  //            and an invoice marked paid with no money is still `unverified`.
   const accrual = basis === "accrual";
   let billed = 0, collected = 0, concessions = 0, pending = 0, earned = 0;
+  let unverified = 0, unverifiedCount = 0, unverifiedAllTime = 0, unverifiedAllTimeCount = 0, undated = 0;
   const heads = new Map();
   for (const i of invoices) {
     const billedHere = inRange(i._billedOn, range);
     if (billedHere) {
       billed += i._amount;
-      pending += i._outstanding;
       if (accrual) {
-        earned += Math.max(0, i._amount - i._concession);
-        concessions += i._concession;
-        for (const a of allocateByHead(i, Math.max(0, i._amount - i._concession))) tally(heads, a.head, a.amount);
+        const net = Math.max(0, i._amount - i._concession);
+        earned += net;
+        for (const a of allocateByHead(i, net)) tally(heads, a.head, a.amount);
       }
+    } else if (bounded && !i._billedOn) undated++;
+    // Outstanding is a balance as of today: branch-scoped, not cut by the period.
+    pending += i._outstanding;
+    // Cash basis: concessions and unverified "paid" claims follow the settlement
+    // date. Accrual basis: a concession reduces the invoice it belongs to, so it
+    // follows the billing period.
+    const settled = i._settledOn || i._billedOn;
+    if (i._concession > 0 && inRange(accrual ? i._billedOn : settled, range)) concessions += i._concession;
+    if (i._unverified > 0) {
+      unverifiedAllTime += i._unverified; unverifiedAllTimeCount++;
+      if (inRange(settled, range)) { unverified += i._unverified; unverifiedCount++; }
     }
-    if (!accrual) {
-      // A concession is agreed when the invoice is settled, so it follows the paid date.
-      if (i._concession > 0 && inRange(i._collectedOn || i._billedOn, range)) concessions += i._concession;
-    }
-    if (i._paid > 0 && inRange(i._collectedOn, range)) {
-      collected += i._paid;
-      if (!accrual) for (const a of allocateByHead(i, i._paid)) tally(heads, a.head, a.amount);
+    if (i._paid > 0) {
+      if (inRange(i._collectedOn, range)) {
+        collected += i._paid;
+        if (!accrual) for (const a of allocateByHead(i, i._paid)) tally(heads, a.head, a.amount);
+      } else if (bounded && !i._collectedOn) undated++;
     }
   }
+  if (bounded) undated += allExpenses.filter(e => !e._on).length + allPayslips.filter(p => !p._on).length;
 
   const categories = new Map();
   let opex = 0;
@@ -386,12 +421,17 @@ export function computeFinancials(d, { range, branch = "all", basis = "cash" }) 
     tally(categories, uncategorised(e.category, "Uncategorised"), e._amount);
   }
 
+  // Payroll is cash-basis on both bases: only PAID payslips are an expense. Unpaid ones are a memo.
   const roles = new Map();
-  let payroll = 0, payrollUnpaid = 0;
+  let payroll = 0, payrollUnpaid = 0, paidSlips = 0;
   for (const p of payslips) {
-    payroll += p._amount;
-    if (p.status !== "paid") payrollUnpaid += p._amount;
-    tally(roles, uncategorised(p.role, "Unspecified role"), p._amount);
+    if (p._isPaid) {
+      payroll += p._amount;
+      paidSlips += 1;
+      tally(roles, uncategorised(p.role, "Unspecified role"), p._amount);
+    } else {
+      payrollUnpaid += p._amount;
+    }
   }
 
   const totalExpenses = opex + payroll;
@@ -399,12 +439,13 @@ export function computeFinancials(d, { range, branch = "all", basis = "cash" }) 
   const net = income - totalExpenses;
   return {
     basis, billed, collected, concessions, pending, income,
+    unverified, unverifiedCount, unverifiedAllTime, unverifiedAllTimeCount, undated,
     opex, payroll, payrollUnpaid, totalExpenses, net,
     margin: income > 0 ? net / income : null,
     byHead: withShare(sortDesc([...heads.values()])),
     byCategory: withShare(sortDesc([...categories.values()])),
     byRole: withShare(sortDesc([...roles.values()])),
-    counts: { expenses: expenses.length, payslips: payslips.length },
+    counts: { expenses: expenses.length, payslips: paidSlips },
   };
 }
 
@@ -425,7 +466,7 @@ export function buildSeries(d, { range, branch = "all", granularity, basis = "ca
     else if (i._paid > 0) add(i._collectedOn, "income", i._paid);
   }
   for (const e of d.expenses) if (matchesBranch(e, branch)) add(e._on, "expenses", e._amount);
-  for (const p of d.payslips) if (matchesBranch(p, branch)) add(p._on, "payroll", p._amount);
+  for (const p of d.payslips) if (p._isPaid && matchesBranch(p, branch)) add(p._on, "payroll", p._amount);
   for (const b of buckets) { b.outflow = b.expenses + b.payroll; b.net = b.income - b.outflow; }
   return { granularity: g, buckets };
 }
@@ -579,6 +620,8 @@ export function summarizeFees(rows, { range, granularity, today = new Date() }) 
   const concessions = sum(cohort, i => i._concession);
   const outstanding = sum(cohort, i => i._outstanding);
   const overdue = sum(cohort.filter(i => effectiveStatus(i, today) === "overdue"), i => i._outstanding);
+  const unverifiedRows = cohort.filter(i => i._unverified > 0);
+  const unverified = sum(unverifiedRows, i => i._unverified);
   const payable = billed - concessions;
 
   const statusCounts = { paid: 0, partial: 0, pending: 0, overdue: 0 };
@@ -642,6 +685,7 @@ export function summarizeFees(rows, { range, granularity, today = new Date() }) 
   return {
     cohort, received,
     billed, collected, concessions, outstanding, overdue,
+    unverified, unverifiedCount: unverifiedRows.length,
     receivedInPeriod: sum(received, i => i._paid),
     rate: payable > 0 ? Math.min(1, collected / payable) : null,
     statusCounts, byGrade, byHead, aging, defaulters,
@@ -671,7 +715,8 @@ export function buildHighlights({ cur, prev, fees, branches, only = "", vs = "th
     out.push({ tone: "info", text: `Biggest operating expense: ${topCat.label} — ${rs(topCat.amount)} (${pctText(topCat.share)} of operating spend).` });
   if (only !== "fees" && cur.income > 0 && cur.payroll > 0)
     out.push({ tone: cur.payroll / cur.income > 0.7 ? "bad" : "info", text: `Payroll takes ${pctText(cur.payroll / cur.income)} of fee income.` });
-  if (only !== "fees" && cur.payrollUnpaid > 0) out.push({ tone: "warn", text: `${rs(cur.payrollUnpaid)} of payroll in this period is still unpaid.` });
+  if (only !== "fees" && cur.payrollUnpaid > 0) out.push({ tone: "warn", text: `${rs(cur.payrollUnpaid)} of payroll for this period is not yet paid, so it is not counted as an expense.` });
+  if (only !== "fees" && cur.unverified > 0) out.push({ tone: "warn", text: `${rs(cur.unverified)} of invoices are marked paid with no money recorded. They are not counted as income (see Books Check).` });
   if (fees) {
     if (fees.overdue > 0) out.push({ tone: "bad", text: `${rs(fees.overdue)} of fees is overdue.` });
     const worst = fees.byGrade.find(g => g.outstanding > 0);

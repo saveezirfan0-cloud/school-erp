@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
+import { useUser } from "../context/UserContext";
 import { db } from "../firebase";
-import { collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot, serverTimestamp, updateDocs, deleteDocs } from "../firebase";
+import { collection, addDoc, updateDoc, deleteDoc, doc, serverTimestamp, updateDocs, deleteDocs } from "../firebase";
 import { useBranch } from "../context/BranchContext";
 import { useCollection } from "../hooks/useCollection";
 import { useBulkSelect } from "../hooks/useBulkSelect";
@@ -14,7 +15,6 @@ import ExportMenu from "../components/UI/ExportMenu";
 import toast from "react-hot-toast";
 import { Plus, Trash2, X, Edit2, CalendarCheck, LayoutGrid, List } from "lucide-react";
 import { useNavigate } from "react-router-dom";
-import { useUser } from "../context/UserContext";
 import RollCallModal from "../components/Profile/RollCallModal";
 
 const empty = { name: "", role: "", phone: "", email: "", branchId: "", salary: "", joinDate: "", recurringPayslip: false };
@@ -39,10 +39,10 @@ const HistoricalTag = () => (
 );
 
 export default function Employees() {
+  const { can } = useUser();
   const { branches, activeBranch } = useBranch();
   const isMobile = useIsMobile();
   const navigate = useNavigate();
-  const { can } = useUser();
   const [showRollCall, setShowRollCall] = useState(false);
   const [showModal, setShowModal] = useState(false);
   const [form, setForm] = useState(empty);
@@ -149,7 +149,7 @@ export default function Employees() {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, flexWrap: "wrap", gap: 10 }}>
         <h2 style={{ fontSize: 20, fontWeight: 700 }}>Employees / Teachers <span style={{ fontSize: 13, fontWeight: 400, color: "var(--text-muted)" }}>({total})</span></h2>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          <ExportMenu filename="employees" title="Employees Report" getData={getExportData} disabled={filtered.length === 0} />
+          {can("canExport") && <ExportMenu filename="employees" title="Employees Report" getData={getExportData} disabled={filtered.length === 0} />}
           {can("canEditEmployees") && (
             <button onClick={() => setShowRollCall(true)} style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13 }}>
               <CalendarCheck size={14} /> Attendance
@@ -248,7 +248,7 @@ export default function Employees() {
               </div>
               <div style={{ display: "flex", gap: 6 }} onClick={(e) => e.stopPropagation()}>
                 <button onClick={() => { setForm(emp); setEditing(emp.id); setShowModal(true); }} style={{ border: "none", background: "var(--primary-light)", color: "var(--primary)", padding: "6px 8px", borderRadius: 6, cursor: "pointer" }}><Edit2 size={13} /></button>
-                <button onClick={() => handleDeleteOne(emp)} style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "6px 8px", borderRadius: 6, cursor: "pointer" }}><Trash2 size={13} /></button>
+                {can("canDeleteEmployees") && <button onClick={() => handleDeleteOne(emp)} style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "6px 8px", borderRadius: 6, cursor: "pointer" }}><Trash2 size={13} /></button>}
               </div>
             </div>
             <div style={{ marginTop: 12 }}>
@@ -291,7 +291,7 @@ export default function Employees() {
         onClear={bulk.clear}
         actions={[
           { label: "Edit", icon: Edit2, onClick: () => setShowBulkEdit(true) },
-          { label: "Delete", icon: Trash2, variant: "danger", onClick: handleBulkDelete },
+          ...(can("canDeleteEmployees") ? [{ label: "Delete", icon: Trash2, variant: "danger", onClick: handleBulkDelete }] : []),
         ]}
       />
 

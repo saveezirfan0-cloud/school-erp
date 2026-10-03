@@ -1,10 +1,13 @@
 // src/utils/studentStatement.js
 //
 // Parent-facing fee statement: what a student was billed, what was paid and
-// what is still owed. Money rules come from utils/fees.js so the printout can
-// never disagree with the student ledger or profile.
+// what is still owed. Money rules come from utils/reporting.js (invoiceFacts,
+// the one definition of paid / outstanding / unverified), so the printout
+// agrees with the Student Ledger, Fees, Dashboard and Reports. An invoice
+// marked paid with no money recorded is NOT shown as received; it is flagged
+// "Marked paid, no payment recorded" so the office can chase it.
 
-import { summarizeInvoices } from "./fees";
+import { invoiceFacts, isLive, isEffectiveInvoiceReceipt } from "./reporting";
 import { formatDate, toMillis } from "./dates";
 import { monthIndex } from "./reportData";
 
@@ -20,13 +23,24 @@ const invoiceOrder = (i) => {
 // student: the student row; invoices: that student's invoices; payments: any
 // payments (only those against these invoices count); today: "YYYY-MM-DD".
 export function buildStatement({ student, invoices, payments, today }) {
-  const sum = summarizeInvoices(invoices, payments, today);
+  const mine = (invoices || []).filter(isLive);
+  const ids = new Set(mine.map((i) => i.id));
+  let billed = 0, received = 0, concession = 0, balance = 0, unverified = 0;
+  const rows = mine.map((i) => {
+    const f = invoiceFacts(i);
+    billed += f.billed; received += f.paid; concession += f.concession; balance += f.outstanding; unverified += f.unverified;
+    const statusLabel = f.unverified > 0 ? "Marked paid, no payment recorded"
+      : f.outstanding <= 0 ? "Paid"
+      : f.paid > 0 ? "Partial"
+      : (i.dueDate && today && i.dueDate < today ? "Overdue" : "Pending");
+    return { ...i, amount: f.billed, paid: f.paid, concession: f.concession, balance: f.outstanding, unverified: f.unverified, statusLabel };
+  }).sort((a, b) => invoiceOrder(a) - invoiceOrder(b));
   return {
     student,
-    rows: sum.rows.slice().sort((a, b) => invoiceOrder(a) - invoiceOrder(b)),
-    payments: sum.payments.filter(p => !p.reversed && !p.reversalOf && p.type === "cash_in")
+    rows,
+    payments: (payments || []).filter((p) => ids.has(p.sourceId) && isEffectiveInvoiceReceipt(p))
       .sort((a, b) => toMillis(a.date || a.createdAt) - toMillis(b.date || b.createdAt)),
-    billed: sum.billed, received: sum.received, concession: sum.concession, balance: sum.balance,
+    billed, received, concession, balance, unverified,
   };
 }
 
@@ -64,6 +78,7 @@ export function statementsHtml(statements, { org = "Zohra Majeed Islamic Institu
       <h3>Payments received</h3>
       <table><thead><tr><th>Date</th><th>Account</th><th>Note</th><th class="n">Amount</th></tr></thead>
         <tbody>${payRows || `<tr><td colspan="4" class="muted">No payments recorded.</td></tr>`}</tbody></table>
+      ${st.unverified > 0 ? `<p class="muted">${rs(st.unverified)} is on invoices marked paid with no payment recorded; it is not counted as received.</p>` : ""}
       <div class="due ${st.balance > 0 ? "owing" : "clear"}">${st.balance > 0 ? `Balance due: ${rs(st.balance)}` : "No balance due — thank you."}</div>
       <p class="muted">Computed from the school's fee records. Please contact the office if anything looks wrong.</p>
     </section>`;

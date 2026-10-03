@@ -33,6 +33,11 @@ export default function InvoiceEditModal({ invoice, branches, isMobile, onClose 
   // Older "paid" invoices may have no paidAmount recorded.
   const received = paidAmount > 0 ? paidAmount : (invoice.status === "paid" ? oldAmount : 0);
   const conceded = Number(invoice.concessionAmount || 0);
+  // Once money is recorded against an invoice (payments, a concession, or a
+  // paid/partial status) its amounts are locked here: the books are corrected
+  // by reversing the payment, never by rewriting the invoice total. Only
+  // branch, period, due date and notes stay editable.
+  const locked = paidAmount > 0 || conceded > 0 || ["paid", "partial"].includes(invoice.status) || invoice.ledgerPosted === false;
   const total = items.reduce((s, i) => s + Number(i.amount || 0), 0);
 
   const setItem = (idx, patch) => setItems(p => p.map((it, i) => (i === idx ? { ...it, ...patch } : it)));
@@ -53,14 +58,16 @@ export default function InvoiceEditModal({ invoice, branches, isMobile, onClose 
         year: Number(form.year),
         dueDate: form.dueDate,
         notes: form.notes,
-        lineItems: items.map(i => ({ description: i.description, amount: Number(i.amount || 0) })),
-        amount: total,
         updatedAt: serverTimestamp(),
       };
-      if (Math.abs(total - oldAmount) > 0.001) {
-        // Re-derive status from what's been received against the new total.
-        changes.status = deriveInvoiceStatus(total, received, conceded);
-        if (received > 0 && !paidAmount) changes.paidAmount = received;
+      if (!locked) {
+        changes.lineItems = items.map(i => ({ description: i.description, amount: Number(i.amount || 0) }));
+        changes.amount = total;
+        if (Math.abs(total - oldAmount) > 0.001) {
+          // Re-derive status from what's been received against the new total.
+          changes.status = deriveInvoiceStatus(total, received, conceded);
+          if (received > 0 && !paidAmount) changes.paidAmount = received;
+        }
       }
       await updateDocs("invoices", [invoice.id], changes);
 
@@ -127,8 +134,8 @@ export default function InvoiceEditModal({ invoice, branches, isMobile, onClose 
 
           <div style={{ marginBottom: 16 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-              <label style={{ fontSize: 13, fontWeight: 600 }}>Fee Line Items</label>
-              <button type="button" onClick={() => setItems(p => [...p, { description: "", amount: "" }])}
+              <label style={{ fontSize: 13, fontWeight: 600 }}>Fee Line Items{locked && <span style={{ fontWeight: 400, color: "var(--text-muted)" }}> (locked: money is recorded against this invoice)</span>}</label>
+              <button type="button" disabled={locked} onClick={() => setItems(p => [...p, { description: "", amount: "" }])}
                 style={{ display: "flex", alignItems: "center", gap: 4, padding: "5px 12px", background: "var(--primary-light)", color: "var(--primary)", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 600 }}>
                 <Plus size={12} /> Add Item
               </button>
@@ -136,9 +143,9 @@ export default function InvoiceEditModal({ invoice, branches, isMobile, onClose 
             <div style={{ border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden" }}>
               {items.map((it, idx) => (
                 <div key={idx} style={{ display: "grid", gridTemplateColumns: "1fr 110px auto", gap: 8, padding: "10px 12px", alignItems: "center", borderBottom: "1px solid var(--border)" }}>
-                  <input style={{ ...input, padding: "8px 10px" }} value={it.description} onChange={e => setItem(idx, { description: e.target.value })} placeholder="Description" />
-                  <input type="number" min="0" style={{ ...input, padding: "8px 10px" }} value={it.amount} onChange={e => setItem(idx, { amount: e.target.value })} placeholder="Amount" />
-                  <button type="button" disabled={items.length === 1} onClick={() => setItems(p => p.filter((_, i) => i !== idx))} title="Remove item"
+                  <input style={{ ...input, padding: "8px 10px" }} value={it.description} disabled={locked} onChange={e => setItem(idx, { description: e.target.value })} placeholder="Description" />
+                  <input type="number" min="0" style={{ ...input, padding: "8px 10px" }} value={it.amount} disabled={locked} onChange={e => setItem(idx, { amount: e.target.value })} placeholder="Amount" />
+                  <button type="button" disabled={locked || items.length === 1} onClick={() => setItems(p => p.filter((_, i) => i !== idx))} title="Remove item"
                     style={{ border: "none", background: "none", cursor: items.length === 1 ? "not-allowed" : "pointer", color: "var(--danger)", opacity: items.length === 1 ? 0.3 : 1 }}>
                     <Trash2 size={15} />
                   </button>

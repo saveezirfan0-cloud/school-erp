@@ -1,11 +1,14 @@
+// src/utils/exportUtils.js
+//
 // Shared export helpers used by every list page and document viewer.
 //
-//   exportToCSV    – plain .csv download
-//   exportToExcel  – real .xlsx download (numbers stay numbers)
-//   exportToPDF    – real .pdf file download of a table (jsPDF, loaded on demand)
-//   printHTML      – open a print window (also the "Save as PDF" fallback for
+//   exportToCSV    - plain .csv download (formula-neutralised, SEC-15)
+//   exportToExcel  - real .xlsx download (numbers stay numbers, text neutralised)
+//   exportToPDF    - real .pdf file download of a table (jsPDF, loaded on demand)
+//   printHTML      - open a print window (also the "Save as PDF" fallback for
 //                    text jsPDF's built-in fonts can't draw, e.g. Urdu)
-import * as XLSX from "xlsx";
+//   escapeHtml     - the one HTML escaper: every dynamic value that reaches a
+//                    generated HTML string must go through it (SEC-02)
 import toast from "react-hot-toast";
 
 export const ORG_NAME = "Zohra Majeed Islamic Institute";
@@ -13,13 +16,24 @@ export const ORG_FOOTER = "ZMI School Management System";
 export const BRAND = "#7a2535";
 const BRAND_RGB = [122, 37, 53];
 
+// ---- HTML escaping ----------------------------------------------------
+
+const HTML_ESCAPES = {
+  "&": "&amp;",
+  "<": "&lt;",
+  ">": "&gt;",
+  '"': "&quot;",
+  "'": "&#39;",
+  "`": "&#96;",
+};
+
+/**
+ * Escape a value for safe use as HTML text or inside a quoted attribute.
+ * null/undefined become "". Everything else is converted with String().
+ */
 export function escapeHtml(value) {
-  return String(value ?? "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
+  if (value === null || value === undefined) return "";
+  return String(value).replace(/[&<>"'`]/g, (ch) => HTML_ESCAPES[ch]);
 }
 
 // Safe file name: letters, numbers, dash/underscore only.
@@ -41,31 +55,156 @@ export function downloadBlob(blob, filename) {
   a.download = filename;
   document.body.appendChild(a);
   a.click();
-  a.remove();
+  document.body.removeChild(a);
   // Revoking straight away can cancel the download in some browsers.
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-export function exportToCSV(filename, headers, rows) {
-  const csvContent = [
-    headers.map(h => `"${String(h ?? "").replace(/"/g, '""')}"`).join(","),
-    ...rows.map(row => row.map(cell => `"${String(cell ?? "").replace(/"/g, '""')}"`).join(","))
-  ].join("\r\n");
-  // BOM so Excel opens UTF-8 (e.g. Urdu names) correctly.
-  const blob = new Blob(["\uFEFF" + csvContent], { type: "text/csv;charset=utf-8;" });
-  downloadBlob(blob, `${filename}.csv`);
+// ---- CSV ----------------------------------------------------------------
+
+// A string that spreadsheets parse as a plain number: harmless, and it
+// must stay numeric (e.g. "-500", "+923001234567", "12.5", "1e3").
+const NUMERIC_TEXT = /^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/;
+// First characters that make Excel / Sheets / LibreOffice evaluate a formula.
+const FORMULA_LEAD = /^[=+\-@\t\r]/;
+
+/**
+ * Make one cell safe for a CSV / Excel file and return the raw (unquoted) text.
+ * - real numbers (typeof number) and numeric-looking strings stay as they are
+ * - other text starting with = + - @ tab or CR gets a leading apostrophe,
+ *   which spreadsheets treat as "this is text"
+ */
+export function neutralizeCell(cell) {
+  if (cell === null || cell === undefined) return "";
+  if (typeof cell === "number") return Number.isFinite(cell) ? String(cell) : "";
+  if (typeof cell === "boolean") return cell ? "TRUE" : "FALSE";
+  const text = cell instanceof Date ? cell.toISOString() : String(cell);
+  if (NUMERIC_TEXT.test(text)) return text;
+  return FORMULA_LEAD.test(text) ? `'${text}` : text;
 }
 
-export function exportToExcel(filename, headers, rows, sheetName = "Sheet1") {
-  const ws = XLSX.utils.aoa_to_sheet([headers, ...rows.map(r => r.map(c => c ?? ""))]);
-  ws["!cols"] = headers.map((h, i) => {
-    const longest = Math.max(String(h ?? "").length, ...rows.map(r => String(r[i] ?? "").length));
-    return { wch: Math.min(Math.max(longest + 2, 8), 50) };
-  });
-  const wb = XLSX.utils.book_new();
-  // Excel sheet names: max 31 chars, none of  \ / ? * [ ] :
-  XLSX.utils.book_append_sheet(wb, ws, String(sheetName).replace(/[\\/?*[\]:]/g, " ").slice(0, 31) || "Sheet1");
-  XLSX.writeFile(wb, `${filename}.xlsx`);
+function csvField(cell) {
+  // Real numbers are written bare so they stay numeric in the sheet.
+  if (typeof cell === "number" && Number.isFinite(cell)) return String(cell);
+  return `"${neutralizeCell(cell).replace(/"/g, '""')}"`;
+}
+
+/** Build the CSV text (with a UTF-8 BOM so Excel reads non-ASCII names). */
+export function buildCSV(headers, rows) {
+  const lines = [
+    headers.map(csvField).join(","),
+    ...rows.map((row) => row.map(csvField).join(",")),
+  ];
+  return "\uFEFF" + lines.join("\r\n");
+}
+
+export function exportToCSV(filename, headers, rows) {
+  const blob = new Blob([buildCSV(headers, rows)], { type: "text/csv;charset=utf-8;" });
+  downloadBlob(blob, `${String(filename).replace(/[^\w.\- ]+/g, "_")}.csv`);
+}
+
+// ---- Excel (.xlsx) ------------------------------------------------------
+
+// One cell for the sheet: real numbers stay numeric; text goes through the
+// formula neutraliser (SEC-15); dates stay dates; null becomes empty.
+function excelCell(c) {
+  if (c === null || c === undefined) return "";
+  if (typeof c === "number") return Number.isFinite(c) ? c : "";
+  if (typeof c === "boolean") return c;
+  if (c instanceof Date) return Number.isNaN(c.getTime()) ? "" : c;
+  return neutralizeCell(c);
+}
+
+/**
+ * Download a table as a real .xlsx file. Written with exceljs (the `xlsx`
+ * package has unpatched high advisories, SEC-13 / DEP-1). exceljs is loaded on
+ * demand so it stays out of the main bundle.
+ */
+export async function exportToExcel(filename, headers, rows, sheetName = "Sheet1") {
+  try {
+    const ExcelJS = (await import("exceljs/dist/exceljs.min.js")).default;
+    const wb = new ExcelJS.Workbook();
+    // Excel sheet names: max 31 chars, none of  \ / ? * [ ] :
+    const name = String(sheetName).replace(/[\\/?*[\]:]/g, " ").slice(0, 31).trim() || "Sheet1";
+    const ws = wb.addWorksheet(name);
+    ws.addRow(headers.map(excelCell));
+    rows.forEach((r) => ws.addRow(r.map(excelCell)));
+    ws.columns = headers.map((h, i) => {
+      const longest = Math.max(String(h ?? "").length, ...rows.map((r) => String(r[i] ?? "").length));
+      return { width: Math.min(Math.max(longest + 2, 8), 50) };
+    });
+    const buffer = await wb.xlsx.writeBuffer();
+    downloadBlob(
+      new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }),
+      `${String(filename).replace(/[^\w.\- ]+/g, "_")}.xlsx`
+    );
+  } catch (err) {
+    console.error("Excel export failed", err);
+    toast.error("Couldn't create the Excel file - " + (err?.message || "unknown error"));
+  }
+}
+
+// ---- Print --------------------------------------------------------------
+
+/** Wrap body HTML in a print document. The CSP forbids script execution. */
+function printDocument(title, bodyHtml, css = "", origin = "") {
+  return `<!doctype html><html><head><meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data: ${escapeHtml(origin)}">
+  <title>${escapeHtml(title)}</title>
+  <style>
+    @page { margin: 14mm; }
+    * { box-sizing: border-box; }
+    body { font-family: Arial, Helvetica, sans-serif; color: #1e293b; margin: 0; padding: 24px; }
+    ${css}
+  </style></head><body>${bodyHtml}</body></html>`;
+}
+
+/**
+ * Open a print window with ready-made HTML (callers must already have escaped
+ * every dynamic value in bodyHtml). The browser's print dialog offers "Save
+ * as PDF". Printing is triggered from here, not from a script inside the
+ * document, so the document can run with scripts disabled. Returns false when
+ * the browser blocks the popup.
+ */
+export function printHTML(title, bodyHtml, css = "") {
+  const w = window.open("", "_blank");
+  if (!w) {
+    toast.error("Pop-up blocked - allow pop-ups for this site to print or save as PDF");
+    return false;
+  }
+  try { w.opener = null; } catch { /* ignore */ }
+  w.document.write(printDocument(title, bodyHtml, css, window.location.origin));
+  w.document.close();
+  // Give images (the logo) a moment to load before the print dialog opens.
+  setTimeout(() => { try { if (w.focus) w.focus(); w.print(); } catch { /* window closed */ } }, 300);
+  return true;
+}
+
+function tableToHtml(title, headers, rows, generatedOn = new Date().toLocaleDateString()) {
+  return `
+    <h2>${escapeHtml(title)}</h2>
+    <p class="sub">${escapeHtml(ORG_NAME)} \u2014 Generated ${escapeHtml(generatedOn)}</p>
+    <table>
+      <thead><tr>${headers.map((h) => `<th>${escapeHtml(h)}</th>`).join("")}</tr></thead>
+      <tbody>${rows.map((row) => `<tr>${row.map((cell) => `<td>${escapeHtml(cell)}</td>`).join("")}</tr>`).join("")}</tbody>
+    </table>
+    <div class="footer">${escapeHtml(ORG_FOOTER)}</div>`;
+}
+
+const TABLE_CSS = `
+  h2 { color: ${BRAND}; margin: 0 0 4px; }
+  .sub { color: #64748b; font-size: 13px; margin: 0 0 20px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { background: ${BRAND}; color: white; padding: 10px 12px; text-align: left; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  td { padding: 9px 12px; border-bottom: 1px solid #e2e8f0; }
+  tr:nth-child(even) td { background: #f8fafc; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  tr { page-break-inside: avoid; }
+  thead { display: table-header-group; }
+  .footer { margin-top: 28px; font-size: 12px; color: #94a3b8; text-align: center; }`;
+
+/** Build the table print document. Every dynamic value is HTML-escaped. */
+export function buildPrintHtml(title, headers, rows, generatedOn = new Date().toLocaleDateString()) {
+  return printDocument(title, tableToHtml(title, headers, rows, generatedOn), TABLE_CSS);
 }
 
 // ---------------------------------------------------------------------------
@@ -86,6 +225,7 @@ export function toPdfText(value) {
 }
 
 export function needsUnicodeFallback(strings) {
+  // eslint-disable-next-line no-control-regex
   return strings.some(s => /[^\u0000-\u00ff]/.test(toPdfText(s)));
 }
 
@@ -110,50 +250,6 @@ export async function loadPdfLibs() {
   const [{ jsPDF }, autoTableModule] = await Promise.all([import("jspdf"), import("jspdf-autotable")]);
   return { jsPDF, autoTable: autoTableModule.default || autoTableModule.autoTable };
 }
-
-// Open a print window with ready-made HTML. The browser's print dialog
-// offers "Save as PDF". Printing is triggered from inside the new window
-// once it has loaded (so images are ready).
-export function printHTML(title, bodyHtml, css = "") {
-  const w = window.open("", "_blank");
-  if (!w) {
-    toast.error("Pop-up blocked — allow pop-ups for this site to print or save as PDF");
-    return false;
-  }
-  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title>
-  <style>
-    @page { margin: 14mm; }
-    * { box-sizing: border-box; }
-    body { font-family: Arial, Helvetica, sans-serif; color: #1e293b; margin: 0; padding: 24px; }
-    ${css}
-  </style></head><body>${bodyHtml}
-  <script>window.addEventListener("load", function () { setTimeout(function () { window.focus(); window.print(); }, 150); });</script>
-  </body></html>`);
-  w.document.close();
-  return true;
-}
-
-function tableToHtml(title, headers, rows) {
-  return `
-    <h2>${escapeHtml(title)}</h2>
-    <p class="sub">${escapeHtml(ORG_NAME)} — Generated ${escapeHtml(new Date().toLocaleDateString())}</p>
-    <table>
-      <thead><tr>${headers.map(h => `<th>${escapeHtml(h)}</th>`).join("")}</tr></thead>
-      <tbody>${rows.map(row => `<tr>${row.map(cell => `<td>${escapeHtml(cell)}</td>`).join("")}</tr>`).join("")}</tbody>
-    </table>
-    <div class="footer">${escapeHtml(ORG_FOOTER)}</div>`;
-}
-
-const TABLE_CSS = `
-  h2 { color: ${BRAND}; margin: 0 0 4px; }
-  .sub { color: #64748b; font-size: 13px; margin: 0 0 20px; }
-  table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  th { background: ${BRAND}; color: white; padding: 10px 12px; text-align: left; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  td { padding: 9px 12px; border-bottom: 1px solid #e2e8f0; }
-  tr:nth-child(even) td { background: #f8fafc; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  tr { page-break-inside: avoid; }
-  thead { display: table-header-group; }
-  .footer { margin-top: 28px; font-size: 12px; color: #94a3b8; text-align: center; }`;
 
 // Download a table as a real PDF file.
 //   title   – heading shown at the top (also used for the file name)

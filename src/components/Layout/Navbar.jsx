@@ -1,13 +1,21 @@
-import React from "react";
+import React, { useEffect } from "react";
 import { useAuth } from "../../context/AuthContext";
 import { useBranch } from "../../context/BranchContext";
+import { useUser } from "../../context/UserContext";
 import { LogOut, Menu, History } from "lucide-react";
 import { isHistoryVisible, setHistoryVisible } from "../../firebase";
 
 export default function Navbar({ onMenuClick }) {
   const { logout, user } = useAuth();
   const { branches, activeBranch, setActiveBranch } = useBranch();
+  const { assignedBranchId } = useUser();
   const history = isHistoryVisible();
+
+  // Staff limited to one branch can only work in that branch (the
+  // database enforces the same scope; this keeps the UI consistent).
+  useEffect(() => {
+    if (assignedBranchId && activeBranch !== assignedBranchId) setActiveBranch(assignedBranchId);
+  }, [assignedBranchId, activeBranch, setActiveBranch]);
 
   return (
     <header style={{
@@ -21,11 +29,11 @@ export default function Navbar({ onMenuClick }) {
           style={{ border: "none", background: "none", cursor: "pointer", padding: "6px", display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 6, flexShrink: 0 }}>
           <Menu size={22} color="#475569" />
         </button>
-        <select value={activeBranch} onChange={e => setActiveBranch(e.target.value)}
+        <select value={activeBranch} onChange={e => setActiveBranch(e.target.value)} disabled={!!assignedBranchId}
           style={{ padding: "6px 10px", borderRadius: 6, border: "1px solid var(--border)", background: "white", fontSize: 13, cursor: "pointer", maxWidth: 180 }}>
-          <option value="all">🏢 All Branches</option>
-          <option value="main">🏫 Main Office</option>
-          {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+          {!assignedBranchId && <option value="all">🏢 All Branches</option>}
+          {!assignedBranchId && <option value="main">🏫 Main Office</option>}
+          {branches.filter(b => !assignedBranchId || b.id === assignedBranchId).map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
         </select>
         <button onClick={() => setHistoryVisible(!history)}
           title={history ? "Showing historical data imported from Manager.io (click to hide)" : "Historical data from Manager.io is hidden (click to show)"}

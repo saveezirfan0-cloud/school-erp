@@ -17,7 +17,7 @@
 // which section each head sits in.
 
 import { toDate } from "./dates";
-import { paymentInAccount } from "./paymentAccount";
+import { attributePayments } from "./reporting";
 import { isAutoJournal } from "./autoJournals";
 import { invoiceCollected, invoicePaymentDate } from "./invoiceTotals";
 import { isLedgerIncome } from "./ledgerIncome";
@@ -200,10 +200,13 @@ export function buildMonthlyStatement({
 
   // ---- Bank & Cash accounts: opening, movement in the month, closing ----
   const scopedPayments = payments.filter(inScope);
+  // Same attribution as Bank & Cash / Books Check: by account id, name only as
+  // a fallback, and duplicate account names never double count.
+  const byAccount = attributePayments(accounts, scopedPayments).byAccount;
   const cashAccounts = accounts
     .filter((a) => a.subType === "Bank & Cash" && (!account || a.name === account))
     .map((a) => {
-      const mine = scopedPayments.filter((p) => paymentInAccount(p, a) && ymd(p.date) !== "");
+      const mine = (byAccount.get(a.id) || []).filter((p) => ymd(p.date) !== "");
       const signed = (p) => (p.type === "cash_in" ? num(p.amount) : -num(p.amount));
       const before = mine.filter((p) => ymd(p.date) < from).reduce((s, p) => s + signed(p), 0);
       const during = mine.filter((p) => inMonth(p.date));

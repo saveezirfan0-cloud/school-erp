@@ -1,64 +1,75 @@
 // src/utils/invoiceTotals.js
-// Single source of truth for invoice money figures. Dashboard, Reports and
-// Fees & Invoices all used to compute "collected" / "pending" differently
-// (face value vs paidAmount, partial invoices ignored, ...), so the same
-// data showed different totals on each screen. Always go through here.
-import { toDate } from "./dates";
+// Per-invoice money figures for Dashboard, Reports and Fees & Invoices.
+//
+// This file holds NO definitions of its own: every function delegates to
+// utils/reporting.js (invoiceFacts), the single source of truth for what
+// "collected", "outstanding", "concession" and "marked paid, no money"
+// mean (audit ACC-04). It stays as a thin adapter so existing imports
+// keep working. Do not re-implement a formula here.
+import { invoiceFacts, invoicePaidDate } from "./reporting";
 
 const num = (v) => Number(v || 0);
 
 // Concession (waived) amount on an invoice.
 export function invoiceConcession(inv) {
-  return num(inv.concessionAmount);
+  return invoiceFacts(inv).concession;
 }
 
-// Money actually received for an invoice.
-// Invoices marked "paid" before `paidAmount` was tracked (bulk-created or
-// imported) have no recorded amount; treat them as settled in full, less any
-// concession, so they are not silently dropped from the totals.
+// Cash recorded against the invoice (paidAmount). An invoice marked "paid"
+// with no money recorded is NOT collected: it is reported separately by
+// invoiceUnverified() so it can be chased.
 export function invoiceCollected(inv) {
-  const paid = num(inv.paidAmount);
-  if (inv.status === "paid" && paid <= 0) {
-    return Math.max(0, num(inv.amount) - invoiceConcession(inv));
-  }
-  return paid;
+  return invoiceFacts(inv).paid;
 }
 
-// Balance still owed. Only open invoices (pending / partial) have one.
+// Balance still owed: amount - paid - concession for every non-paid status
+// (pending, partial, overdue, ...); 0 once the invoice is marked paid.
 export function invoiceOutstanding(inv) {
-  if (inv.status !== "pending" && inv.status !== "partial") return 0;
-  return Math.max(0, num(inv.amount) - invoiceCollected(inv) - invoiceConcession(inv));
+  return invoiceFacts(inv).outstanding;
+}
+
+// Marked paid, but paid + concession is less than the amount.
+export function invoiceUnverified(inv) {
+  return invoiceFacts(inv).unverified;
 }
 
 // Date a payment is attributed to for monthly charts; null if unknown.
+// paidDate, then the invoice date, then createdAt (local date).
 export function invoicePaymentDate(inv) {
-  return toDate(inv.paidDate) || toDate(inv.createdAt) || null;
+  const ymd = invoicePaidDate(inv);
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd);
+  return m ? new Date(+m[1], +m[2] - 1, +m[3]) : null;
 }
 
 // Totals for a list of invoices:
 //   billed      face value of every invoice
 //   collected   cash received (includes part-payments on partial invoices)
 //   concessions amount waived
-//   pending     outstanding balance on pending + partial invoices
+//   pending     outstanding balance on every non-paid invoice
+//   unverified  marked paid with no (or too little) money recorded
 export function sumInvoices(invoices) {
   return invoices.reduce((t, inv) => {
-    t.billed += num(inv.amount);
-    t.collected += invoiceCollected(inv);
-    t.concessions += invoiceConcession(inv);
-    t.pending += invoiceOutstanding(inv);
+    const f = invoiceFacts(inv);
+    t.billed += f.billed;
+    t.collected += f.paid;
+    t.concessions += f.concession;
+    t.pending += f.outstanding;
+    t.unverified += f.unverified;
     t.count += 1;
     return t;
-  }, { billed: 0, collected: 0, concessions: 0, pending: 0, count: 0 });
+  }, { billed: 0, collected: 0, concessions: 0, pending: 0, unverified: 0, count: 0 });
 }
 
-// Collected cash per calendar month (index 0 = Jan), by payment date.
+// Collected cash per calendar month (index 0 = January) of the payment
+// date. NOTE: months of different years merge; prefer
+// reporting.monthlySeries (keyed YYYY-MM) for anything spanning years.
 export function collectedByMonth(invoices) {
   const months = new Array(12).fill(0);
   for (const inv of invoices) {
     const amt = invoiceCollected(inv);
     if (amt <= 0) continue;
     const d = invoicePaymentDate(inv);
-    if (d) months[d.getMonth()] += amt;
+    if (d) months[d.getMonth()] += num(amt);
   }
   return months;
 }

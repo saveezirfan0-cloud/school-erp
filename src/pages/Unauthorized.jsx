@@ -1,9 +1,27 @@
 import React from "react";
 import { useNavigate } from "react-router-dom";
 import { ShieldOff } from "lucide-react";
+import { useAuth } from "../context/AuthContext";
+import { useUser } from "../context/UserContext";
 
+// "You can't open this page". The button goes to the first page the
+// user is actually allowed to open, or to sign-out when there is none,
+// so it can never bounce back into another denial.
 export default function Unauthorized() {
   const navigate = useNavigate();
+  const { user, logout } = useAuth();
+  const { homeRoute } = useUser();
+
+  let label = "Sign in";
+  let action = () => navigate("/login");
+  if (user && homeRoute) {
+    label = "Go to my home page";
+    action = () => navigate(homeRoute, { replace: true });
+  } else if (user) {
+    label = "Sign out";
+    action = () => logout();
+  }
+
   return (
     <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#f8fafc", padding: 16 }}>
       <div style={{ background: "white", borderRadius: 20, padding: 48, textAlign: "center", maxWidth: 400, width: "100%", border: "1px solid #e2e8f0" }}>
@@ -12,9 +30,9 @@ export default function Unauthorized() {
         </div>
         <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 8 }}>Access Denied</h2>
         <p style={{ color: "#64748b", fontSize: 14, marginBottom: 28 }}>You don't have permission to view this page. Contact your administrator.</p>
-        <button onClick={() => navigate("/")}
+        <button onClick={action}
           style={{ width: "100%", padding: "12px", background: "#7a2535", color: "white", border: "none", borderRadius: 10, cursor: "pointer", fontWeight: 600, fontSize: 14 }}>
-          Go to my home page
+          {label}
         </button>
       </div>
     </div>

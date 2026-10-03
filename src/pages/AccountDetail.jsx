@@ -1,39 +1,53 @@
 import React, { useEffect, useState } from "react";
 import { db } from "../firebase";
-import { collection, onSnapshot, addDoc, serverTimestamp } from "../firebase";
-import { paymentInAccount } from "../utils/accounting";
+import { collection, onSnapshot, addDoc, deleteDoc, doc, serverTimestamp } from "../firebase";
 import { useParams, useNavigate } from "react-router-dom";
 import ExportMenu from "../components/UI/ExportMenu";
-import { ArrowLeft, ArrowUpCircle, ArrowDownCircle, Plus, X } from "lucide-react";
+import { useUser } from "../context/UserContext";
+import { ArrowLeft, Plus, X } from "lucide-react";
 import toast from "react-hot-toast";
+import { logActivity } from "../utils/auditLog";
+import { DataWarnings } from "../components/ReportControls";
+import { attributePayments, accountTotals, isCapped, isLive, todayLocal, toYmd, round2 } from "../utils/reporting";
 
 export default function AccountDetail() {
   const { accountId } = useParams();
   const navigate = useNavigate();
+  const { can } = useUser();
   const [account, setAccount] = useState(null);
   const [payments, setPayments] = useState([]);
   const [showTransfer, setShowTransfer] = useState(false);
   const [allAccounts, setAllAccounts] = useState([]);
-  const [transfer, setTransfer] = useState({ toAccount: "", amount: "", date: "", description: "" });
+  const [transfer, setTransfer] = useState({ toAccount: "", amount: "", date: todayLocal(), description: "" });
+  const [submitting, setSubmitting] = useState(false);
+  const [capped, setCapped] = useState(false);
+  const [errors, setErrors] = useState({});
 
   useEffect(() => {
+    const fail = (name) => (err) => {
+      console.error(`AccountDetail ${name} error:`, err);
+      setErrors((e) => ({ ...e, [name]: err?.message || "Could not load" }));
+    };
     const u1 = onSnapshot(collection(db, "accounts"), snap => {
-      const all = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      const all = snap.docs.map(d => ({ id: d.id, ...d.data() })).filter(isLive);
       setAllAccounts(all);
       setAccount(all.find(a => a.id === accountId));
-    });
-    const u2 = onSnapshot(collection(db, "payments"), snap =>
-      setPayments(snap.docs.map(d => ({ id: d.id, ...d.data() })))
-    );
+    }, fail("accounts"));
+    const u2 = onSnapshot(collection(db, "payments"), snap => {
+      setPayments(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+      setCapped(isCapped(snap.size));
+    }, fail("payments"));
     return () => { u1(); u2(); };
   }, [accountId]);
 
   if (!account) return <div style={{ padding: 40, color: "var(--text-muted)" }}>Loading...</div>;
 
-  const txns = payments.filter(p => paymentInAccount(p, account)).sort((a, b) => new Date(b.date) - new Date(a.date));
-  const inflow = txns.filter(p => p.type === "cash_in").reduce((s, p) => s + Number(p.amount), 0);
-  const outflow = txns.filter(p => p.type === "cash_out").reduce((s, p) => s + Number(p.amount), 0);
-  const balance = Number(account.balance || 0) + inflow - outflow;
+  // Transactions are matched by account id, with the name as a fallback
+  // for older rows, so renaming the account does not lose its history.
+  const mine = attributePayments(allAccounts, payments).byAccount.get(account.id) || [];
+  const txns = [...mine].sort((a, b) =>
+    (toYmd(b.date) || "").localeCompare(toYmd(a.date) || "") || String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+  const { inflow, outflow, balance } = accountTotals(account, mine);
 
   // Running balance
   let running = Number(account.balance || 0);
@@ -54,21 +68,48 @@ export default function AccountDetail() {
     };
   };
 
+  // Two legs, written one after the other (the shim has no transaction).
+  // If the second leg fails the first is removed again so money never
+  // leaves one account without arriving in the other.
   const handleTransfer = async (e) => {
     e.preventDefault();
-    await addDoc(collection(db, "payments"), {
-      type: "cash_out", account: account.name, accountId: account.id, amount: transfer.amount,
-      date: transfer.date, description: `Transfer to ${transfer.toAccount}: ${transfer.description}`,
-      category: "Bank Transfer", createdAt: serverTimestamp()
-    });
-    await addDoc(collection(db, "payments"), {
-      type: "cash_in", account: transfer.toAccount, accountId: allAccounts.find(a => a.name === transfer.toAccount)?.id || "", amount: transfer.amount,
-      date: transfer.date, description: `Transfer from ${account.name}: ${transfer.description}`,
-      category: "Bank Transfer", createdAt: serverTimestamp()
-    });
-    toast.success("Transfer recorded");
-    setShowTransfer(false);
-    setTransfer({ toAccount: "", amount: "", date: "", description: "" });
+    if (submitting) return;
+    const amount = round2(transfer.amount);
+    const target = allAccounts.find(a => a.id === transfer.toAccount);
+    if (!target) return toast.error("Choose the account to transfer to");
+    if (target.id === account.id) return toast.error("Choose a different account");
+    if (!(amount > 0)) return toast.error("Enter an amount greater than zero");
+    const date = toYmd(transfer.date) || todayLocal();
+    const ref = `TRF-${(typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : String(Date.now())).slice(0, 8)}`;
+    setSubmitting(true);
+    let firstLeg = null;
+    try {
+      firstLeg = await addDoc(collection(db, "payments"), {
+        type: "cash_out", account: account.name, accountId: account.id, amount,
+        date, description: `Transfer to ${target.name}: ${transfer.description}`,
+        category: "Bank Transfer", reference: ref, createdAt: serverTimestamp()
+      });
+      await addDoc(collection(db, "payments"), {
+        type: "cash_in", account: target.name, accountId: target.id, amount,
+        date, description: `Transfer from ${account.name}: ${transfer.description}`,
+        category: "Bank Transfer", reference: ref, createdAt: serverTimestamp()
+      });
+      logActivity("transferred", "Bank & Cash", `${ref} Rs. ${amount.toLocaleString()} from ${account.name} to ${target.name} on ${date}`);
+      toast.success("Transfer recorded");
+      setShowTransfer(false);
+      setTransfer({ toAccount: "", amount: "", date: todayLocal(), description: "" });
+    } catch (err) {
+      let undone = false;
+      if (firstLeg) {
+        try { await deleteDoc(doc(db, "payments", firstLeg.id)); undone = true; } catch { /* reported below */ }
+      }
+      toast.error(firstLeg && !undone
+        ? `Transfer failed half-way (${ref}). Check Payments for the Rs. ${amount.toLocaleString()} cash-out from ${account.name} and fix it.`
+        : (err?.message || "Transfer failed. Nothing was recorded."));
+      logActivity("transfer failed", "Bank & Cash", `${ref} Rs. ${amount.toLocaleString()} ${account.name} to ${target.name}${firstLeg && !undone ? " (first leg NOT undone)" : ""}`);
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -84,7 +125,7 @@ export default function AccountDetail() {
           <p style={{ color: "var(--text-muted)", fontSize: 14 }}>{account.code} — {account.subType}</p>
         </div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
-          <ExportMenu filename={`account-${account.code || account.name}`} title={`Account Statement - ${account.name}`} getData={getExportData} disabled={txns.length === 0} pdfOptions={{ subtitle: `Balance Rs. ${balance.toLocaleString()}` }} />
+          {can("canExport") && <ExportMenu filename={`account-${account.code || account.name}`} title={`Account Statement - ${account.name}`} getData={getExportData} disabled={txns.length === 0} pdfOptions={{ subtitle: `Balance Rs. ${balance.toLocaleString()}` }} />}
           <button onClick={() => setShowTransfer(true)}
             style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 18px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600 }}>
             <Plus size={16} /> Transfer Funds
@@ -92,7 +133,9 @@ export default function AccountDetail() {
         </div>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 16, marginBottom: 24 }}>
+      <DataWarnings capped={capped ? ["payments"] : []} errors={errors} />
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 16, marginBottom: 24 }}>
         {[
           { label: "Current Balance", value: balance, color: "var(--primary)" },
           { label: "Opening Balance", value: Number(account.balance || 0), color: "#475569" },
@@ -158,12 +201,12 @@ export default function AccountDetail() {
                   <select value={transfer.toAccount} onChange={e => setTransfer(p => ({ ...p, toAccount: e.target.value }))} required
                     style={{ width: "100%", padding: "9px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14 }}>
                     <option value="">Select account</option>
-                    {allAccounts.filter(a => a.id !== accountId).map(a => <option key={a.id} value={a.name}>{a.name}</option>)}
+                    {allAccounts.filter(a => a.id !== accountId && (a.subType === "Bank & Cash" || a.type === "Assets")).map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
                   </select>
                 </div>
                 <div>
                   <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 6 }}>Amount (Rs.)</label>
-                  <input type="number" value={transfer.amount} onChange={e => setTransfer(p => ({ ...p, amount: e.target.value }))} required
+                  <input type="number" min="0.01" step="0.01" value={transfer.amount} onChange={e => setTransfer(p => ({ ...p, amount: e.target.value }))} required
                     style={{ width: "100%", padding: "9px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14 }} />
                 </div>
                 <div>
@@ -179,7 +222,7 @@ export default function AccountDetail() {
               </div>
               <div style={{ display: "flex", gap: 12, marginTop: 24, justifyContent: "flex-end" }}>
                 <button type="button" onClick={() => setShowTransfer(false)} style={{ padding: "10px 20px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer" }}>Cancel</button>
-                <button type="submit" style={{ padding: "10px 20px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600 }}>Transfer</button>
+                <button type="submit" disabled={submitting} style={{ padding: "10px 20px", background: submitting ? "#c4a0a8" : "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: submitting ? "default" : "pointer", fontWeight: 600 }}>{submitting ? "Transferring…" : "Transfer"}</button>
               </div>
             </form>
           </div>

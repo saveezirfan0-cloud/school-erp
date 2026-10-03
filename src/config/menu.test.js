@@ -1,6 +1,7 @@
 import {
   MENU_ITEMS, DEFAULT_SECTIONS, defaultLayout, normalizeLayout, resolveMenu,
   moveItem, moveSection, removeSection, toggleHidden, addSection,
+  searchPages, listPages, homePath, normalizePrefs,
 } from "./menu";
 
 const allAccess = { can: () => true, isAdmin: true };
@@ -82,8 +83,6 @@ test("edit operations don't mutate their input", () => {
 });
 
 // ---- search, home page and prefs ----
-import { searchPages, listPages, homePath, normalizePrefs } from "./menu";
-
 test("searchPages matches label, section and keywords, best match first", () => {
   const pages = listPages(defaultLayout(), allAccess);
   expect(searchPages(pages, "").length).toBe(pages.length);
@@ -96,7 +95,7 @@ test("searchPages matches label, section and keywords, best match first", () => 
 test("listPages respects permissions but not the hidden list", () => {
   const layout = toggleHidden(defaultLayout(), "students");
   const only = { can: (p) => p === "canViewStudents", isAdmin: false };
-  expect(listPages(layout, only).map((p) => p.key)).toEqual(["students", "trash", "settings"]);
+  expect(listPages(layout, only).map((p) => p.key)).toEqual(["students", "settings"]);  // Trash needs a delete permission
 });
 
 test("homePath: dashboard if allowed, else the first page of the user's own menu", () => {
@@ -106,8 +105,14 @@ test("homePath: dashboard if allowed, else the first page of the user's own menu
   // user moved Fees to the top -> lands there
   const moved = moveItem(defaultLayout(), "fees", "main", 0);
   expect(homePath(moved, collector)).toBe("/fees");
-  // nothing accessible except Trash/Settings -> still lands on one of them
-  expect(homePath(defaultLayout(), { can: () => false, isAdmin: false })).toBe("/trash");
+  // nothing accessible except Settings -> no landing page (fail closed:
+  // never send a user with no permissions to Settings/Trash/a guess)
+  expect(homePath(defaultLayout(), { can: () => false, isAdmin: false })).toBeNull();
+  // Trash is not a landing page even for someone who can only delete
+  expect(homePath(defaultLayout(), { can: (p) => p === "canDeleteFees", isAdmin: false })).toBeNull();
+  // a pinned/hidden/searchable list never contains pages without permission
+  const none = { can: () => false, isAdmin: false };
+  expect(listPages(defaultLayout(), none).map((p) => p.key)).toEqual(["settings"]);
 });
 
 test("normalizePrefs drops unknown/duplicate pins and keeps collapsed null when unset", () => {

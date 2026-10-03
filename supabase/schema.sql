@@ -1,6 +1,10 @@
 -- ============================================================
 -- ZMI School ERP — Supabase schema
--- Run this in Supabase Studio → SQL Editor (one shot).
+-- BASELINE script for a brand-new database. Do not re-run it on a
+-- live database by hand: see supabase/migrations/README.md for the
+-- full, ordered setup (schema -> accounting -> trash -> security ->
+-- realtime -> migrations/0001...). It is idempotent and safe to
+-- re-run, but it will never change columns of existing tables.
 -- Mirrors the former Firestore collections as Postgres tables.
 -- Every table keeps a flexible shape: known/queried fields are
 -- real columns; everything else lives in `extra jsonb` so the
@@ -27,7 +31,7 @@ create table if not exists public.users (
   uid         uuid,                      -- legacy alias, = id
   name        text,
   email       text,
-  role        text default 'admin',
+  role        text default 'none',   -- fail closed: new profiles have no access until an admin sets a role (DB-15)
   branch_id   text,
   pin         text,
   extra       jsonb default '{}'::jsonb,
@@ -180,7 +184,7 @@ create table if not exists public.journals (
 -- CUSTOM ROLES   (id is the role key, e.g. "site_supervisor")
 -- ============================================================
 create table if not exists public.custom_roles (
-  id           text primary key,
+  id           text primary key default ('role_' || replace(gen_random_uuid()::text, '-', '')),  -- UX-002: inserts that omit id no longer fail
   permissions  jsonb default '{}'::jsonb,
   extra        jsonb default '{}'::jsonb,
   created_at   timestamptz default now(),
@@ -234,11 +238,19 @@ begin
 end $$;
 
 -- ============================================================
--- ROW LEVEL SECURITY
--- Simple policy: any authenticated user has full access.
--- (Matches the old Firestore rules where the app enforced
--- role permissions client-side via UserContext.)
--- Tighten later per-table if you want server-side enforcement.
+-- ROW LEVEL SECURITY  (fail closed)
+--
+-- This script ONLY switches RLS on. It deliberately creates NO
+-- policies: with RLS enabled and no policy, every table is denied
+-- to anon/authenticated until security.sql (and migrations/) add
+-- the real per-role policies.
+--
+-- History (audit DB-1 / SEC-05): this script used to end with a
+-- loop that created an allow-all policy named "auth all" on every
+-- table. Postgres ORs permissive policies together, so re-running
+-- this file on a live database silently re-opened everything.
+-- That block has been removed. Re-running this file is now safe:
+-- it never creates, replaces or drops any policy.
 -- ============================================================
 do $$
 declare t text;
@@ -249,9 +261,5 @@ begin
     'reminder_logs','audit_log'
   ] loop
     execute format('alter table public.%I enable row level security;', t);
-    execute format('drop policy if exists "auth all" on public.%I;', t);
-    execute format(
-      'create policy "auth all" on public.%I
-         for all to authenticated using (true) with check (true);', t);
   end loop;
 end $$;
