@@ -17,6 +17,7 @@
 // which section each head sits in.
 
 import { toDate } from "./dates";
+import { paymentInAccount } from "./accounting";
 import { invoiceCollected, invoicePaymentDate } from "./invoiceTotals";
 import {
   INCOME_GROUPS, EXPENSE_GROUPS, INCOME_SUBTYPE_GROUP, EXPENSE_SUBTYPE_GROUP,
@@ -182,7 +183,7 @@ export function buildMonthlyStatement({
   const cashAccounts = accounts
     .filter((a) => a.subType === "Bank & Cash")
     .map((a) => {
-      const mine = scopedPayments.filter((p) => p.account === a.name && ymd(p.date) !== "");
+      const mine = scopedPayments.filter((p) => paymentInAccount(p, a) && ymd(p.date) !== "");
       const signed = (p) => (p.type === "cash_in" ? num(p.amount) : -num(p.amount));
       const before = mine.filter((p) => ymd(p.date) < from).reduce((s, p) => s + signed(p), 0);
       const during = mine.filter((p) => inMonth(p.date));
