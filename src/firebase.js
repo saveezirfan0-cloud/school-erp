@@ -38,6 +38,14 @@ const TABLE_MAP = {
   customRoles: "custom_roles",
   reminderLogs: "reminder_logs",
   auditLog: "audit_log",
+  // LMS / academics (supabase/lms.sql)
+  subjects: "subjects",
+  attendance: "attendance",
+  exams: "exams",
+  examResults: "exam_results",
+  assignments: "assignments",
+  submissions: "submissions",
+  materials: "materials",
 };
 
 // Real (non-jsonb) columns per table. Anything not in this list
@@ -56,6 +64,13 @@ const COLUMNS = {
   custom_roles: ["id", "permissions", "created_at", "updated_at"],
   reminder_logs: ["id", "student_id", "phone", "message", "status", "date", "timestamp", "created_at", "updated_at"],
   audit_log: ["id", "user", "action", "module", "details", "timestamp", "created_at"],
+  subjects: ["id", "name", "code", "grade", "teacher", "branch_id", "created_at", "updated_at"],
+  attendance: ["id", "student_id", "date", "status", "grade", "note", "marked_by", "branch_id", "created_at", "updated_at"],
+  exams: ["id", "name", "term", "exam_type", "grade", "date", "total_marks", "published", "branch_id", "created_at", "updated_at"],
+  exam_results: ["id", "exam_id", "student_id", "subject_id", "marks_obtained", "max_marks", "absent", "remarks", "branch_id", "created_at", "updated_at"],
+  assignments: ["id", "title", "description", "subject_id", "grade", "assigned_date", "due_date", "max_marks", "attachment_url", "branch_id", "created_at", "updated_at"],
+  submissions: ["id", "assignment_id", "student_id", "status", "submitted_date", "marks", "feedback", "attachment_url", "branch_id", "created_at", "updated_at"],
+  materials: ["id", "title", "description", "kind", "url", "subject_id", "grade", "branch_id", "created_at", "updated_at"],
 };
 
 const SERVER_TS = "__SERVER_TIMESTAMP__";
@@ -101,6 +116,7 @@ function decode(row) {
 const SOFT_DELETE_TABLES = new Set([
   "students", "employees", "invoices", "expenses", "payments",
   "payslips", "accounts", "journals", "branches", "reminder_logs",
+  "subjects", "exams", "assignments", "materials",
 ]);
 
 // ---- Historical data scope ----
@@ -367,6 +383,24 @@ export async function deleteDocs(name, ids) {
     if (error) throw error;
   }
   return ids.length;
+}
+
+// Insert-or-update many rows in one round trip, keyed on a unique column
+// set (e.g. attendance on student_id+date, exam_results on
+// exam_id+student_id+subject_id). `rows` are app-shaped (camelCase)
+// objects; `conflictKeys` are camelCase field names that form the unique
+// index. Rows are encoded like addDoc, so unknown keys land in `extra`.
+//
+// NOTE: on conflict the whole row is replaced, including `extra`, so pass
+// complete rows rather than partial patches.
+export async function upsertDocs(name, rows, conflictKeys) {
+  const table = TABLE_MAP[name] || name;
+  if (!rows || rows.length === 0) return 0;
+  const onConflict = conflictKeys.map(toSnake).join(",");
+  const encoded = rows.map((r) => encode(table, r));
+  const { error } = await supabase.from(table).upsert(encoded, { onConflict });
+  if (error) throw error;
+  return encoded.length;
 }
 
 // Restore many trashed rows at once.
