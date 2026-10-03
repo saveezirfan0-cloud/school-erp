@@ -4,3 +4,4 @@ build/
 .env.*
 !.env.example
 .DS_Store
+.claude/worktrees/
