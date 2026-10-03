@@ -50,6 +50,14 @@ test("fee income is split by line item, with a branch breakdown", () => {
   expect(head(s.income, "fees", "Registration Fee").amount).toBe(200);
 });
 
+test("an invoice marked paid with no recorded amount counts in full, less concession, by created date", () => {
+  const s = buildMonthlyStatement({
+    ...base, expenses: [], payslips: [], payments: [], journals: [],
+    invoices: [{ branchId: "b1", status: "paid", amount: 1000, concessionAmount: 100, createdAt: "2026-09-12T08:00:00Z", lineItems: [{ description: "Tuition Fee", amount: 1000 }] }],
+  });
+  expect(s.totalIncome).toBe(900);
+});
+
 test("non-invoice cash-in lands in a section by chart of accounts / keywords; transfers and reversals are skipped", () => {
   const s = buildMonthlyStatement(base);
   expect(head(s.income, "donations", "Donation").amount).toBe(250);

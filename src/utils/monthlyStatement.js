@@ -5,7 +5,8 @@
 // position of each Bank & Cash account.
 //
 // Everything is on a cash basis (money actually received / spent in the month):
-//   - Fee income      = invoice paid amounts, by paid date, per fee line item
+//   - Fee income      = invoice collected amounts (utils/invoiceTotals), by payment
+//                       date, per fee line item
 //   - Other income    = cash_in payments not tied to an invoice, by category
 //   - Expenses        = expense rows by date, by category
 //   - Salaries        = paid payslips by paid date
@@ -16,6 +17,7 @@
 // which section each head sits in.
 
 import { toDate } from "./dates";
+import { invoiceCollected, invoicePaymentDate } from "./invoiceTotals";
 import {
   INCOME_GROUPS, EXPENSE_GROUPS, INCOME_SUBTYPE_GROUP, EXPENSE_SUBTYPE_GROUP,
   INCOME_RULES, EXPENSE_RULES,
@@ -125,8 +127,9 @@ export function buildMonthlyStatement({
 
   // ---- Income ----
   invoices.filter(inScope).forEach((inv) => {
-    const paid = num(inv.paidAmount);
-    if (!paid || !inMonth(inv.paidDate)) return;
+    // Same definition of "collected" and its date as Dashboard / Reports / Fees.
+    const paid = invoiceCollected(inv);
+    if (!paid || !inMonth(invoicePaymentDate(inv))) return;
     const items = Array.isArray(inv.lineItems) && inv.lineItems.length ? inv.lineItems : null;
     const total = items ? items.reduce((s, li) => s + num(li.amount), 0) : 0;
     if (!items || !total) {

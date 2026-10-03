@@ -1,13 +1,13 @@
 import React, { useMemo } from "react";
 import { useParams, useNavigate, useSearchParams } from "react-router-dom";
-import { updateDocs, serverTimestamp } from "../firebase";
+import { updateDocs, serverTimestamp, isHistoryVisible } from "../firebase";
 import { useBranch } from "../context/BranchContext";
 import { useUser } from "../context/UserContext";
 import { useDocument, useRelated } from "../hooks/useProfileData";
 import { logActivity } from "../utils/auditLog";
 import { formatDate, localISODate, durationSince } from "../utils/dates";
 import { summarizeInvoices, isLivePayment } from "../utils/fees";
-import ProfileShell, { cardStyle, cardHeadStyle } from "../components/Profile/ProfileShell";
+import ProfileShell, { Notice, cardStyle, cardHeadStyle } from "../components/Profile/ProfileShell";
 import DetailsCard from "../components/Profile/DetailsCard";
 import AttendanceTab, { summarize } from "../components/Profile/AttendanceTab";
 import NotesTab from "../components/Profile/NotesTab";
@@ -28,8 +28,10 @@ export default function StudentProfile() {
   const { record: student, loading, notFound } = useDocument("students", id);
   const { rows: attendance } = useRelated("attendance", { subjectType: "student", subjectId: id });
   const { rows: invoices } = useRelated("invoices", { studentId: id }, canSeeFees);
-  // Payments are linked to invoices (source/sourceId), not to the student.
-  const { rows: invoicePayments } = useRelated("payments", { source: "invoice" }, canSeeFees);
+  // Payments are linked to invoices (source/sourceId), not to the student,
+  // so fetch just the ones for this student's invoices.
+  const invoiceIds = useMemo(() => invoices.map((i) => i.id), [invoices]);
+  const { rows: invoicePayments } = useRelated("payments", { sourceId: invoiceIds, source: "invoice" }, canSeeFees && invoiceIds.length > 0);
 
   const tabs = [
     { key: "contact", label: "Contact", icon: User },
@@ -94,7 +96,10 @@ export default function StudentProfile() {
       onBack={() => navigate("/students")} backLabel="Students"
       title={student.name || "Student"}
       subtitle={[student.studentId, student.grade, student.parentName && `Parent: ${student.parentName}`].filter(Boolean).join(" • ")}
-      banner={student.deletedAt ? <div style={{ background: "#fef2f2", color: "#b91c1c", border: "1px solid #fecaca", borderRadius: 8, padding: "10px 14px", fontSize: 13, marginBottom: 12 }}>This student is in Trash. Restore them from the Trash page to make them active again.</div> : null}
+      banner={<>
+        {student.deletedAt && <Notice tone="danger">This student is in Trash. Restore them from the Trash page to make them active again.</Notice>}
+        {student.historical === true && !isHistoryVisible() && <Notice>This is an imported historical record. Their invoices and payments are hidden while History is off, so fees below show as empty. Turn on History in the top bar to see them.</Notice>}
+      </>}
       badges={[
         { label: branchName },
         student.recurringFee ? { label: "Auto fees", bg: "#ecfdf5", color: "#10b981" } : { label: "Manual fees" },

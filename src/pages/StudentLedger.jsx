@@ -1,6 +1,7 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { db, collection, onSnapshot, doc, getDoc } from "../firebase";
+import { db, doc, getDoc } from "../firebase";
+import { useRelated } from "../hooks/useProfileData";
 import { toMillis, formatDate, localISODate } from "../utils/dates";
 import { summarizeInvoices } from "../utils/fees";
 import { ArrowLeft, FileText, TrendingUp, Wallet } from "lucide-react";
@@ -12,23 +13,18 @@ export default function StudentLedger() {
   const { id } = useParams();
   const navigate = useNavigate();
   const [student, setStudent] = useState(null);
-  const [invoices, setInvoices] = useState([]);
-  const [payments, setPayments] = useState([]);
-  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     getDoc(doc(db, "students", id)).then((snap) => {
       if (snap.exists()) setStudent({ id: snap.id, ...snap.data() });
     });
-    const u1 = onSnapshot(collection(db, "invoices"), (snap) => {
-      setInvoices(snap.docs.map((d) => ({ id: d.id, ...d.data() })).filter((i) => i.studentId === id));
-      setLoading(false);
-    });
-    const u2 = onSnapshot(collection(db, "payments"), (snap) => {
-      setPayments(snap.docs.map((d) => ({ id: d.id, ...d.data() })).filter((p) => p.source === "invoice"));
-    });
-    return () => { u1(); u2(); };
   }, [id]);
+
+  // Only this student's invoices, and only the payments made against them.
+  const { rows: invoices, loading: loadingInvoices } = useRelated("invoices", { studentId: id });
+  const invoiceIds = useMemo(() => invoices.map((i) => i.id), [invoices]);
+  const { rows: payments } = useRelated("payments", { sourceId: invoiceIds, source: "invoice" }, invoiceIds.length > 0);
+  const loading = loadingInvoices;
 
   // Same money rules as the student profile's Fees tab (see utils/fees.js).
   const { billed: totalBilled, received: totalReceived, concession: totalConcession, balance, payments: studentPayments } =

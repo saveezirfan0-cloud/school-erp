@@ -509,6 +509,7 @@ export default function Payslips() {
                     }}
                     options={employees.map(emp => ({ value: emp.id, label: emp.name, sublabel: emp.role || "" }))}
                     placeholder="Search employee..."
+                    rememberKey="payslips.employee"
                   />
                 </div>
                 <div>
