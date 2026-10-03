@@ -13,6 +13,7 @@ import { logActivity } from "../utils/auditLog";
 import { exportToCSV, exportToPDF } from "../utils/exportUtils";
 import toast from "react-hot-toast";
 import { Plus, Trash2, X, Edit2, Download, FileText } from "lucide-react";
+import { useNavigate } from "react-router-dom";
 
 const empty = { name: "", role: "", phone: "", email: "", branchId: "", salary: "", joinDate: "", recurringPayslip: false };
 
@@ -29,6 +30,7 @@ function useIsMobile() {
 export default function Employees() {
   const { branches, activeBranch } = useBranch();
   const isMobile = useIsMobile();
+  const navigate = useNavigate();
   const [showModal, setShowModal] = useState(false);
   const [form, setForm] = useState(empty);
   const [editing, setEditing] = useState(null);
@@ -164,7 +166,7 @@ export default function Employees() {
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 16 }}>
         {paged.map(emp => (
-          <div key={emp.id} style={{ background: "white", borderRadius: 12, padding: 20, border: bulk.isSelected(emp.id) ? "1.5px solid var(--primary)" : "1px solid var(--border)" }}>
+          <div key={emp.id} onClick={() => navigate(`/employees/${emp.id}`)} title="Open employee profile" style={{ background: "white", borderRadius: 12, padding: 20, cursor: "pointer", border: bulk.isSelected(emp.id) ? "1.5px solid var(--primary)" : "1px solid var(--border)" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                 <RowCheckbox checked={bulk.isSelected(emp.id)} onChange={() => bulk.toggle(emp.id)} label={`Select ${emp.name}`} />
@@ -172,13 +174,13 @@ export default function Employees() {
                   {emp.name?.charAt(0)?.toUpperCase()}
                 </div>
               </div>
-              <div style={{ display: "flex", gap: 6 }}>
+              <div style={{ display: "flex", gap: 6 }} onClick={(e) => e.stopPropagation()}>
                 <button onClick={() => { setForm(emp); setEditing(emp.id); setShowModal(true); }} style={{ border: "none", background: "var(--primary-light)", color: "var(--primary)", padding: "6px 8px", borderRadius: 6, cursor: "pointer" }}><Edit2 size={13} /></button>
                 <button onClick={() => handleDeleteOne(emp)} style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "6px 8px", borderRadius: 6, cursor: "pointer" }}><Trash2 size={13} /></button>
               </div>
             </div>
             <div style={{ marginTop: 12 }}>
-              <div style={{ fontWeight: 600, fontSize: 15 }}>{emp.name}</div>
+              <div style={{ fontWeight: 600, fontSize: 15, color: "var(--primary)" }}>{emp.name}</div>
               <div style={{ color: "var(--text-muted)", fontSize: 13, marginTop: 2 }}>{emp.role}</div>
               <div style={{ color: "var(--text-muted)", fontSize: 13 }}>{emp.phone}</div>
               <div style={{ marginTop: 10, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
