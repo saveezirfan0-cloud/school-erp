@@ -71,10 +71,8 @@ function PrivateRoute({ children, permission }) {
 export default function App() {
   return (
     <AuthProvider>
-      {/* UserProvider wraps BranchProvider: workspaces depend on the user's
-          role / branch assignment. */}
-      <UserProvider>
-        <BranchProvider>
+      <BranchProvider>
+        <UserProvider>
           <BrowserRouter>
             <Toaster position="top-right" />
             <Suspense fallback={<PageLoader />}>
@@ -201,8 +199,8 @@ export default function App() {
             </Routes>
             </Suspense>
           </BrowserRouter>
-        </BranchProvider>
-      </UserProvider>
+        </UserProvider>
+      </BranchProvider>
     </AuthProvider>
   );
 }

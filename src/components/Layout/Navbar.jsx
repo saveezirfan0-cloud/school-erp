@@ -5,7 +5,7 @@ import { LogOut, Menu } from "lucide-react";
 
 export default function Navbar({ onMenuClick }) {
   const { logout, user } = useAuth();
-  const { branches, workspaceName, isHeadOffice, canFilterBranches, branchFilter, setBranchFilter } = useBranch();
+  const { branches, activeBranch, setActiveBranch } = useBranch();
 
   return (
     <header style={{
@@ -19,19 +19,12 @@ export default function Navbar({ onMenuClick }) {
           style={{ border: "none", background: "none", cursor: "pointer", padding: "6px", display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 6, flexShrink: 0 }}>
           <Menu size={22} color="#475569" />
         </button>
-        {canFilterBranches ? (
-          <select value={branchFilter} onChange={e => setBranchFilter(e.target.value)}
-            aria-label="Filter by branch"
-            style={{ padding: "6px 10px", borderRadius: 6, border: "1px solid var(--border)", background: "white", fontSize: 13, cursor: "pointer", maxWidth: 200 }}>
-            <option value="all">🏢 All Branches</option>
-            <option value="main">🏫 Head Office only</option>
-            {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
-          </select>
-        ) : (
-          <span style={{ padding: "5px 10px", borderRadius: 6, background: isHeadOffice ? "#f5eaec" : "#e6f4f1", color: isHeadOffice ? "#7a2535" : "#2a8c7a", fontSize: 13, fontWeight: 600, maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-            {workspaceName}
-          </span>
-        )}
+        <select value={activeBranch} onChange={e => setActiveBranch(e.target.value)}
+          style={{ padding: "6px 10px", borderRadius: 6, border: "1px solid var(--border)", background: "white", fontSize: 13, cursor: "pointer", maxWidth: 180 }}>
+          <option value="all">🏢 All Branches</option>
+          <option value="main">🏫 Main Office</option>
+          {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+        </select>
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
         <span style={{ fontSize: 12, color: "var(--text-muted)" }}>{user?.email}</span>

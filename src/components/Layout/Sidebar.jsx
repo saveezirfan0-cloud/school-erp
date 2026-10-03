@@ -7,7 +7,6 @@ import {
   X, ShieldCheck, MessageCircle, Upload, Trash2, History
 } from "lucide-react";
 import { useUser } from "../../context/UserContext";
-import WorkspaceSwitcher from "./WorkspaceSwitcher";
 
 export default function Sidebar({ onClose }) {
   const [openGroup, setOpenGroup] = useState("Accounting");
@@ -162,7 +161,17 @@ export default function Sidebar({ onClose }) {
         justifyContent: "space-between",
         flexShrink: 0,
       }}>
-        <WorkspaceSwitcher />
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <img
+            src="/zmi_logo.png"
+            alt="ZMI"
+            style={{ width: 38, height: 38, objectFit: "contain", borderRadius: 8, background: "white", padding: 3 }}
+          />
+          <div>
+            <div style={{ color: "white", fontWeight: 700, fontSize: 14 }}>ZMI</div>
+            <div style={{ color: "rgba(255,255,255,0.4)", fontSize: 10 }}>Zohra Majeed Institute</div>
+          </div>
+        </div>
         {onClose && (
           <button
             onClick={onClose}
