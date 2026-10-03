@@ -24,6 +24,8 @@ const ChartOfAccounts = lazy(() => import("./pages/ChartOfAccounts"));
 const Payments = lazy(() => import("./pages/Payments"));
 const Payslips = lazy(() => import("./pages/Payslips"));
 const Reports = lazy(() => import("./pages/Reports"));
+const FeeAging = lazy(() => import("./pages/FeeAging"));
+const Collections = lazy(() => import("./pages/Collections"));
 const BankCash = lazy(() => import("./pages/BankCash"));
 const AccountDetail = lazy(() => import("./pages/AccountDetail"));
 const Journals = lazy(() => import("./pages/Journals"));
@@ -156,6 +158,16 @@ export default function App() {
                 <Route path="reports" element={
                   <PrivateRoute permission="canViewReports">
                     <Reports />
+                  </PrivateRoute>
+                } />
+                <Route path="fee-aging" element={
+                  <PrivateRoute permission="canViewReports">
+                    <FeeAging />
+                  </PrivateRoute>
+                } />
+                <Route path="collections" element={
+                  <PrivateRoute permission="canViewReports">
+                    <Collections />
                   </PrivateRoute>
                 } />
                 <Route path="users" element={
