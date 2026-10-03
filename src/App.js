@@ -5,7 +5,7 @@ import { AuthProvider, useAuth } from "./context/AuthContext";
 import { BranchProvider } from "./context/BranchContext";
 import { UserProvider, useUser } from "./context/UserContext";
 import Layout from "./components/Layout/Layout";
-import { MENU_ITEMS, isItemAllowed } from "./config/menu";
+import { normalizeLayout, homePath } from "./config/menu";
 
 // Login is needed immediately; keep it eager. Everything else is
 // lazy-loaded so the initial bundle stays small and heavy pages
@@ -52,6 +52,16 @@ const PageLoader = () => (
   </div>
 );
 
+// Landing page: the Dashboard for roles that may see it, otherwise the first
+// page of the user's own menu (e.g. teachers land on Attendance, fee collectors
+// on Students) instead of being bounced to "Access Denied".
+function Home() {
+  const { can, isAdmin, menuLayout } = useUser();
+  if (can("canViewDashboard")) return <Dashboard />;
+  const path = homePath(normalizeLayout(menuLayout), { can, isAdmin });
+  return <Navigate to={path || "/unauthorized"} replace />;
+}
+
 function PrivateRoute({ children, permission }) {
   const { user, loading } = useAuth();
   const { can, loadingProfile } = useUser();
@@ -76,16 +86,6 @@ function PrivateRoute({ children, permission }) {
   if (!user) return <Navigate to="/login" />;
   if (permission && !can(permission)) return <Navigate to="/unauthorized" />;
   return children;
-}
-
-// Landing page: the Dashboard for roles that may see it, otherwise the first
-// page the user can actually open (e.g. teachers land on Attendance instead
-// of being bounced to "Unauthorized").
-function Home() {
-  const { can, isAdmin } = useUser();
-  if (can("canViewDashboard")) return <Dashboard />;
-  const first = Object.keys(MENU_ITEMS).find((k) => k !== "dashboard" && isItemAllowed(k, { can, isAdmin }));
-  return <Navigate to={first ? MENU_ITEMS[first].to : "/unauthorized"} replace />;
 }
 
 export default function App() {
