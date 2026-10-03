@@ -61,3 +61,11 @@ export default function ProfileShell({ onBack, backLabel, title, subtitle, badge
 
 export const cardStyle = { background: "white", border: "1px solid var(--border)", borderRadius: 12, overflow: "hidden" };
 export const cardHeadStyle = { padding: "12px 16px", borderBottom: "1px solid var(--border)", fontWeight: 600, fontSize: 14, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 };
+
+// Inline banner above the profile header.
+export function Notice({ tone = "info", children }) {
+  const t = tone === "danger"
+    ? { bg: "#fef2f2", color: "#b91c1c", border: "#fecaca" }
+    : { bg: "#fffbeb", color: "#92400e", border: "#fde68a" };
+  return <div style={{ background: t.bg, color: t.color, border: `1px solid ${t.border}`, borderRadius: 8, padding: "10px 14px", fontSize: 13, marginBottom: 12 }}>{children}</div>;
+}

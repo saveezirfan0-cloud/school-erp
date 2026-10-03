@@ -12,8 +12,10 @@ import { bulkResultMessage } from "../utils/bulk";
 import { logActivity } from "../utils/auditLog";
 import { exportToCSV, exportToPDF } from "../utils/exportUtils";
 import toast from "react-hot-toast";
-import { Plus, Trash2, X, Edit2, Download, FileText } from "lucide-react";
+import { Plus, Trash2, X, Edit2, Download, FileText, CalendarCheck } from "lucide-react";
 import { useNavigate } from "react-router-dom";
+import { useUser } from "../context/UserContext";
+import RollCallModal from "../components/Profile/RollCallModal";
 
 const empty = { name: "", role: "", phone: "", email: "", branchId: "", salary: "", joinDate: "", recurringPayslip: false };
 
@@ -31,6 +33,8 @@ export default function Employees() {
   const { branches, activeBranch } = useBranch();
   const isMobile = useIsMobile();
   const navigate = useNavigate();
+  const { can } = useUser();
+  const [showRollCall, setShowRollCall] = useState(false);
   const [showModal, setShowModal] = useState(false);
   const [form, setForm] = useState(empty);
   const [editing, setEditing] = useState(null);
@@ -136,6 +140,11 @@ export default function Employees() {
             <button onClick={handleCSV} style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13 }}><Download size={14} /> CSV</button>
             <button onClick={handlePDF} style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13 }}><FileText size={14} /> PDF</button>
           </>}
+          {can("canEditEmployees") && (
+            <button onClick={() => setShowRollCall(true)} style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13 }}>
+              <CalendarCheck size={14} /> Attendance
+            </button>
+          )}
           <button onClick={() => { setForm(empty); setEditing(null); setShowModal(true); }}
             style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 18px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600 }}>
             <Plus size={16} /> Add Employee
@@ -198,6 +207,15 @@ export default function Employees() {
         page={safePage} pageCount={pageCount} total={total} pageSize={pageSize}
         onPage={setPage} onPageSize={setPageSize}
       />
+
+      {showRollCall && (
+        <RollCallModal
+          subjectType="employee" noun="employees"
+          scopeLabel={filterRole ? filterRole : "all roles in the current list"}
+          people={filtered.map((e) => ({ id: e.id, name: e.name, sub: e.role, branchId: e.branchId }))}
+          onClose={() => setShowRollCall(false)}
+        />
+      )}
 
       {/* Bulk actions bar */}
       <BulkBar

@@ -1,16 +1,17 @@
-import React, { useMemo } from "react";
+import React, { useMemo, useState } from "react";
 import { useParams, useNavigate, useSearchParams } from "react-router-dom";
-import { updateDocs, serverTimestamp } from "../firebase";
+import { updateDocs, serverTimestamp, isHistoryVisible } from "../firebase";
 import { useBranch } from "../context/BranchContext";
 import { useUser } from "../context/UserContext";
 import { useDocument, useRelated } from "../hooks/useProfileData";
 import { logActivity } from "../utils/auditLog";
 import { formatDate, localISODate, durationSince } from "../utils/dates";
 import { summarizeInvoices, isLivePayment } from "../utils/fees";
-import ProfileShell, { cardStyle, cardHeadStyle } from "../components/Profile/ProfileShell";
+import ProfileShell, { Notice, cardStyle, cardHeadStyle } from "../components/Profile/ProfileShell";
 import DetailsCard from "../components/Profile/DetailsCard";
 import AttendanceTab, { summarize } from "../components/Profile/AttendanceTab";
 import NotesTab from "../components/Profile/NotesTab";
+import InvoiceModal from "../components/UI/InvoiceModal";
 import { User, GraduationCap, CalendarCheck, Receipt, StickyNote, Wallet, TrendingUp, FileText } from "lucide-react";
 
 const money = (n) => `Rs. ${Number(n || 0).toLocaleString()}`;
@@ -28,8 +29,12 @@ export default function StudentProfile() {
   const { record: student, loading, notFound } = useDocument("students", id);
   const { rows: attendance } = useRelated("attendance", { subjectType: "student", subjectId: id });
   const { rows: invoices } = useRelated("invoices", { studentId: id }, canSeeFees);
-  // Payments are linked to invoices (source/sourceId), not to the student.
-  const { rows: invoicePayments } = useRelated("payments", { source: "invoice" }, canSeeFees);
+  // Payments are linked to invoices (source/sourceId), not to the student,
+  // so fetch just the ones for this student's invoices.
+  const invoiceIds = useMemo(() => invoices.map((i) => i.id), [invoices]);
+  const { rows: invoicePayments } = useRelated("payments", { sourceId: invoiceIds, source: "invoice" }, canSeeFees && invoiceIds.length > 0);
+
+  const [openInvoiceId, setOpenInvoiceId] = useState(null);
 
   const tabs = [
     { key: "contact", label: "Contact", icon: User },
@@ -65,6 +70,7 @@ export default function StudentProfile() {
     .then(() => { logActivity("updated", "Students", `${student.name}${student.studentId ? ` (${student.studentId})` : ""}: ${Object.keys(changes).join(", ")}`); });
 
   const att = summarize(attendance);
+  const openInvoice = fees.rows.find((r) => r.id === openInvoiceId) || null;
   const statusStyle = { Paid: ["#ecfdf5", "#10b981"], Partial: ["#fffbeb", "#d97706"], Overdue: ["#fef2f2", "#ef4444"], Pending: ["#f8fafc", "#64748b"] };
 
   const contactFields = [
@@ -94,7 +100,10 @@ export default function StudentProfile() {
       onBack={() => navigate("/students")} backLabel="Students"
       title={student.name || "Student"}
       subtitle={[student.studentId, student.grade, student.parentName && `Parent: ${student.parentName}`].filter(Boolean).join(" • ")}
-      banner={student.deletedAt ? <div style={{ background: "#fef2f2", color: "#b91c1c", border: "1px solid #fecaca", borderRadius: 8, padding: "10px 14px", fontSize: 13, marginBottom: 12 }}>This student is in Trash. Restore them from the Trash page to make them active again.</div> : null}
+      banner={<>
+        {student.deletedAt && <Notice tone="danger">This student is in Trash. Restore them from the Trash page to make them active again.</Notice>}
+        {student.historical === true && !isHistoryVisible() && <Notice>This is an imported historical record. Their invoices and payments are hidden while History is off, so fees below show as empty. Turn on History in the top bar to see them.</Notice>}
+      </>}
       badges={[
         { label: branchName },
         student.recurringFee ? { label: "Auto fees", bg: "#ecfdf5", color: "#10b981" } : { label: "Manual fees" },
@@ -146,18 +155,19 @@ export default function StudentProfile() {
               <div style={{ overflowX: "auto" }}>
                 <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 560 }}>
                   <thead><tr style={{ background: "#f8fafc" }}>
-                    {["Period", "Amount", "Paid", "Balance", "Due", "Status"].map((h) => <th key={h} style={{ padding: "10px 14px", textAlign: "left", fontSize: 11, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase" }}>{h}</th>)}
+                    {["Period", "Amount", "Paid", "Balance", "Due", "Status", ""].map((h) => <th key={h} style={{ padding: "10px 14px", textAlign: "left", fontSize: 11, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase" }}>{h}</th>)}
                   </tr></thead>
                   <tbody>{fees.rows.map((r) => {
                     const [bg, color] = statusStyle[r.statusLabel];
                     return (
-                      <tr key={r.id} style={{ borderTop: "1px solid var(--border)" }}>
+                      <tr key={r.id} onClick={() => setOpenInvoiceId(r.id)} title="Open invoice" style={{ borderTop: "1px solid var(--border)", cursor: "pointer" }}>
                         <td style={{ padding: "10px 14px", fontSize: 13, fontWeight: 500 }}>{`${r.month || ""} ${r.year || ""}`.trim() || "—"}</td>
                         <td style={{ padding: "10px 14px", fontSize: 13 }}>{money(r.amount)}</td>
                         <td style={{ padding: "10px 14px", fontSize: 13, color: "#10b981" }}>{money(r.paid)}</td>
                         <td style={{ padding: "10px 14px", fontSize: 13, fontWeight: 600 }}>{money(r.balance)}</td>
                         <td style={{ padding: "10px 14px", fontSize: 13 }}>{r.dueDate ? formatDate(r.dueDate) : "—"}</td>
                         <td style={{ padding: "10px 14px" }}><span style={{ padding: "2px 10px", borderRadius: 20, fontSize: 11, fontWeight: 600, background: bg, color }}>{r.statusLabel}</span></td>
+                        <td style={{ padding: "10px 14px", textAlign: "right" }}><span style={{ color: "#2563eb", fontSize: 12, fontWeight: 600, whiteSpace: "nowrap" }}>View / PDF</span></td>
                       </tr>
                     );
                   })}</tbody>
@@ -182,6 +192,14 @@ export default function StudentProfile() {
             })}
           </div>
         </>
+      )}
+
+      {openInvoice && (
+        <InvoiceModal
+          invoice={openInvoice} student={student} figures={openInvoice}
+          payments={fees.payments.filter((p) => p.sourceId === openInvoice.id && isLivePayment(p))}
+          onClose={() => setOpenInvoiceId(null)}
+        />
       )}
 
       {tab === "notes" && <NotesTab collectionName="students" moduleLabel="Students" record={student} canEdit={canEdit} />}

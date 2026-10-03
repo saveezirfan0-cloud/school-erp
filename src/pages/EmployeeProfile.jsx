@@ -1,12 +1,12 @@
 import React, { useMemo } from "react";
 import { useParams, useNavigate, useSearchParams } from "react-router-dom";
-import { updateDocs, serverTimestamp } from "../firebase";
+import { updateDocs, serverTimestamp, isHistoryVisible } from "../firebase";
 import { useBranch } from "../context/BranchContext";
 import { useUser } from "../context/UserContext";
 import { useDocument, useRelated } from "../hooks/useProfileData";
 import { logActivity } from "../utils/auditLog";
 import { formatDate, durationSince } from "../utils/dates";
-import ProfileShell, { cardStyle, cardHeadStyle } from "../components/Profile/ProfileShell";
+import ProfileShell, { Notice, cardStyle, cardHeadStyle } from "../components/Profile/ProfileShell";
 import DetailsCard from "../components/Profile/DetailsCard";
 import AttendanceTab, { summarize } from "../components/Profile/AttendanceTab";
 import NotesTab from "../components/Profile/NotesTab";
@@ -91,7 +91,10 @@ export default function EmployeeProfile() {
       onBack={() => navigate("/employees")} backLabel="Employees"
       title={emp.name || "Employee"}
       subtitle={[emp.role, emp.phone, emp.email].filter(Boolean).join(" • ")}
-      banner={emp.deletedAt ? <div style={{ background: "#fef2f2", color: "#b91c1c", border: "1px solid #fecaca", borderRadius: 8, padding: "10px 14px", fontSize: 13, marginBottom: 12 }}>This employee is in Trash. Restore them from the Trash page to make them active again.</div> : null}
+      banner={<>
+        {emp.deletedAt && <Notice tone="danger">This employee is in Trash. Restore them from the Trash page to make them active again.</Notice>}
+        {emp.historical === true && !isHistoryVisible() && <Notice>This is an imported historical record. Their payslips are hidden while History is off, so the Payslips tab shows as empty. Turn on History in the top bar to see them.</Notice>}
+      </>}
       badges={[
         { label: branchName },
         emp.recurringPayslip ? { label: "Auto payslip", bg: "#ecfdf5", color: "#10b981" } : { label: "Manual payslip" },
