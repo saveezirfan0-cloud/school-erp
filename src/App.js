@@ -5,6 +5,8 @@ import { AuthProvider, useAuth } from "./context/AuthContext";
 import { BranchProvider } from "./context/BranchContext";
 import { UserProvider, useUser } from "./context/UserContext";
 import Layout from "./components/Layout/Layout";
+import NoAccess from "./components/Layout/NoAccess";
+import { DELETE_PERMISSIONS } from "./context/routeAccess";
 
 // Login is needed immediately; keep it eager. Everything else is
 // lazy-loaded so the initial bundle stays small and heavy pages
@@ -42,9 +44,9 @@ const PageLoader = () => (
   </div>
 );
 
-function PrivateRoute({ children, permission }) {
+function PrivateRoute({ children, permission, anyOf }) {
   const { user, loading } = useAuth();
-  const { can, loadingProfile } = useUser();
+  const { can, canAny, loadingProfile, hasAccess } = useUser();
 
   if (loading || loadingProfile) return (
     <div style={{
@@ -64,8 +66,20 @@ function PrivateRoute({ children, permission }) {
   );
 
   if (!user) return <Navigate to="/login" />;
+  // Fail closed: no profile, load error or unknown role => no access
+  // screen with a sign-out button (no redirect, so no loop).
+  if (!hasAccess) return <NoAccess />;
   if (permission && !can(permission)) return <Navigate to="/unauthorized" />;
+  if (anyOf && !canAny(anyOf)) return <Navigate to="/unauthorized" />;
   return children;
+}
+
+// "/" shows the dashboard to roles that have it; everyone else is sent
+// to the first page they may open (e.g. Fees for a fee collector).
+function HomeRoute() {
+  const { can, homeRoute } = useUser();
+  if (can("canViewDashboard")) return <Dashboard />;
+  return <Navigate to={homeRoute || "/unauthorized"} replace />;
 }
 
 export default function App() {
@@ -79,7 +93,12 @@ export default function App() {
             <Routes>
               {/* Public routes */}
               <Route path="/login" element={<Login />} />
-              <Route path="/quick-payment" element={<QuickPayment />} />
+              {/* Needs a login and the same permission as the Fees screen */}
+              <Route path="/quick-payment" element={
+                <PrivateRoute permission="canEditFees">
+                  <QuickPayment />
+                </PrivateRoute>
+              } />
               <Route path="/unauthorized" element={<Unauthorized />} />
 
               {/* Protected routes */}
@@ -89,8 +108,8 @@ export default function App() {
                 </PrivateRoute>
               }>
                 <Route index element={
-                  <PrivateRoute permission="canViewDashboard">
-                    <Dashboard />
+                  <PrivateRoute>
+                    <HomeRoute />
                   </PrivateRoute>
                 } />
                 <Route path="students" element={
@@ -184,7 +203,7 @@ export default function App() {
                   </PrivateRoute>
                 } />
                 <Route path="trash" element={
-                  <PrivateRoute>
+                  <PrivateRoute anyOf={DELETE_PERMISSIONS}>
                     <Trash />
                   </PrivateRoute>
                 } />
