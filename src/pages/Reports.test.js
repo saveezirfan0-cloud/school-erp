@@ -30,6 +30,9 @@ jest.mock("../firebase", () => ({
 jest.mock("../context/BranchContext", () => ({
   useBranch: () => ({ activeBranch: "all", branches: [{ id: "b1", name: "North Campus" }] }),
 }));
+jest.mock("../context/UserContext", () => ({
+  useUser: () => ({ hajiLayout: null, saveHajiLayout: async () => {} }),
+}));
 jest.mock("recharts", () => {
   const Stub = ({ children }) => <div>{children}</div>;
   return new Proxy({}, { get: () => Stub });
