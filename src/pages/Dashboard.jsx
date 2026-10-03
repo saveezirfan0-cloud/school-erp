@@ -12,6 +12,7 @@ import DateRangeFilter from "../components/UI/DateRangeFilter";
 import DetailModal from "../components/UI/DetailModal";
 import { Users, Receipt, TrendingDown, TrendingUp, UserCheck, Building2, FileText } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line } from "recharts";
+import AcademicsWidget from "../components/AcademicsWidget";
 
 const PERIOD_KEY = "dashboardPeriod";
 const loadPeriod = () => {
@@ -353,6 +354,7 @@ export default function Dashboard() {
           </div>
         </div>
       )}
+      <AcademicsWidget />
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: 16, marginBottom: 20 }}>
         <div style={{ background: "white", borderRadius: 12, padding: "20px 16px", border: "1px solid var(--border)" }}>
