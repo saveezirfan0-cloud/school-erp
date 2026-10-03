@@ -9,7 +9,6 @@ import BulkBar, { RowCheckbox, HeaderCheckbox } from "../components/UI/BulkBar";
 import BulkEditModal from "../components/UI/BulkEditModal";
 import { runBulk, bulkResultMessage } from "../utils/bulk";
 import { logActivity } from "../utils/auditLog";
-import { matchesBranch } from "../utils/branchFilter";
 import { recordPayment, bankCashAccounts, reverseSourcePayments } from "../utils/accounting";
 import { exportToCSV, exportToPDF } from "../utils/exportUtils";
 import { EXTRA_EXPENSE_CATEGORIES } from "../config/statementHeads";
