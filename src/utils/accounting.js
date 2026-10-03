@@ -100,6 +100,8 @@ export function describeAccountsProblem(accounts, status = "ready") {
   return "";
 }
 
+export { paymentInAccount } from "./paymentAccount";
+
 /**
  * Resolve the account a payment will post to, by id (preferred) or by
  * exact name (legacy callers). Throws AccountingError when the list is
@@ -690,6 +692,15 @@ export async function payPayslip({ payslip, accounts, accountId, date }) {
  * posting fails after the expense exists, the expense is flagged
  * ledgerPosted:false and { posted:false, error } is returned so the
  * caller can show it (never a plain success toast).
+ *
+ * This is the ONLY place a paid expense is posted. Field names on the
+ * expense (all land in `extra`): `accountId` = the chart-of-accounts
+ * EXPENSE account the category was picked from (set by the caller),
+ * `paidAccountId` / `paidAccount` = the Bank & Cash account paid from
+ * (id / name, set here). The cash_out payment carries the Bank & Cash
+ * `accountId`. A paid expense with a category account also gets an
+ * informational double-entry journal (postExpenseJournal, best effort); the
+ * cash_out payment stays the one source of truth for money (see below).
  */
 export async function createExpenseAndPost({ expense, accounts, accountId }) {
   const amt = parsePositiveAmount(expense?.amount, "Amount");
@@ -717,9 +728,86 @@ export async function createExpenseAndPost({ expense, accounts, accountId }) {
       reference: ref.id, branchId: expense.branchId || "", date: when,
       source: "expense", sourceId: ref.id,
     });
-    return { id: ref.id, posted: true, paid: true };
+    // Informational double-entry record (debit the category's expense account,
+    // credit the account paid from). Best effort: it never fails the expense,
+    // and reporting/trialBalance ignore it while the cash_out payment stands.
+    let journalPosted = false;
+    const expenseAccount = expense.accountId ? (accounts || []).find((a) => a.id === expense.accountId) : null;
+    if (expenseAccount) {
+      try {
+        await postExpenseJournal({
+          expenseId: ref.id, expenseAccount, payAccount: acct, amount: amt.value, date: when,
+          description: expense.description, branchId: expense.branchId || "",
+        });
+        journalPosted = true;
+      } catch (jerr) {
+        console.error("Expense journal not posted:", jerr);
+      }
+    }
+    return { id: ref.id, posted: true, paid: true, journalPosted };
   } catch (err) {
     try { await patchDoc("expenses", ref.id, { ledgerPosted: false, unpostedReason: String(err?.message || "posting failed").slice(0, 200) }); } catch { /* flag best effort */ }
     return { id: ref.id, posted: false, paid: true, error: err };
   }
+}
+
+// ---- Double-entry journals for expenses ----
+//
+// A paid expense is ALSO recorded as a journal (debit the expense account from
+// the chart, credit the Bank & Cash account paid from), tagged source "expense"
+// + sourceId so it can be traced, retargeted and removed with its expense, and
+// shown as a read-only "Auto" row on the Journals page. It is informational:
+// the cash_out payment written by createExpenseAndPost is the ONE row the
+// books count for money. trialBalance (reporting.js) and the monthly statement
+// skip an expense journal while its payment stands, so nothing is counted twice.
+export async function postExpenseJournal({
+  expenseId, expenseAccount, payAccount, amount, date, description, branchId = "",
+}) {
+  if (!expenseId || !expenseAccount?.name || !payAccount?.name) return null;
+  if (!amount || Number(amount) <= 0) return null;
+  return addDoc(collection(db, "journals"), {
+    date: date || todayLocal(),
+    reference: "EXP-" + String(expenseId).slice(0, 8),
+    description: description || "Expense",
+    debitAccount: expenseAccount.name,
+    creditAccount: payAccount.name,
+    ...(expenseAccount.id ? { debitAccountId: expenseAccount.id } : {}),
+    ...(payAccount.id ? { creditAccountId: payAccount.id } : {}),
+    amount: Number(amount),
+    notes: "Auto-posted from Expenses",
+    branchId,
+    source: "expense",
+    sourceId: expenseId,
+    createdAt: serverTimestamp(),
+  });
+}
+
+// Move an expense's journals to Trash (used when the expense is deleted).
+export async function deleteExpenseJournals(expenseIds) {
+  const ids = [].concat(expenseIds).filter(Boolean);
+  if (!ids.length) return;
+  const { error } = await supabase
+    .from("journals")
+    .update({ deleted_at: new Date().toISOString() })
+    .eq("extra->>source", "expense")
+    .in("extra->>sourceId", ids)
+    .is("deleted_at", null);
+  if (error) throw error;
+}
+
+// Keep existing legacy expense journals in step with a bulk edit of their
+// expenses: `accountName` re-points the debit side, `date` moves the entry.
+export async function syncExpenseJournals(expenseIds, { accountName, date } = {}) {
+  const ids = [].concat(expenseIds).filter(Boolean);
+  const patch = {};
+  if (accountName) patch.debit_account = accountName;
+  if (date) patch.date = date;
+  if (!ids.length || !Object.keys(patch).length) return;
+  const { error } = await supabase
+    .from("journals")
+    .update(patch)
+    .eq("extra->>source", "expense")
+    .in("extra->>sourceId", ids)
+    .is("deleted_at", null);
+  if (error) throw error;
 }

@@ -177,7 +177,7 @@ export default function Fees() {
 
   // multi-select for bulk actions (selection only ever contains
   // currently-visible/filtered invoices)
-  const bulk = useBulkSelect(filtered.map(inv => inv.id));
+  const bulk = useBulkSelect(invoices.map(inv => inv.id), activeBranch);
   const pagedIds = paged.map(inv => inv.id);
   const totalAmount = sumMoney(lineItems.map(i => i.amount));
   // ONE definition of collected / pending: utils/reporting.js (same as the

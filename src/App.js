@@ -85,8 +85,12 @@ function PrivateRoute({ children, permission, anyOf }) {
   return children;
 }
 
-// "/" shows the dashboard to roles that have it; everyone else is sent
-// to the first page they may open (e.g. Fees for a fee collector).
+// "/" shows the dashboard to roles that have it; everyone else is sent to
+// homeRoute: the first page of their own menu (or, failing that, the first
+// page) they may actually open, e.g. Fees for a fee collector. homeRoute is
+// computed from permissions, so it is never a page they cannot see, and it
+// is null when they may open nothing (then /unauthorized offers sign-out
+// instead of redirecting, so there is no loop).
 function HomeRoute() {
   const { can, homeRoute } = useUser();
   if (can("canViewDashboard")) return <Dashboard />;

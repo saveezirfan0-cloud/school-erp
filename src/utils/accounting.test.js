@@ -3,7 +3,7 @@
 // database that understands exactly the calls accounting.js makes.
 
 /* eslint-disable import/first */
-const mockDb = { payments: [], invoices: [], payslips: [], expenses: [] };
+const mockDb = { payments: [], invoices: [], payslips: [], expenses: [], journals: [] };
 const mockFail = { addDoc: null, update: null, read: null };
 let mockSeq = 0;
 
@@ -12,6 +12,7 @@ const mockCols = {
   invoices: ["student_id", "branch_id", "amount", "status", "due_date", "date", "paid_amount", "paid_account", "paid_date", "concession_amount", "concession_note"],
   payslips: ["employee_id", "branch_id", "amount", "month", "date", "status", "paid_account", "paid_date"],
   expenses: ["description", "category", "amount", "date", "branch_id", "paid_account"],
+  journals: ["date", "reference", "description", "debit_account", "credit_account", "amount", "notes"],
 };
 const mockSnake = (s) => s.replace(/[A-Z]/g, (m) => "_" + m.toLowerCase());
 const mockCamel = (s) => s.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
@@ -109,9 +110,10 @@ import {
   AccountingError, ERR, bankCashAccounts, isBankCashAccount, resolvePostingAccount, describeAccountsProblem,
   recordPayment, getSourcePayments, getSourcePaidTotal, sumLive, reversePayment, reverseSourcePayments,
   restoreWithLedger, collectInvoicePayment, createInvoiceAndCollect, postUnpostedInvoice, payPayslip,
-  createExpenseAndPost, pickDefaultAccountId, rememberAccountChoice,
+  createExpenseAndPost, pickDefaultAccountId, rememberAccountChoice, paymentInAccount,
 } from "./accounting";
 import { todayLocal } from "./money";
+import { attributePayments } from "./reporting";
 
 const ACCOUNTS = [
   { id: "a-cash", name: "Cash in Hand", type: "Assets", subType: "Bank & Cash" },
@@ -119,10 +121,11 @@ const ACCOUNTS = [
   { id: "a-fixed", name: "Furniture", type: "Assets", subType: "Fixed Assets" },
   { id: "a-ar", name: "Accounts Receivable", type: "Assets", subType: "Accounts Receivable" },
   { id: "a-inc", name: "Fee Income", type: "Income", subType: "Fee Income" },
+  { id: "a-exp", name: "Rent", type: "Expenses", subType: "Operating Expenses" },
 ];
 
 beforeEach(() => {
-  mockDb.payments = []; mockDb.invoices = []; mockDb.payslips = []; mockDb.expenses = [];
+  mockDb.payments = []; mockDb.invoices = []; mockDb.payslips = []; mockDb.expenses = []; mockDb.journals = [];
   mockFail.addDoc = null; mockFail.update = null; mockFail.read = null;
   mockSeq = 0;
   window.localStorage.clear();
@@ -498,6 +501,29 @@ describe("createExpenseAndPost", () => {
     expect(r).toMatchObject({ posted: true, paid: true });
     expect(livePayments()[0]).toMatchObject({ type: "cash_out", amount: 20000, source: "expense", date: "2026-03-01" });
   });
+  test("a paid expense is one cash_out payment plus an informational journal, and keeps both account links", async () => {
+    const r = await createExpenseAndPost({ expense: { ...exp, accountId: "a-exp" }, accounts: ACCOUNTS, accountId: "a-bank" });
+    expect(r).toMatchObject({ posted: true, paid: true, journalPosted: true });
+    expect(livePayments()).toHaveLength(1); // the money is ONE cash_out row
+    expect(livePayments()[0].extra.accountId).toBe("a-bank");
+    expect(mockDb.journals).toHaveLength(1);
+    expect(mockDb.journals[0]).toMatchObject({ debit_account: "Rent", credit_account: "Meezan Bank", amount: 20000 });
+    expect(mockDb.journals[0].extra).toMatchObject({ source: "expense", sourceId: r.id, debitAccountId: "a-exp", creditAccountId: "a-bank" });
+    expect(mockDb.expenses[0].extra).toMatchObject({ accountId: "a-exp", paidAccountId: "a-bank" });
+    expect(mockDb.expenses[0].paid_account).toBe("Meezan Bank");
+  });
+  test("a failing journal write never fails or unposts the expense", async () => {
+    mockFail.addDoc = "journals";
+    const r = await createExpenseAndPost({ expense: { ...exp, accountId: "a-exp" }, accounts: ACCOUNTS, accountId: "a-bank" });
+    expect(r).toMatchObject({ posted: true, paid: true, journalPosted: false });
+    expect(livePayments()).toHaveLength(1);
+    expect(mockDb.expenses[0].extra.ledgerPosted).not.toBe(false);
+  });
+  test("no category account means no journal, only the payment", async () => {
+    const r = await createExpenseAndPost({ expense: exp, accounts: ACCOUNTS, accountId: "a-bank" });
+    expect(r).toMatchObject({ posted: true, journalPosted: false });
+    expect(mockDb.journals).toHaveLength(0);
+  });
   test("unpaid expense has no ledger row", async () => {
     const r = await createExpenseAndPost({ expense: exp, accounts: ACCOUNTS, accountId: "" });
     expect(r).toMatchObject({ posted: false, paid: false });
@@ -514,5 +540,25 @@ describe("createExpenseAndPost", () => {
     expect(r.posted).toBe(false);
     expect(r.error).toBeTruthy();
     expect(mockDb.expenses[0].extra.ledgerPosted).toBe(false);
+  });
+});
+
+describe("paymentInAccount agrees with attributePayments (id first, name only as a fallback)", () => {
+  const accts = [
+    { id: "a1", code: "1", name: "Meezan Bank Ltd", balance: 0 },
+    { id: "a2", code: "2", name: "Cash", balance: 0 },
+  ];
+  const pays = [
+    { id: "p1", type: "cash_in", account: "Meezan Bank", accountId: "a1", amount: 5 }, // renamed account, matched by id
+    { id: "p2", type: "cash_in", account: "Cash", amount: 5 },                         // old row, name only
+    { id: "p3", type: "cash_in", account: "Cash ", accountId: "", amount: 5 },         // stray space, still the name
+    { id: "p4", type: "cash_in", account: "Cash", accountId: "a1", amount: 5 },        // id beats a misleading name
+  ];
+  test("same rows per account either way", () => {
+    const attributed = attributePayments(accts, pays).byAccount;
+    for (const a of accts) {
+      const single = pays.filter((p) => paymentInAccount(p, a)).map((p) => p.id);
+      expect(single).toEqual((attributed.get(a.id) || []).map((p) => p.id));
+    }
   });
 });

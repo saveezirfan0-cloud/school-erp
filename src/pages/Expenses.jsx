@@ -10,7 +10,7 @@ import BulkBar, { RowCheckbox, HeaderCheckbox } from "../components/UI/BulkBar";
 import BulkEditModal from "../components/UI/BulkEditModal";
 import { runBulk, bulkResultMessage } from "../utils/bulk";
 import { logActivity } from "../utils/auditLog";
-import { createExpenseAndPost, reverseSourcePayments, rememberAccountChoice } from "../utils/accounting";
+import { createExpenseAndPost, reverseSourcePayments, rememberAccountChoice, deleteExpenseJournals, syncExpenseJournals } from "../utils/accounting";
 import { parsePositiveAmount, sumMoney, todayLocal, isIsoDate, formatMoney } from "../utils/money";
 import { useAccounts } from "../utils/useAccounts";
 import { useSubmitLock } from "../utils/useSubmitLock";
@@ -19,7 +19,8 @@ import { EXTRA_EXPENSE_CATEGORIES } from "../config/statementHeads";
 import toast from "react-hot-toast";
 import { Plus, Trash2, X, Download, FileText, Pencil } from "lucide-react";
 
-const CATEGORIES = ["Rent", "Utilities", "Salaries", "Supplies", "Maintenance", "Transport", "Other", ...EXTRA_EXPENSE_CATEGORIES];
+// Used only until the chart of accounts has at least one "Expenses" account.
+const LEGACY_CATEGORIES = ["Rent", "Utilities", "Salaries", "Supplies", "Maintenance", "Transport", "Other", ...EXTRA_EXPENSE_CATEGORIES];
 const emptyLine = { description: "", amount: "", category: "" };
 const emptyForm = () => ({ description: "", amount: "", category: "", date: todayLocal(), branchId: "", notes: "", paidAccountId: "" });
 
@@ -75,6 +76,33 @@ export default function Expenses() {
     return () => { unsub(); };
   }, []);
 
+  // Categories come from the chart of accounts (type "Expenses"). An option's
+  // value is the account id; legacy free-text categories use the name itself.
+  const expenseAccounts = accounts
+    .filter(a => a.type === "Expenses")
+    .sort((a, b) => (a.code || "").localeCompare(b.code || ""));
+  const usingChart = expenseAccounts.length > 0;
+  const categoryOptions = usingChart
+    ? expenseAccounts.map(a => ({ value: a.id, label: a.code ? `${a.code} · ${a.name}` : a.name }))
+    : LEGACY_CATEGORIES.map(c => ({ value: c, label: c }));
+
+  // Fields to save on an expense for a selected category option.
+  const categoryFields = (value) => {
+    const acc = expenseAccounts.find(a => a.id === value);
+    return acc ? { category: acc.name, accountId: acc.id } : { category: value, accountId: "" };
+  };
+  // Key an existing expense is grouped/filtered by, and the name to show for it
+  // (follows renames in the chart; falls back to the saved text if the account is gone).
+  const expenseCatKey = (e) => e.accountId || e.category;
+  const expenseCatName = (e) => accounts.find(a => a.id === e.accountId)?.name || e.category;
+
+  // Filter dropdown: current options plus any categories only seen on older expenses.
+  const filterOptions = [...categoryOptions];
+  expenses.forEach(e => {
+    const key = expenseCatKey(e);
+    if (key && !filterOptions.some(o => o.value === key)) filterOptions.push({ value: key, label: expenseCatName(e) });
+  });
+
   const openModal = () => {
     setForm({ ...emptyForm(), paidAccountId: "" });
     setBulkDate(todayLocal());
@@ -84,11 +112,11 @@ export default function Expenses() {
 
   const filtered = expenses.filter(e => {
     const matchBranch = matchesBranch(e, activeBranch) && (!filterBranch || e.branchId === filterBranch);
-    const matchCat = !filterCategory || e.category === filterCategory;
+    const matchCat = !filterCategory || expenseCatKey(e) === filterCategory;
     const matchFrom = !filterDateFrom || e.date >= filterDateFrom;
     const matchTo = !filterDateTo || e.date <= filterDateTo;
     const q = search.trim().toLowerCase();
-    const matchSearch = !q || (e.description || "").toLowerCase().includes(q) || (e.notes || "").toLowerCase().includes(q) || (e.category || "").toLowerCase().includes(q);
+    const matchSearch = !q || (e.description || "").toLowerCase().includes(q) || (e.notes || "").toLowerCase().includes(q) || (expenseCatName(e) || "").toLowerCase().includes(q);
     return matchBranch && matchCat && matchFrom && matchTo && matchSearch;
   });
 
@@ -101,7 +129,7 @@ export default function Expenses() {
   const total = sumMoney(filtered.map(e => e.amount));
 
   // multi-select for bulk actions
-  const bulk = useBulkSelect(filtered.map(e => e.id));
+  const bulk = useBulkSelect(expenses.map(e => e.id), activeBranch);
   const pagedIds = paged.map(e => e.id);
   const [showBulkEdit, setShowBulkEdit] = useState(false);
   const [bulkBusy, setBulkBusy] = useState(false);
@@ -110,6 +138,7 @@ export default function Expenses() {
     if (!window.confirm("Delete this expense? If it was paid from an account, the payment will be reversed. You can restore it from Trash.")) return;
     try {
       await reverseSourcePayments("expense", exp.id);
+      await deleteExpenseJournals(exp.id).catch(() => toast.error("Expense deleted, but its journal entry could not be removed"));
       await deleteDoc(doc(db, "expenses", exp.id));
       toast.success("Expense deleted");
       logActivity("deleted", "Expenses", `${exp.description} · Rs. ${Number(exp.amount || 0).toLocaleString()}`);
@@ -123,7 +152,7 @@ export default function Expenses() {
     setBulkBusy(true);
     const t = toast.loading(`Deleting ${ids.length} expenses…`);
     try {
-      const { ok, failed } = await runBulk(ids, (id) => reverseSourcePayments("expense", id), {
+      const { ok, failed } = await runBulk(ids, async (id) => { await reverseSourcePayments("expense", id); await deleteExpenseJournals(id); }, {
         onProgress: (d, tot) => toast.loading(`Reversing payments ${d}/${tot}…`, { id: t }),
       });
       if (ok.length) await deleteDocs("expenses", ok);
@@ -149,7 +178,16 @@ export default function Expenses() {
       const skipped = chosen.length - editable.length;
       if (editable.length === 0) { toast.error("Paid expenses can't have their date or branch changed in bulk. Delete (reverses the payment) and re-enter instead."); return; }
       const n = editable.length;
-      await updateDocs("expenses", editable.map(e => e.id), { ...changes, updatedAt: serverTimestamp() });
+      // The category option is an account id; save the name + link alongside it.
+      const patch = changes.category ? { ...changes, ...categoryFields(changes.category) } : changes;
+      const ids = editable.map(e => e.id);
+      await updateDocs("expenses", ids, { ...patch, updatedAt: serverTimestamp() });
+      if (patch.accountId) {
+        // Only matters for journals an earlier version auto-posted; none are written any more.
+        const acc = expenseAccounts.find(a => a.id === patch.accountId);
+        await syncExpenseJournals(ids, { accountName: acc?.name })
+          .catch(() => toast.error("Expenses updated, but some older journal entries could not be updated"));
+      }
       toast.success(`${n} expense${n === 1 ? "" : "s"} updated${skipped ? ` · ${skipped} paid expense${skipped === 1 ? "" : "s"} skipped (date/branch locked)` : ""}`);
       logActivity("updated", "Expenses", `${n} expenses (bulk): ${Object.keys(changes).join(", ")}`);
       setShowBulkEdit(false);
@@ -163,8 +201,10 @@ export default function Expenses() {
     e.preventDefault();
     return runSubmit(async () => {
       try {
+        // form.category is a chart account id (or a legacy name); store the
+        // name + link. createExpenseAndPost posts the ONE cash_out payment.
         const { paidAccountId, ...expense } = form;
-        const res = await createExpenseAndPost({ expense, accounts, accountId: paidAccountId });
+        const res = await createExpenseAndPost({ expense: { ...expense, ...categoryFields(form.category) }, accounts, accountId: paidAccountId });
         const acctName = accounts.find(a => a.id === paidAccountId)?.name || "";
         if (res.paid && !res.posted) {
           // Never a plain success: the expense exists but its cash_out does not.
@@ -197,7 +237,7 @@ export default function Expenses() {
       for (const line of valid) {
         try {
           const res = await createExpenseAndPost({
-            expense: { ...line, date: bulkDate, branchId: bulkBranch },
+            expense: { ...line, ...categoryFields(line.category), date: bulkDate, branchId: bulkBranch },
             accounts, accountId: bulkAccountId,
           });
           ok++;
@@ -232,12 +272,12 @@ export default function Expenses() {
 
   const handleCSV = () => exportToCSV("expenses",
     ["Date", "Description", "Category", "Branch", "Amount"],
-    filtered.map(e => [e.date, e.description, e.category, branches.find(b => b.id === e.branchId)?.name || "Main", e.amount])
+    filtered.map(e => [e.date, e.description, expenseCatName(e), branches.find(b => b.id === e.branchId)?.name || "Main", e.amount])
   );
 
   const handlePDF = () => exportToPDF("Expenses Report",
     ["Date", "Description", "Category", "Branch", "Amount"],
-    filtered.map(e => [e.date, e.description, e.category, branches.find(b => b.id === e.branchId)?.name || "Main", `Rs. ${Number(e.amount).toLocaleString()}`])
+    filtered.map(e => [e.date, e.description, expenseCatName(e), branches.find(b => b.id === e.branchId)?.name || "Main", `Rs. ${Number(e.amount).toLocaleString()}`])
   );
 
   const clearFilters = () => { setSearch(""); setFilterCategory(""); setFilterBranch(""); setFilterDateFrom(""); setFilterDateTo(""); };
@@ -281,7 +321,7 @@ export default function Expenses() {
         <select value={filterCategory} onChange={e => setFilterCategory(e.target.value)}
           style={{ padding: "8px 10px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 13, background: "white", flex: isMobile ? 1 : "none" }}>
           <option value="">All Categories</option>
-          {CATEGORIES.map(c => <option key={c}>{c}</option>)}
+          {filterOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
         </select>
         {!isMobile && (
           <select value={branchLocked ? "" : filterBranch} onChange={e => setFilterBranch(e.target.value)}
@@ -334,7 +374,7 @@ export default function Expenses() {
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                   <span style={{ padding: "3px 10px", borderRadius: 20, fontSize: 12, background: "#f1f5f9", color: "#475569", fontWeight: 500 }}>
-                    {exp.category}
+                    {expenseCatName(exp)}
                   </span>
                   <span style={{ fontSize: 12, color: "var(--text-muted)", alignSelf: "center" }}>
                     {branches.find(b => b.id === exp.branchId)?.name || "Main"}
@@ -380,7 +420,7 @@ export default function Expenses() {
                     </td>
                     <td style={{ padding: "11px 14px" }}>
                       <span style={{ padding: "3px 10px", borderRadius: 20, fontSize: 12, background: "#f1f5f9", color: "#475569" }}>
-                        {exp.category}
+                        {expenseCatName(exp)}
                       </span>
                     </td>
                     <td style={{ padding: "11px 14px", fontSize: 13 }}>{branches.find(b => b.id === exp.branchId)?.name || "Main"}</td>
@@ -431,7 +471,7 @@ export default function Expenses() {
           onClose={() => setShowBulkEdit(false)}
           onApply={handleBulkEditApply}
           fields={[
-            { key: "category", label: "Category", type: "select", options: CATEGORIES.map(c => ({ value: c, label: c })) },
+            { key: "category", label: "Category", type: "select", options: categoryOptions },
             { key: "date", label: "Date", type: "date" },
             { key: "branchId", label: "Branch", type: "select", options: [{ value: "main", label: "Main" }, ...branches.map(b => ({ value: b.id, label: b.name }))] },
           ]}
@@ -481,8 +521,13 @@ export default function Expenses() {
                     <select value={form.category} onChange={e => setForm(p => ({ ...p, category: e.target.value }))} required
                       style={{ width: "100%", padding: "10px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14 }}>
                       <option value="">Select</option>
-                      {CATEGORIES.map(c => <option key={c}>{c}</option>)}
+                      {categoryOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
                     </select>
+                    {!usingChart && (
+                      <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
+                        Using default categories. Add accounts of type "Expenses" in Chart of Accounts to link them.
+                      </div>
+                    )}
                   </div>
                   <div>
                     <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 5 }}>Branch</label>
@@ -570,7 +615,7 @@ export default function Expenses() {
                       <select value={line.category} onChange={e => updateBulkLine(idx, "category", e.target.value)}
                         style={{ padding: "8px 10px", border: "1px solid var(--border)", borderRadius: 6, fontSize: 14 }}>
                         <option value="">Category</option>
-                        {CATEGORIES.map(c => <option key={c}>{c}</option>)}
+                        {categoryOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
                       </select>
                       <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                         <input type="number" min="0.01" step="0.01" value={line.amount} onChange={e => updateBulkLine(idx, "amount", e.target.value)} placeholder="0"

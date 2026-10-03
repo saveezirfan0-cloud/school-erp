@@ -243,6 +243,22 @@ describe("ACC-06: books checks", () => {
     expect(bs.tb.balanced).toBe(false);
   });
 
+  it("an older auto-posted expense journal is not counted on top of its cash_out payment", () => {
+    const accs = [
+      { id: "a", code: "1", name: "Cash", type: "Assets", balance: 1000 },
+      { id: "x", code: "5", name: "Rent", type: "Expenses", balance: 0 },
+      { id: "e", code: "3", name: "Capital", type: "Equity", balance: 1000 },
+    ];
+    const pay = { id: "p", type: "cash_out", account: "Cash", accountId: "a", amount: 300, source: "expense", sourceId: "ex1" };
+    const jr = { id: "j", amount: 300, debitAccount: "Rent", creditAccount: "Cash", source: "expense", sourceId: "ex1" };
+    const tb = trialBalance({ accounts: accs, journals: [jr], payments: [pay] });
+    expect(tb.rows.find((r) => r.account.id === "a").net).toBe(700); // paid once, not twice
+    expect(tb.postedJournals).toBe(0);
+    // once the payment is reversed (expense deleted) nothing stands in for it
+    const rev = [{ ...pay, reversed: true }, { ...pay, id: "p2", type: "cash_in", reversalOf: "p" }];
+    expect(trialBalance({ accounts: accs, journals: [jr], payments: rev }).postedJournals).toBe(1);
+  });
+
   it("cash movements flow into assets and into the derived equity line", () => {
     const accs = [{ id: "a", code: "1", name: "Cash", type: "Assets", balance: 0 }];
     const bs = balanceSheet({ accounts: accs, journals: [], payments });

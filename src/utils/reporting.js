@@ -546,7 +546,17 @@ export function checkJournals(accounts, journals) {
 // the books tie: opening balances must satisfy Dr = Cr.
 export function trialBalance({ accounts, journals, payments }) {
   const live = (accounts || []).filter(isLive);
-  const { posted, problems } = checkJournals(live, journals);
+  // An older version also wrote a journal (source "expense") next to every
+  // paid expense's cash_out payment. The payment is the ledger entry, so such
+  // a journal is a duplicate while its payment stands and is not posted again.
+  const paidExpenses = new Set();
+  for (const p of payments || []) {
+    if (isLive(p) && p.source === "expense" && p.type === "cash_out" && !p.reversed && !p.reversalOf) paidExpenses.add(p.sourceId);
+  }
+  const { posted, problems } = checkJournals(
+    live,
+    (journals || []).filter((j) => !(j.source === "expense" && paidExpenses.has(j.sourceId)))
+  );
   const attributed = attributePayments(live, payments);
 
   const rows = live.map((a) => {

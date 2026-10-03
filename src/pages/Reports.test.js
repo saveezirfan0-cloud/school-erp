@@ -33,7 +33,7 @@ jest.mock("../context/BranchContext", () => ({
   useBranch: () => ({ activeBranch: "all", branches: [{ id: "b1", name: "North Campus" }] }),
 }));
 jest.mock("../context/UserContext", () => ({
-  useUser: () => ({ can: () => true }),
+  useUser: () => ({ can: () => true, hajiLayout: null, saveHajiLayout: async () => {} }),
 }));
 jest.mock("recharts", () => {
   const Stub = ({ children }) => <div>{children}</div>;

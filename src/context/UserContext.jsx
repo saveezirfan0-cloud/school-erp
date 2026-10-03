@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useState, useMemo, useCallback } from "react";
-import { db } from "../firebase";
-import { doc, onSnapshot, collection, updateDocs } from "../firebase";
+import { db, doc, onSnapshot, collection, updateDocs, setDoc, deleteDoc } from "../firebase";
+import { ROLE_MENU_PREFIX, normalizePrefs, normalizeLayout, homePath } from "../config/menu";
 import { useAuth } from "./AuthContext";
 import { firstPermittedRoute, DELETE_PERMISSIONS } from "./routeAccess";
 
@@ -234,7 +234,10 @@ export function UserProvider({ children }) {
   // from a previous user (or the render between "signed in" and "profile
   // requested") is never treated as the current user's profile.
   const [profileState, setProfileState] = useState({ uid: null, profile: null, error: null });
-  const [rolesState, setRolesState] = useState({ uid: null, perms: {}, error: null });
+  // `menus` = admin-set default menus per role, stored as customRoles rows
+  // with a reserved "menu:" id (no schema change). They are layouts only and
+  // never count as roles or permissions.
+  const [rolesState, setRolesState] = useState({ uid: null, perms: {}, menus: {}, error: null });
 
   useEffect(() => {
     if (!user) return undefined;
@@ -264,12 +267,20 @@ export function UserProvider({ children }) {
       collection(db, "customRoles"),
       (snap) => {
         const perms = {};
-        snap.docs.forEach((d) => { perms[d.id] = d.data().permissions || {}; });
-        setRolesState({ uid, perms, error: null });
+        const menus = {};
+        snap.docs.forEach((d) => {
+          if (d.id.startsWith(ROLE_MENU_PREFIX)) {
+            const layout = d.data().menuLayout;
+            if (layout) menus[d.id.slice(ROLE_MENU_PREFIX.length)] = layout;
+            return;
+          }
+          perms[d.id] = d.data().permissions || {};
+        });
+        setRolesState({ uid, perms, menus, error: null });
       },
       (error) => {
         console.error("Custom roles error:", error);
-        setRolesState({ uid, perms: {}, error });
+        setRolesState({ uid, perms: {}, menus: {}, error });
       }
     );
     return unsub;
@@ -280,6 +291,7 @@ export function UserProvider({ children }) {
   const userProfile = profileReady ? profileState.profile : null;
   const profileError = profileReady ? profileState.error : null;
   const customRolePerms = useMemo(() => (rolesReady ? rolesState.perms : {}), [rolesReady, rolesState]);
+  const roleMenuDefaults = useMemo(() => (rolesReady ? rolesState.menus : {}), [rolesReady, rolesState]);
 
   const role = userProfile?.role || null;
   // Custom-role users must wait for the roles table; built-in roles don't.
@@ -291,7 +303,6 @@ export function UserProvider({ children }) {
   );
 
   const roleKnown = !!role && (isBuiltinRole(role) || hasOwn(customRolePerms, role));
-  const homeRoute = firstPermittedRoute(permissions);
 
   // Why the user has no access (null when they do).
   let accessProblem = null;
@@ -299,7 +310,7 @@ export function UserProvider({ children }) {
     if (profileError) accessProblem = "error";
     else if (!userProfile) accessProblem = "no-profile";
     else if (!roleKnown) accessProblem = "unknown-role";
-    else if (!homeRoute) accessProblem = "no-permissions";
+    else if (!firstPermittedRoute(permissions)) accessProblem = "no-permissions";
   }
 
   // Check a single permission. No argument means "no gate".
@@ -321,28 +332,76 @@ export function UserProvider({ children }) {
   const assignedBranchId =
     roleKnown && !permissions.canViewAllBranches && userProfile?.branchId ? userProfile.branchId : null;
 
-  // Personal sidebar layout (null = use the default). Saved per user on
-  // their own profile row. updateDocs merges into `extra` so this never
-  // overwrites pagePermissions (a plain updateDoc would replace it).
-  // The profile is only ever set from the snapshot listener, so the saved
-  // layout is also applied to the local state straight away (the `users`
-  // table is not in the realtime publication, so no snapshot follows).
-  const menuLayout = userProfile?.menuLayout || null;
+  // Menu: a user's own layout wins, then the default an admin set for
+  // their role, then the built-in default (null). The layout only orders
+  // and hides pages; every consumer still filters by permission, so it can
+  // never grant anything. An unknown role gets no role default.
+  // updateDocs merges into `extra`, so saves never overwrite pagePermissions.
+  const ownMenuLayout = userProfile?.menuLayout || null;
+  const roleMenuLayout = roleKnown ? roleMenuDefaults[role] || null : null;
+  const menuLayout = ownMenuLayout || roleMenuLayout;
+  const menuPrefs = useMemo(() => normalizePrefs(userProfile?.menuPrefs), [userProfile?.menuPrefs]);
+
+  // Landing page for users who cannot see the dashboard: the first page of
+  // their own menu that they may open, else the first permitted page.
+  // null when they may open nothing, which means the no-access screen,
+  // never a redirect to a page they cannot see.
+  const homeRoute = useMemo(() => {
+    const fallback = firstPermittedRoute(permissions);
+    if (!fallback) return null;
+    const allowed = (p) => permissions[p] === true;
+    const access = { can: (p) => (!p ? true : allowed(p)), isAdmin: roleKnown && role === "admin" };
+    return homePath(normalizeLayout(menuLayout), access) || fallback;
+  }, [permissions, menuLayout, roleKnown, role]);
+
   const userDocId = userProfile?.id || null;
   const uid = user?.uid || null;
-  const saveMenuLayout = useCallback(async (layout) => {
+
+  // The profile is only ever set from the snapshot listener, so a saved
+  // value is also applied to the local state straight away (the `users`
+  // table is not in the realtime publication, so no snapshot follows).
+  const patchProfile = useCallback((patch) => {
+    setProfileState((s) => (s.uid === uid && s.profile ? { ...s, profile: { ...s.profile, ...patch } } : s));
+  }, [uid]);
+
+  const saveProfileExtra = useCallback(async (key, value) => {
     if (!userDocId || !uid) return;
-    const setLayout = (value) =>
-      setProfileState((s) => (s.uid === uid && s.profile ? { ...s, profile: { ...s.profile, menuLayout: value } } : s));
-    const previous = userProfile?.menuLayout ?? null;
-    setLayout(layout);
+    const previous = userProfile?.[key] ?? null;
+    patchProfile({ [key]: value });
     try {
-      await updateDocs("users", [userDocId], { menuLayout: layout });
+      await updateDocs("users", [userDocId], { [key]: value });
     } catch (e) {
-      setLayout(previous);
+      patchProfile({ [key]: previous });
       throw e;
     }
-  }, [userDocId, uid, userProfile?.menuLayout]);
+  }, [userDocId, uid, userProfile, patchProfile]);
+
+  // layout === null resets to the role/built-in default
+  const saveMenuLayout = useCallback((layout) => saveProfileExtra("menuLayout", layout), [saveProfileExtra]);
+
+  // Preferences (pins, collapsed sections) change often: update the UI at
+  // once and batch the network write.
+  const prefsTimer = React.useRef(null);
+  const saveMenuPrefs = useCallback((next) => {
+    if (!userDocId) return;
+    patchProfile({ menuPrefs: next });
+    clearTimeout(prefsTimer.current);
+    prefsTimer.current = setTimeout(() => {
+      updateDocs("users", [userDocId], { menuPrefs: next }).catch((e) => console.error("menuPrefs save failed:", e));
+    }, 600);
+  }, [userDocId, patchProfile]);
+
+  // Admin only (RLS enforces it): set or clear the default menu for a role.
+  const saveRoleMenuDefault = useCallback(async (roleId, layout) => {
+    const ref = doc(db, "customRoles", ROLE_MENU_PREFIX + roleId);
+    if (layout) await setDoc(ref, { menuLayout: layout });
+    else await deleteDoc(ref);
+  }, []);
+
+  // Personal layout of the Haji Sahab report (null = default). Saved the same
+  // way as the menu layout, on the user's own profile row.
+  const hajiLayout = userProfile?.hajiLayout || null;
+  const saveHajiLayout = useCallback((layout) => saveProfileExtra("hajiLayout", layout), [saveProfileExtra]);
 
   const value = useMemo(() => ({
     userProfile,
@@ -360,9 +419,19 @@ export function UserProvider({ children }) {
     isAdmin,
     assignedBranchId,
     menuLayout,
+    ownMenuLayout,
+    roleMenuLayout,
+    roleMenuDefaults,
     saveMenuLayout,
+    saveRoleMenuDefault,
+    menuPrefs,
+    saveMenuPrefs,
+    hajiLayout,
+    saveHajiLayout,
   }), [userProfile, loadingProfile, profileError, accessProblem, user, homeRoute, role, permissions,
-    customRolePerms, can, canAny, canDeleteAny, isAdmin, assignedBranchId, menuLayout, saveMenuLayout]);
+    customRolePerms, can, canAny, canDeleteAny, isAdmin, assignedBranchId, menuLayout, ownMenuLayout,
+    roleMenuLayout, roleMenuDefaults, saveMenuLayout, saveRoleMenuDefault, menuPrefs, saveMenuPrefs,
+    hajiLayout, saveHajiLayout]);
 
   return (
     <UserContext.Provider value={value}>
