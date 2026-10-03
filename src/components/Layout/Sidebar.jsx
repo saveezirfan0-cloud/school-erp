@@ -97,6 +97,8 @@ export default function Sidebar({ onClose }) {
       label: "Reports",
       show: can("canViewReports"),
     },
+    { to: "/fee-aging", icon: FileText, label: "Fee Aging", show: can("canViewReports") },
+    { to: "/collections", icon: Landmark, label: "Collections", show: can("canViewReports") },
     {
       to: "/branches",
       icon: Building2,

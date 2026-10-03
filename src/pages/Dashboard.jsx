@@ -1,73 +1,58 @@
-import React, { useEffect, useState } from "react";
-import { db } from "../firebase";
-import { collection, getDocs } from "../firebase";
+import React, { useMemo } from "react";
+import { Link } from "react-router-dom";
 import { useBranch } from "../context/BranchContext";
+import { useUser } from "../context/UserContext";
+import { useReportData } from "../hooks/useReportData";
+import { useDateRange, DateRangeBar, DataWarnings } from "../components/ReportControls";
 import { matchesBranch } from "../utils/branchFilter";
-import { toMillis, toDate } from "../utils/dates";
-import { Users, Receipt, TrendingDown, TrendingUp, UserCheck, Building2 } from "lucide-react";
+import { toMillis } from "../utils/dates";
+import { profitAndLoss, monthlySeries, isLive } from "../utils/reporting";
+import { Users, Receipt, TrendingDown, TrendingUp, UserCheck, Building2, AlertTriangle, Clock } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line } from "recharts";
+
+const COLLECTIONS = ["students", "employees", "invoices", "expenses", "payslips", "branches"];
 
 export default function Dashboard() {
   const { activeBranch, branches } = useBranch();
-  const [stats, setStats] = useState({ students: 0, employees: 0, feesCollected: 0, expenses: 0, pending: 0, branches: 0 });
-  const [chartData, setChartData] = useState([]);
-  const [recentInvoices, setRecentInvoices] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const { can } = useUser();
+  const dr = useDateRange("ytd");
+  const { data, loading, capped, errors } = useReportData(COLLECTIONS);
 
-  useEffect(() => {
-    const fetchStats = async () => {
-      setLoading(true);
-      try {
-        const [studentsSnap, employeesSnap, feesSnap, expSnap, branchSnap] = await Promise.all([
-          getDocs(collection(db, "students")),
-          getDocs(collection(db, "employees")),
-          getDocs(collection(db, "invoices")),
-          getDocs(collection(db, "expenses")),
-          getDocs(collection(db, "branches")),
-        ]);
-
-        let students = studentsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
-        let fees = feesSnap.docs.map(d => ({ id: d.id, ...d.data() }));
-        let expenses = expSnap.docs.map(d => ({ id: d.id, ...d.data() }));
-        let employees = employeesSnap.docs.map(d => ({ id: d.id, ...d.data() }));
-
-        students = students.filter(s => matchesBranch(s, activeBranch));
-        fees = fees.filter(f => matchesBranch(f, activeBranch));
-        expenses = expenses.filter(e => matchesBranch(e, activeBranch));
-        employees = employees.filter(e => matchesBranch(e, activeBranch));
-
-        const collected = fees.filter(f => f.status === "paid").reduce((s, f) => s + Number(f.amount || 0), 0);
-        const pending = fees.filter(f => f.status === "pending").reduce((s, f) => s + Number(f.amount || 0), 0);
-        const totalExp = expenses.reduce((s, e) => s + Number(e.amount || 0), 0);
-
-        setStats({ students: students.length, employees: employees.length, feesCollected: collected, expenses: totalExp, pending, branches: branchSnap.size });
-
-        const recent = fees.sort((a, b) => toMillis(b.createdAt) - toMillis(a.createdAt)).slice(0, 6);
-        setRecentInvoices(recent);
-
-        const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-        const monthly = months.map((month, i) => ({
-          month,
-          fees: fees.filter(f => f.status === "paid" && (toDate(f.paidDate) || toDate(f.createdAt) || new Date()).getMonth() === i).reduce((s, f) => s + Number(f.amount || 0), 0),
-          expenses: expenses.filter(e => new Date(e.date || Date.now()).getMonth() === i).reduce((s, e) => s + Number(e.amount || 0), 0),
-        }));
-        setChartData(monthly);
-      } catch (err) { console.error("Dashboard error:", err); }
-      setLoading(false);
+  // Every figure below comes from utils/reporting.js, the same
+  // definitions Reports, Bank & Cash and the Student Ledger use.
+  const view = useMemo(() => {
+    const inScope = (rows) => (rows || []).filter((r) => isLive(r) && matchesBranch(r, activeBranch));
+    const students = inScope(data.students);
+    const employees = inScope(data.employees);
+    const money = { invoices: data.invoices || [], expenses: data.expenses || [], payslips: data.payslips || [] };
+    const opts = { branch: activeBranch, range: dr.range };
+    return {
+      studentCount: students.length,
+      employeeCount: employees.length,
+      branchCount: (data.branches || []).length,
+      pl: profitAndLoss(money, opts),
+      chartData: monthlySeries(money, opts).map((m) => ({ month: m.month, fees: m.income, expenses: m.outflow })),
+      recentInvoices: inScope(data.invoices).sort((a, b) => toMillis(b.createdAt) - toMillis(a.createdAt)).slice(0, 6),
     };
-    fetchStats();
-  }, [activeBranch]);
+  }, [data, activeBranch, dr.range]);
+
+  const { pl, chartData, recentInvoices } = view;
+  const stats = {
+    feesCollected: pl.collected, pending: pl.outstanding, overdue: pl.overdue,
+    expenses: pl.expenses + pl.salaries, branches: view.branchCount,
+  };
 
   const cards = [
-    { label: "Total Students", value: stats.students, icon: Users, color: "#7a2535", bg: "#f5eaec" },
-    { label: "Employees", value: stats.employees, icon: UserCheck, color: "#2a8c7a", bg: "#e6f4f1" },
+    { label: "Total Students", value: view.studentCount, icon: Users, color: "#7a2535", bg: "#f5eaec" },
+    { label: "Employees", value: view.employeeCount, icon: UserCheck, color: "#2a8c7a", bg: "#e6f4f1" },
     { label: "Fees Collected", value: `Rs. ${stats.feesCollected.toLocaleString()}`, icon: TrendingUp, color: "#10b981", bg: "#ecfdf5" },
-    { label: "Pending Fees", value: `Rs. ${stats.pending.toLocaleString()}`, icon: Receipt, color: "#f59e0b", bg: "#fffbeb" },
-    { label: "Total Expenses", value: `Rs. ${stats.expenses.toLocaleString()}`, icon: TrendingDown, color: "#ef4444", bg: "#fef2f2" },
+    { label: "Outstanding Fees", value: `Rs. ${stats.pending.toLocaleString()}`, icon: Receipt, color: "#f59e0b", bg: "#fffbeb" },
+    { label: "Overdue Fees", value: `Rs. ${stats.overdue.toLocaleString()}`, icon: Clock, color: "#dc2626", bg: "#fef2f2", to: can("canViewReports") ? "/fee-aging" : null },
+    { label: "Expenses + Salaries", value: `Rs. ${stats.expenses.toLocaleString()}`, icon: TrendingDown, color: "#ef4444", bg: "#fef2f2" },
     { label: "Branches", value: stats.branches + 1, icon: Building2, color: "#4f46e5", bg: "#eef2ff" },
   ];
 
-  const netSurplus = stats.feesCollected - stats.expenses;
+  const netSurplus = pl.net;
 
   if (loading) return (
     <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "60vh", flexDirection: "column", gap: 12 }}>
@@ -86,28 +71,42 @@ export default function Dashboard() {
         </p>
       </div>
 
+      <DateRangeBar dr={dr} note="Applies to collected, expenses and charts. Outstanding and overdue are balances as of today." />
+      <DataWarnings capped={capped} errors={errors} />
+
+      {pl.unverifiedAllTime > 0 && can("canViewReports") && (
+        <div style={{ display: "flex", gap: 10, alignItems: "flex-start", padding: "10px 14px", marginBottom: 14, borderRadius: 10, background: "#fffbeb", border: "1px solid #fcd34d", color: "#92400e", fontSize: 13 }}>
+          <AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 1 }} />
+          <span>
+            {pl.unverifiedAllTimeCount} invoice{pl.unverifiedAllTimeCount === 1 ? " is" : "s are"} marked paid (Rs. {pl.unverifiedAllTime.toLocaleString()}) with no money recorded against {pl.unverifiedAllTimeCount === 1 ? "it" : "them"}.
+            These are not counted as collected. <Link to="/reports" style={{ color: "inherit", fontWeight: 600 }}>Open Reports, Books Check</Link>
+          </span>
+        </div>
+      )}
+
       <div style={{ background: "var(--sidebar-bg)", borderRadius: 14, padding: "20px 24px", marginBottom: 20, color: "white", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12 }}>
         <div>
           <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 4, textTransform: "uppercase", letterSpacing: 1 }}>Net {netSurplus >= 0 ? "Surplus" : "Deficit"}</div>
           <div style={{ fontSize: 28, fontWeight: 700 }}>Rs. {Math.abs(netSurplus).toLocaleString()}</div>
-          <div style={{ fontSize: 12, opacity: 0.65, marginTop: 4 }}>Fees collected minus expenses</div>
+          <div style={{ fontSize: 12, opacity: 0.65, marginTop: 4 }}>Fees collected minus expenses and salaries paid</div>
         </div>
         <div style={{ textAlign: "right" }}>
-          <div style={{ fontSize: 12, opacity: 0.65, marginBottom: 4 }}>Collection rate</div>
+          <div style={{ fontSize: 12, opacity: 0.65, marginBottom: 4 }}>Collection rate (billed in period)</div>
           <div style={{ fontSize: 22, fontWeight: 700 }}>
-            {stats.feesCollected + stats.pending > 0 ? `${Math.round((stats.feesCollected / (stats.feesCollected + stats.pending)) * 100)}%` : "0%"}
+            {pl.collectionRate}%
           </div>
         </div>
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12, marginBottom: 20 }}>
-        {cards.map(({ label, value, icon: Icon, color, bg }) => (
-          <div key={label} style={{ background: "white", borderRadius: 12, padding: "16px", border: "1px solid var(--border)" }}>
+        {cards.map(({ label, value, icon: Icon, color, bg, to }) => (
+          <div key={label} style={{ background: "white", borderRadius: 12, padding: "16px", border: "1px solid var(--border)", position: "relative" }}>
             <div style={{ width: 36, height: 36, borderRadius: 9, background: bg, display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 10 }}>
               <Icon size={18} color={color} />
             </div>
             <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 4 }}>{label}</div>
             <div style={{ fontSize: 18, fontWeight: 700, color }}>{value}</div>
+            {to && <Link to={to} style={{ position: "absolute", inset: 0, borderRadius: 12 }} aria-label={`${label}: open fee aging report`} title="Open fee aging report" />}
           </div>
         ))}
       </div>
@@ -150,7 +149,10 @@ export default function Dashboard() {
       <div style={{ background: "white", borderRadius: 12, border: "1px solid var(--border)", overflow: "hidden" }}>
         <div style={{ padding: "16px 20px", borderBottom: "1px solid var(--border)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <h3 style={{ fontSize: 14, fontWeight: 600 }}>Recent Invoices</h3>
-          <a href="/fees" style={{ fontSize: 13, color: "var(--primary)", textDecoration: "none", fontWeight: 500 }}>View all →</a>
+          <div style={{ display: "flex", gap: 16 }}>
+            {can("canViewReports") && <Link to="/fee-aging" style={{ fontSize: 13, color: "var(--primary)", textDecoration: "none", fontWeight: 500 }}>Fee aging &amp; defaulters →</Link>}
+            <Link to="/fees" style={{ fontSize: 13, color: "var(--primary)", textDecoration: "none", fontWeight: 500 }}>View all →</Link>
+          </div>
         </div>
         <div style={{ overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 500 }}>

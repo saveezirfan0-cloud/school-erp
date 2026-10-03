@@ -1,12 +1,19 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { db, collection, onSnapshot, doc, getDoc } from "../firebase";
+import { db, supabase, doc, getDoc } from "../firebase";
 import { toMillis, formatDate } from "../utils/dates";
-import { ArrowLeft, FileText, TrendingUp, Wallet } from "lucide-react";
+import { decodeRow, studentStatement, invoiceFacts, isEffectiveInvoiceReceipt } from "../utils/reporting";
+import { DataWarnings } from "../components/ReportControls";
+import { ArrowLeft, FileText, TrendingUp, Wallet, Percent, AlertTriangle, RefreshCw } from "lucide-react";
 
 // Per-student financial history: every invoice raised, every payment
 // received, and the running balance. The single most useful screen
 // for answering "what does this student owe?".
+//
+// Only THIS student's rows are queried (not whole tables), so the
+// platform's 1000-row cap cannot truncate a ledger. The figures use the
+// shared definitions in utils/reporting.js, so they agree with the
+// Dashboard, Reports and Fees pages.
 export default function StudentLedger() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -14,43 +21,64 @@ export default function StudentLedger() {
   const [invoices, setInvoices] = useState([]);
   const [payments, setPayments] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [errors, setErrors] = useState({});
 
-  useEffect(() => {
-    getDoc(doc(db, "students", id)).then((snap) => {
+  const load = useCallback(async () => {
+    setLoading(true);
+    const errs = {};
+    try {
+      const snap = await getDoc(doc(db, "students", id));
       if (snap.exists()) setStudent({ id: snap.id, ...snap.data() });
-    });
-    const u1 = onSnapshot(collection(db, "invoices"), (snap) => {
-      setInvoices(snap.docs.map((d) => ({ id: d.id, ...d.data() })).filter((i) => i.studentId === id));
-      setLoading(false);
-    });
-    const u2 = onSnapshot(collection(db, "payments"), (snap) => {
-      setPayments(snap.docs.map((d) => ({ id: d.id, ...d.data() })).filter((p) => p.source === "invoice"));
-    });
-    return () => { u1(); u2(); };
+    } catch (e) { console.error("StudentLedger student error:", e); errs.students = e?.message || "Could not load"; }
+
+    let inv = [];
+    try {
+      const { data, error } = await supabase.from("invoices").select("*").eq("student_id", id).is("deleted_at", null);
+      if (error) throw error;
+      inv = (data || []).map(decodeRow);
+    } catch (e) { console.error("StudentLedger invoices error:", e); errs.invoices = e?.message || "Could not load"; }
+    setInvoices(inv);
+
+    // Payments for these invoices only, in chunks to keep the URL short.
+    const pays = [];
+    try {
+      const ids = inv.map((i) => i.id);
+      for (let i = 0; i < ids.length; i += 50) {
+        const { data, error } = await supabase.from("payments").select("*")
+          .eq("source", "invoice").in("source_id", ids.slice(i, i + 50)).is("deleted_at", null);
+        if (error) throw error;
+        pays.push(...(data || []).map(decodeRow));
+      }
+    } catch (e) { console.error("StudentLedger payments error:", e); errs.payments = e?.message || "Could not load"; }
+    setPayments(pays);
+    setErrors(errs);
+    setLoading(false);
   }, [id]);
 
-  // Payments linked to THIS student's invoices.
-  const invoiceIds = new Set(invoices.map((i) => i.id));
-  const studentPayments = payments.filter((p) => invoiceIds.has(p.sourceId));
+  useEffect(() => { load(); }, [load]);
 
-  const totalBilled = invoices.reduce((s, i) => s + Number(i.amount || 0), 0);
-  // net received = cash_in minus any reversals (cash_out tied to invoices)
-  const totalReceived = studentPayments
-    .filter((p) => !p.reversed)
-    .reduce((s, p) => s + (p.type === "cash_in" ? Number(p.amount) : -Number(p.amount)), 0);
-  const balance = totalBilled - totalReceived;
+  const st = useMemo(() => studentStatement(invoices, payments), [invoices, payments]);
+  const name = student?.name || invoices.find((i) => i.studentName)?.studentName || "Student";
 
   // Build a combined, dated timeline of invoices and payments.
   const events = [
-    ...invoices.map((i) => ({
-      kind: "invoice", date: i.date || i.createdAt, label: `Invoice — ${i.month || ""} ${i.year || ""}`.trim(),
-      detail: (i.lineItems || []).map((l) => l.description).join(", ") || "Fee", amount: Number(i.amount || 0), id: i.id,
-    })),
-    ...studentPayments.map((p) => ({
+    ...invoices.map((i) => {
+      const f = invoiceFacts(i);
+      const notes = [(i.lineItems || []).map((l) => l.description).join(", ") || "Fee"];
+      if (f.concession > 0) notes.push(`concession Rs. ${f.concession.toLocaleString()}`);
+      if (f.unverified > 0) notes.push(`marked paid, no money recorded (Rs. ${f.unverified.toLocaleString()})`);
+      else if (f.outstanding > 0) notes.push(`Rs. ${f.outstanding.toLocaleString()} outstanding`);
+      return {
+        kind: "invoice", date: i.date || i.createdAt, label: `Invoice — ${i.month || ""} ${i.year || ""}`.trim(),
+        detail: notes.join(" · "), amount: Number(i.amount || 0), id: i.id,
+      };
+    }),
+    ...payments.map((p) => ({
       kind: p.reversed ? "reversed" : (p.type === "cash_in" ? "payment" : "reversal"),
       date: p.date || p.createdAt,
       label: p.type === "cash_in" ? `Payment — ${p.account || ""}` : `Reversal — ${p.account || ""}`,
       detail: p.description || "", amount: Number(p.amount || 0), id: p.id, reversed: p.reversed,
+      counted: isEffectiveInvoiceReceipt(p),
     })),
   ].sort((a, b) => toMillis(a.date) - toMillis(b.date));
 
@@ -70,25 +98,44 @@ export default function StudentLedger() {
       </button>
 
       <div style={{ marginBottom: 16 }}>
-        <h2 style={{ fontSize: 22, fontWeight: 700 }}>{student?.name || "Student"} <span style={{ fontSize: 14, fontWeight: 400, color: "var(--text-muted)", fontFamily: "monospace" }}>{student?.studentId}</span></h2>
+        <h2 style={{ fontSize: 22, fontWeight: 700 }}>{name} <span style={{ fontSize: 14, fontWeight: 400, color: "var(--text-muted)", fontFamily: "monospace" }}>{student?.studentId}</span></h2>
         <div style={{ fontSize: 13, color: "var(--text-muted)" }}>{student?.grade} {student?.parentName ? `• Parent: ${student.parentName}` : ""}</div>
       </div>
 
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 20 }}>
-        {card("Total Billed", totalBilled, "var(--primary)", FileText)}
-        {card("Total Received", totalReceived, "#10b981", TrendingUp)}
-        {card("Balance Due", balance, balance > 0 ? "#ef4444" : "#10b981", Wallet)}
+        {card("Total Billed", st.billed, "var(--primary)", FileText)}
+        {st.concessions > 0 && card("Concessions", st.concessions, "#f59e0b", Percent)}
+        {card("Total Received", st.received, "#10b981", TrendingUp)}
+        {card("Balance Due", st.outstanding, st.outstanding > 0 ? "#ef4444" : "#10b981", Wallet)}
       </div>
+      {st.unverified > 0 && (
+        <div style={{ display: "flex", gap: 10, alignItems: "flex-start", padding: "10px 14px", marginBottom: 16, borderRadius: 10, background: "#fffbeb", border: "1px solid #fcd34d", color: "#92400e", fontSize: 13 }}>
+          <AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 1 }} />
+          <span>Rs. {st.unverified.toLocaleString()} is on invoices marked paid with no money recorded against them. It is not counted as received.</span>
+        </div>
+      )}
+      {st.ledgerGap > 0.5 && (
+        <div style={{ display: "flex", gap: 10, alignItems: "flex-start", padding: "10px 14px", marginBottom: 16, borderRadius: 10, background: "#fffbeb", border: "1px solid #fcd34d", color: "#92400e", fontSize: 13 }}>
+          <AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 1 }} />
+          <span>Invoices record Rs. {st.received.toLocaleString()} received, but only Rs. {st.postedToLedger.toLocaleString()} is in Bank &amp; Cash. The difference has no ledger entry.</span>
+        </div>
+      )}
+      <DataWarnings errors={errors} />
 
       <div style={{ background: "white", border: "1px solid var(--border)", borderRadius: 12, overflow: "hidden" }}>
-        <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--border)", fontWeight: 600, fontSize: 14 }}>Statement</div>
+        <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--border)", fontWeight: 600, fontSize: 14, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          Statement
+          <button onClick={load} disabled={loading} title="Reload" style={{ display: "flex", alignItems: "center", gap: 5, border: "1px solid var(--border)", background: "white", borderRadius: 8, padding: "4px 10px", cursor: "pointer", fontSize: 12, color: "var(--text-muted)" }}>
+            <RefreshCw size={13} /> Refresh
+          </button>
+        </div>
         {loading ? (
           <div style={{ padding: 40, textAlign: "center", color: "var(--text-muted)" }}>Loading…</div>
         ) : events.length === 0 ? (
           <div style={{ padding: 40, textAlign: "center", color: "var(--text-muted)" }}>No invoices or payments yet.</div>
         ) : (
           events.map((e) => (
-            <div key={e.kind + e.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 16px", borderTop: "1px solid var(--border)", opacity: e.reversed ? 0.5 : 1 }}>
+            <div key={e.kind + e.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 16px", borderTop: "1px solid var(--border)", opacity: e.kind !== "invoice" && !e.counted ? 0.5 : 1 }}>
               <div style={{ minWidth: 0 }}>
                 <div style={{ fontWeight: 600, fontSize: 14, textDecoration: e.reversed ? "line-through" : "none" }}>{e.label}</div>
                 <div style={{ fontSize: 12, color: "var(--text-muted)" }}>{formatDate(e.date)} {e.detail ? `• ${e.detail}` : ""}</div>
@@ -102,7 +149,7 @@ export default function StudentLedger() {
         )}
       </div>
       <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 10 }}>
-        Invoices add to what's billed; payments reduce the balance. Reversed payments are shown struck through and don't count.
+        Invoices add to what's billed; payments reduce the balance. Reversed payments and their reversing entries are shown faded and cancel out. Balance due counts only invoices that are not marked paid.
       </p>
     </div>
   );
