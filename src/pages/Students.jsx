@@ -3,6 +3,8 @@ import { db, addDoc, updateDoc, deleteDoc, doc, collection, serverTimestamp, upd
 import { useBranch } from "../context/BranchContext";
 import { useCollection } from "../hooks/useCollection";
 import { useBulkSelect } from "../hooks/useBulkSelect";
+import { usePersistentState } from "../hooks/usePersistentState";
+import { studentName } from "../utils/studentLabel";
 import ListToolbar from "../components/UI/ListToolbar";
 import Pagination from "../components/UI/Pagination";
 import BulkBar, { RowCheckbox, HeaderCheckbox } from "../components/UI/BulkBar";
@@ -33,7 +35,8 @@ export default function Students() {
   const navigate = useNavigate();
 
   const [search, setSearch] = useState("");
-  const [filterGrade, setFilterGrade] = useState("");
+  // Multi-select class filter (Hifz, Class 1, ...). Remembered between visits.
+  const [filterGrades, setFilterGrades] = usePersistentState("students.filterGrades", []);
   const [sortField, setSortField] = useState("");
   const [sortDir, setSortDir] = useState("asc");
   const [page, setPage] = useState(1);
@@ -46,16 +49,17 @@ export default function Students() {
   const { rows, filtered, paged, total, pageCount, page: safePage } = useCollection("students", {
     activeBranch,
     search,
-    searchFields: ["name", "studentId", "parentName", "parentPhone"],
-    filters: { grade: filterGrade },
+    searchFields: ["name", "studentId", "grade", "parentName", "parentPhone", "email"],
+    filters: { grade: filterGrades },
     sortBy: sortField,
     sortDir,
     page,
     pageSize,
   });
 
-  const grades = [...new Set(rows.map((s) => s.grade).filter(Boolean))].sort();
-  const active = !!(search || filterGrade || sortField);
+  // Include any remembered selection that no longer matches a student, so it stays visible and removable.
+  const grades = [...new Set([...rows.map((s) => s.grade).filter(Boolean), ...filterGrades])].sort();
+  const active = !!(search || filterGrades.length || sortField);
 
   // multi-select for bulk actions
   const bulk = useBulkSelect(filtered.map((s) => s.id));
@@ -64,9 +68,9 @@ export default function Students() {
   const [showBulkAdd, setShowBulkAdd] = useState(false);
   const [bulkBusy, setBulkBusy] = useState(false);
 
-  React.useEffect(() => { setPage(1); }, [search, filterGrade, pageSize, activeBranch]);
+  React.useEffect(() => { setPage(1); }, [search, filterGrades, pageSize, activeBranch]);
 
-  const clearAll = () => { setSearch(""); setFilterGrade(""); setSortField(""); setSortDir("asc"); };
+  const clearAll = () => { setSearch(""); setFilterGrades([]); setSortField(""); setSortDir("asc"); };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -74,11 +78,11 @@ export default function Students() {
       if (editing) {
         await updateDoc(doc(db, "students", editing), { ...form, updatedAt: serverTimestamp() });
         toast.success("Student updated");
-        logActivity("updated", "Students", `${form.name}${form.studentId ? ` (${form.studentId})` : ""}`);
+        logActivity("updated", "Students", `${form.name || "Unnamed"}${form.studentId ? ` (${form.studentId})` : ""}`);
       } else {
         await addDoc(collection(db, "students"), { ...form, createdAt: serverTimestamp() });
         toast.success("Student added");
-        logActivity("created", "Students", `${form.name}${form.studentId ? ` (${form.studentId})` : ""}`);
+        logActivity("created", "Students", `${form.name || "Unnamed"}${form.studentId ? ` (${form.studentId})` : ""}`);
       }
       setShowModal(false); setForm(emptyStudent); setEditing(null);
     } catch (err) { toast.error(err?.message || "Error saving"); }
@@ -89,7 +93,7 @@ export default function Students() {
     try {
       await deleteDoc(doc(db, "students", s.id));
       toast.success("Student moved to Trash");
-      logActivity("deleted", "Students", `${s.name}${s.studentId ? ` (${s.studentId})` : ""}`);
+      logActivity("deleted", "Students", `${studentName(s)}${s.name && s.studentId ? ` (${s.studentId})` : ""}`);
     }
     catch (err) { toast.error(err?.message || "Error deleting"); }
   };
@@ -130,7 +134,7 @@ export default function Students() {
   );
   const handlePDF = () => exportToPDF("Students Report",
     ["ID", "Name", "Grade", "Parent", "Phone", "Fee"],
-    filtered.map((s) => [s.studentId, s.name, s.grade, s.parentName, s.parentPhone, `Rs. ${s.monthlyFee}`])
+    filtered.map((s) => [s.studentId, s.name, s.grade, s.parentName, s.parentPhone, `Rs. ${s.monthlyFee || 0}`])
   );
 
   return (
@@ -156,9 +160,9 @@ export default function Students() {
       <ListToolbar
         search={search}
         onSearch={setSearch}
-        searchPlaceholder="Search name, ID, parent, phone..."
+        searchPlaceholder="Search name, ID, class, parent, phone..."
         filters={[
-          { key: "grade", value: filterGrade, onChange: setFilterGrade, placeholder: "All Grades", options: grades.map((g) => ({ value: g, label: g })) },
+          { key: "grade", multi: true, value: filterGrades, onChange: setFilterGrades, placeholder: "All Classes", options: grades.map((g) => ({ value: g, label: g })) },
         ]}
         sort={{
           field: sortField, dir: sortDir,
@@ -181,12 +185,12 @@ export default function Students() {
             <div key={s.id} onClick={() => navigate(`/students/${s.id}`)} style={{ background: "white", borderRadius: 12, padding: 16, cursor: "pointer", border: bulk.isSelected(s.id) ? "1.5px solid var(--primary)" : "1px solid var(--border)" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <RowCheckbox checked={bulk.isSelected(s.id)} onChange={() => bulk.toggle(s.id)} label={`Select ${s.name}`} />
+                  <RowCheckbox checked={bulk.isSelected(s.id)} onChange={() => bulk.toggle(s.id)} label={`Select ${studentName(s)}`} />
                   <div style={{ width: 40, height: 40, borderRadius: "50%", background: "var(--primary-light)", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, color: "var(--primary)", fontSize: 16 }}>
-                    {s.name?.charAt(0)?.toUpperCase()}
+                    {studentName(s).charAt(0).toUpperCase()}
                   </div>
                   <div>
-                    <div style={{ fontWeight: 600, fontSize: 15 }}>{s.name}</div>
+                    <div style={{ fontWeight: 600, fontSize: 15 }}>{studentName(s)}</div>
                     <div style={{ fontSize: 12, color: "var(--text-muted)", fontFamily: "monospace" }}>{s.studentId}</div>
                   </div>
                 </div>
@@ -229,14 +233,14 @@ export default function Students() {
                   <tr key={s.id} onClick={() => navigate(`/students/${s.id}`)} title="Open student profile"
                     style={{ borderTop: "1px solid var(--border)", cursor: "pointer", background: bulk.isSelected(s.id) ? "var(--primary-light)" : undefined }}>
                     <td style={{ padding: "11px 6px 11px 14px" }}>
-                      <RowCheckbox checked={bulk.isSelected(s.id)} onChange={() => bulk.toggle(s.id)} label={`Select ${s.name}`} />
+                      <RowCheckbox checked={bulk.isSelected(s.id)} onChange={() => bulk.toggle(s.id)} label={`Select ${studentName(s)}`} />
                     </td>
                     <td style={{ padding: "11px 14px", fontSize: 12, fontFamily: "monospace" }}>{s.studentId}</td>
-                    <td style={{ padding: "11px 14px", fontSize: 14, fontWeight: 500, whiteSpace: "nowrap", color: "var(--primary)" }}>{s.name}</td>
+                    <td style={{ padding: "11px 14px", fontSize: 14, fontWeight: 500, whiteSpace: "nowrap", color: "var(--primary)" }}>{studentName(s)}</td>
                     <td style={{ padding: "11px 14px", fontSize: 13 }}>{s.grade}</td>
                     <td style={{ padding: "11px 14px", fontSize: 13, whiteSpace: "nowrap" }}>{s.parentName}</td>
                     <td style={{ padding: "11px 14px", fontSize: 13 }}>{s.parentPhone}</td>
-                    <td style={{ padding: "11px 14px", fontSize: 13, fontWeight: 600 }}>Rs. {s.monthlyFee}</td>
+                    <td style={{ padding: "11px 14px", fontSize: 13, fontWeight: 600 }}>Rs. {s.monthlyFee || 0}</td>
                     <td style={{ padding: "11px 14px", fontSize: 13 }}>{branches.find((b) => b.id === s.branchId)?.name || "Main Office"}</td>
                     <td style={{ padding: "11px 14px" }}>
                       <span style={{ padding: "2px 8px", borderRadius: 20, fontSize: 11, fontWeight: 600, background: s.recurringFee ? "#ecfdf5" : "#f8fafc", color: s.recurringFee ? "#10b981" : "var(--text-muted)" }}>
@@ -314,8 +318,8 @@ export default function Students() {
             <form onSubmit={handleSubmit}>
               <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 14 }}>
                 {[
-                  { label: "Full Name", key: "name", required: true },
-                  { label: "Student ID", key: "studentId", required: true },
+                  { label: "Full Name", key: "name" },
+                  { label: "Student ID", key: "studentId" },
                   { label: "Grade / Class", key: "grade" },
                   { label: "Date of Birth", key: "dob", type: "date" },
                   { label: "Admission Date", key: "admissionDate", type: "date" },
