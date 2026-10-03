@@ -7,10 +7,15 @@
 // disappear (deleted in another session, filtered out, etc.), so a
 // bulk action can never touch a row the user can no longer see.
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 export function useBulkSelect(validIds = []) {
   const [selected, setSelected] = useState(() => new Set());
+
+  // Latest ids, readable from the effect without making it re-run on
+  // every render (callers pass a fresh array each time).
+  const validIdsRef = useRef(validIds);
+  validIdsRef.current = validIds;
 
   // Stable key so the prune effect only runs when the id set changes.
   const validKey = useMemo(() => validIds.join("\u0000"), [validIds]);
@@ -18,7 +23,7 @@ export function useBulkSelect(validIds = []) {
   useEffect(() => {
     setSelected((prev) => {
       if (prev.size === 0) return prev;
-      const valid = new Set(validIds);
+      const valid = new Set(validIdsRef.current);
       const next = new Set([...prev].filter((id) => valid.has(id)));
       return next.size === prev.size ? prev : next;
     });

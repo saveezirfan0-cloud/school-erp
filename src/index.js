@@ -10,10 +10,12 @@ root.render(
   </React.StrictMode>
 );
 
+// No service worker on purpose: the old one cached HTML and every request
+// cache-first, which would serve stale builds after each deploy. Remove any
+// copy a browser may still hold.
 if ("serviceWorker" in navigator) {
-  window.addEventListener("load", () => {
-    navigator.serviceWorker.register("/sw.js")
-      .then(reg => console.log("SW registered"))
-      .catch(err => console.log("SW failed", err));
-  });
+  navigator.serviceWorker
+    .getRegistrations()
+    .then((regs) => regs.forEach((r) => r.unregister()))
+    .catch(() => {});
 }
