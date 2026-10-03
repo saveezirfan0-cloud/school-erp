@@ -39,6 +39,22 @@ Then:
   `PROJECT_URL`
 - Create a `receipts` storage bucket (public) for receipt uploads
 
+## Exports & printable documents
+- Every list page (Fees, Payments, Expenses, Students, Employees,
+  Payslips, Activity Log) has an **Export** menu: PDF, Excel (.xlsx) or
+  CSV of the rows currently filtered on screen. Reports and the bank/cash
+  account page export too.
+- Single documents open in a viewer with **Print** and **PDF** download:
+  invoices and fee receipts (Fees → View, or select rows → *Invoices PDF* /
+  *Receipts*), payslips (Payslips → View), payment receipts/vouchers
+  (Payments), and a student fee statement (Students → Ledger → Statement).
+  Selecting several rows produces one combined PDF, one document per page.
+- PDFs are built in the browser (jsPDF, loaded on demand). Text outside
+  Latin characters (e.g. Urdu) can't be drawn by jsPDF's built-in fonts, so
+  those documents open in the print dialog instead — choose "Save as PDF".
+- Layouts live in `src/utils/documents.js`; table export helpers in
+  `src/utils/exportUtils.js`.
+
 ## Run locally
 ```
 npm install

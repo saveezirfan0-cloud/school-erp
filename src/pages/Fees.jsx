@@ -11,10 +11,12 @@ import BulkEditModal from "../components/UI/BulkEditModal";
 import { runBulk, bulkResultMessage } from "../utils/bulk";
 import { logActivity } from "../utils/auditLog";
 import { sendWhatsAppMessage } from "../utils/whatsapp";
-import { recordPayment, bankCashAccounts, reverseSourcePayments, getSourcePaidTotal } from "../utils/accounting";
-import { exportToCSV, exportToPDF } from "../utils/exportUtils";
+import { recordPayment, bankCashAccounts, reverseSourcePayments, getSourcePaidTotal, getSourcePayments } from "../utils/accounting";
+import ExportMenu from "../components/UI/ExportMenu";
+import DocumentViewer from "../components/UI/DocumentViewer";
+import { buildInvoiceDoc, buildReceiptDoc } from "../utils/documents";
 import toast from "react-hot-toast";
-import { Plus, MessageCircle, CheckCircle, X, Trash2, Download, FileText, RefreshCw, Users, Pencil } from "lucide-react";
+import { Plus, MessageCircle, CheckCircle, X, Trash2, FileText, Receipt, Printer, RefreshCw, Users, Pencil } from "lucide-react";
 
 const DEFAULT_LINE_ITEMS = [{ description: "Tuition Fee", amount: "" }];
 const LINE_ITEM_PRESETS = ["Tuition Fee", "Registration Fee", "Exam Fee", "Transport Fee", "Custom"];
@@ -68,6 +70,7 @@ export default function Fees() {
   const [bulkPayDate, setBulkPayDate] = useState(new Date().toISOString().slice(0, 10));
   const [bulkPayWhatsApp, setBulkPayWhatsApp] = useState(false);
   const [bulkBusy, setBulkBusy] = useState(false);
+  const [viewDocs, setViewDocs] = useState(null); // invoice/receipt documents open in the viewer
 
   useEffect(() => {
     const u1 = onSnapshot(collection(db, "invoices"), snap =>
@@ -399,15 +402,43 @@ export default function Fees() {
     } finally { setBulkBusy(false); }
   };
 
-  const handleCSV = () => exportToCSV("fees",
-    ["Student", "Month", "Year", "Amount", "Status", "Due Date"],
-    filtered.map(i => [i.studentName, i.month, i.year, i.amount, i.status, i.dueDate])
-  );
+  const getExportData = () => ({
+    headers: ["Student", "Month", "Year", "Amount", "Paid", "Status", "Due Date"],
+    rows: filtered.map(i => [i.studentName, i.month, i.year, Number(i.amount || 0), Number(i.paidAmount || 0), i.status, i.dueDate]),
+    pdfHeaders: ["Student", "Month", "Amount", "Paid", "Status", "Due Date"],
+    pdfRows: filtered.map(i => [i.studentName, `${i.month} ${i.year}`, `Rs. ${Number(i.amount || 0).toLocaleString()}`, `Rs. ${Number(i.paidAmount || 0).toLocaleString()}`, i.status, i.dueDate || ""]),
+  });
 
-  const handlePDF = () => exportToPDF("Fees & Invoices",
-    ["Student", "Month", "Amount", "Status", "Due Date"],
-    filtered.map(i => [i.studentName, `${i.month} ${i.year}`, `Rs. ${Number(i.amount).toLocaleString()}`, i.status, i.dueDate])
-  );
+  // ---- printable invoices & receipts ----
+  const docContext = (inv) => ({
+    student: students.find(st => st.id === inv.studentId),
+    branchName: branches?.find(b => b.id === inv.branchId)?.name || "",
+  });
+  const openInvoices = (items) => setViewDocs(items.map(inv => buildInvoiceDoc(inv, docContext(inv))));
+  const loadReceipts = async (items) => {
+    // payments are looked up per invoice; limited concurrency like other bulk jobs
+    const docs = [];
+    const { failed } = await runBulk(items, async (inv) => {
+      const pays = await getSourcePayments("invoice", inv.id);
+      docs.push({ inv, doc: buildReceiptDoc(inv, pays, docContext(inv)) });
+    }, { chunkSize: 5 });
+    if (failed.length) toast.error(`Couldn't load payments for ${failed.length} invoice${failed.length === 1 ? "" : "s"}`);
+    // keep the on-screen order of the selection
+    return items.map(inv => docs.find(d => d.inv === inv)?.doc).filter(Boolean);
+  };
+  const openReceipts = async (items) => {
+    const withMoney = items.filter(i => Number(i.paidAmount || 0) > 0 || i.status === "paid" || i.status === "partial");
+    if (withMoney.length === 0) return toast("None of these invoices has a payment yet");
+    const t = toast.loading("Preparing receipts…");
+    try {
+      const docs = await loadReceipts(withMoney);
+      toast.dismiss(t);
+      if (docs.length) setViewDocs(docs);
+      if (withMoney.length < items.length) toast(`${items.length - withMoney.length} unpaid invoice${items.length - withMoney.length === 1 ? "" : "s"} skipped`);
+    } catch (err) {
+      toast.error(err?.message || "Couldn't prepare receipts", { id: t });
+    }
+  };
 
   const modalStyle = {
     position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)",
@@ -427,12 +458,7 @@ export default function Fees() {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 10 }}>
         <h2 style={{ fontSize: 20, fontWeight: 700 }}>Fees & Invoices</h2>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          {!isMobile && (
-            <>
-              <button onClick={handleCSV} style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13 }}><Download size={14} /> CSV</button>
-              <button onClick={handlePDF} style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13 }}><FileText size={14} /> PDF</button>
-            </>
-          )}
+          <ExportMenu filename="fees" title="Fees & Invoices" getData={getExportData} disabled={filtered.length === 0} />
           <button onClick={() => setShowRecurring(true)} style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13 }}><RefreshCw size={14} />{!isMobile && " Recurring"}</button>
           <button onClick={() => setShowBulk(true)} style={{ display: "flex", alignItems: "center", gap: 5, padding: "9px 14px", background: "#2a8c7a", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600, fontSize: 13 }}><Users size={14} />{!isMobile && " Bulk"}</button>
           <button onClick={() => { setForm({ studentId: "", month: "", year: new Date().getFullYear(), dueDate: "", notes: "", directPayment: false }); setLineItems(DEFAULT_LINE_ITEMS); setShowModal(true); }}
@@ -607,6 +633,8 @@ export default function Fees() {
         onSelectAll={() => bulk.selectAll(filtered.map(i => i.id))}
         onClear={bulk.clear}
         actions={[
+          { label: "Invoices PDF", icon: Printer, onClick: () => openInvoices(selectedInvoices()) },
+          { label: "Receipts", icon: Receipt, onClick: () => openReceipts(selectedInvoices()) },
           { label: "Edit", icon: Pencil, onClick: () => setShowBulkEdit(true) },
           { label: "Mark Paid", icon: CheckCircle, variant: "success", onClick: () => { setBulkPayAccount(payAccounts[0]?.name || ""); setBulkPayDate(new Date().toISOString().slice(0, 10)); setBulkPayWhatsApp(false); setBulkPayModal(true); } },
           { label: "Delete", icon: Trash2, variant: "danger", onClick: handleBulkDelete },
@@ -977,12 +1005,39 @@ export default function Fees() {
                 </div>
               </div>
             )}
+            {Number(selectedInvoice.paidAmount || 0) > 0 && (
+              <div style={{ display: "flex", justifyContent: "space-between", padding: "10px 14px", background: "#ecfdf5", borderRadius: 8, marginBottom: 16, fontSize: 14 }}>
+                <span>Paid so far</span>
+                <strong style={{ color: "#10b981" }}>Rs. {Number(selectedInvoice.paidAmount).toLocaleString()}</strong>
+              </div>
+            )}
+            <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+              <button onClick={() => { openInvoices([selectedInvoice]); setSelectedInvoice(null); }}
+                style={{ flex: 1, padding: "10px", background: "var(--primary-light)", color: "var(--primary)", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600, fontSize: 13, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+                <FileText size={14} /> Invoice (Print / PDF)
+              </button>
+              {(selectedInvoice.status === "paid" || selectedInvoice.status === "partial" || Number(selectedInvoice.paidAmount || 0) > 0) && (
+                <button onClick={() => { const inv = selectedInvoice; setSelectedInvoice(null); openReceipts([inv]); }}
+                  style={{ flex: 1, padding: "10px", background: "#ecfdf5", color: "#10b981", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600, fontSize: 13, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+                  <Receipt size={14} /> Receipt
+                </button>
+              )}
+            </div>
             <button onClick={() => setSelectedInvoice(null)}
               style={{ width: "100%", padding: "11px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600, fontSize: 14 }}>
               Close
             </button>
           </div>
         </div>
+      )}
+
+      {/* Invoice / receipt viewer: preview, print, PDF */}
+      {viewDocs && (
+        <DocumentViewer
+          docs={viewDocs}
+          title={viewDocs.length === 1 ? viewDocs[0].title.charAt(0) + viewDocs[0].title.slice(1).toLowerCase() : `${viewDocs.length} ${viewDocs[0].kind === "receipt" ? "Receipts" : "Invoices"}`}
+          onClose={() => setViewDocs(null)}
+        />
       )}
     </div>
   );

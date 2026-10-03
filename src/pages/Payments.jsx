@@ -10,9 +10,11 @@ import BulkBar, { RowCheckbox, HeaderCheckbox } from "../components/UI/BulkBar";
 import BulkEditModal from "../components/UI/BulkEditModal";
 import { bulkResultMessage } from "../utils/bulk";
 import { logActivity } from "../utils/auditLog";
-import { exportToCSV, exportToPDF } from "../utils/exportUtils";
+import ExportMenu from "../components/UI/ExportMenu";
+import DocumentViewer from "../components/UI/DocumentViewer";
+import { buildPaymentDoc } from "../utils/documents";
 import toast from "react-hot-toast";
-import { Plus, X, ArrowUpCircle, ArrowDownCircle, Trash2, Download, FileText, Pencil } from "lucide-react";
+import { Plus, X, ArrowUpCircle, ArrowDownCircle, Trash2, FileText, Printer, Pencil } from "lucide-react";
 
 const CATEGORIES = ["Fee Collection", "Salary Payment", "Rent", "Utilities", "Supplies", "Maintenance", "Bank Deposit", "Bank Withdrawal", "Other"];
 const emptyLine = { account: "", description: "", category: "", amount: "", type: "cash_out" };
@@ -150,15 +152,16 @@ export default function Payments() {
 
   const bulkTotal = bulkLines.reduce((s, l) => s + Number(l.amount || 0), 0);
 
-  const handleCSV = () => exportToCSV("payments",
-    ["Date", "Type", "Account", "Category", "Description", "Reference", "Amount"],
-    filtered.map(p => [p.date, p.type === "cash_in" ? "Cash In" : "Cash Out", p.account, p.category, p.description, p.reference, p.amount])
-  );
+  const getExportData = () => ({
+    headers: ["Date", "Type", "Account", "Category", "Description", "Reference", "Amount"],
+    rows: filtered.map(p => [p.date, p.type === "cash_in" ? "Cash In" : "Cash Out", p.account, p.category, p.description, p.reference, Number(p.amount || 0)]),
+    pdfHeaders: ["Date", "Type", "Account", "Category", "Description", "Amount"],
+    pdfRows: filtered.map(p => [p.date, p.type === "cash_in" ? "Cash In" : "Cash Out", p.account, p.category, p.description, `${p.type === "cash_in" ? "+" : "-"}Rs. ${Number(p.amount || 0).toLocaleString()}`]),
+  });
 
-  const handlePDF = () => exportToPDF("Payments Report",
-    ["Date", "Type", "Account", "Description", "Amount"],
-    filtered.map(p => [p.date, p.type === "cash_in" ? "Cash In" : "Cash Out", p.account, p.description, `Rs. ${Number(p.amount).toLocaleString()}`])
-  );
+  // ---- printable receipts / vouchers ----
+  const [viewDocs, setViewDocs] = useState(null);
+  const openVouchers = (items) => setViewDocs(items.map(p => buildPaymentDoc(p, { branchName: branches?.find(b => b.id === p.branchId)?.name || "" })));
 
   const clearFilters = () => { setSearch(""); setFilterType(""); setFilterCategory(""); setFilterDateFrom(""); setFilterDateTo(""); };
   const hasFilters = search || filterType || filterCategory || filterDateFrom || filterDateTo;
@@ -175,10 +178,7 @@ export default function Payments() {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, flexWrap: "wrap", gap: 10 }}>
         <h2 style={{ fontSize: 20, fontWeight: 700 }}>Cash & Bank Payments</h2>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          {!isMobile && <>
-            <button onClick={handleCSV} style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13 }}><Download size={14} /> CSV</button>
-            <button onClick={handlePDF} style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13 }}><FileText size={14} /> PDF</button>
-          </>}
+          <ExportMenu filename="payments" title="Payments Report" getData={getExportData} disabled={filtered.length === 0} />
           <button onClick={() => setShowModal(true)}
             style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 18px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600 }}>
             <Plus size={16} /> Add Payment
@@ -251,6 +251,7 @@ export default function Payments() {
                   <div style={{ fontSize: 18, fontWeight: 700, color: p.type === "cash_in" ? "#10b981" : "#ef4444" }}>
                     {p.type === "cash_in" ? "+" : "-"}Rs. {Number(p.amount).toLocaleString()}
                   </div>
+                  <button onClick={() => openVouchers([p])} title={p.type === "cash_in" ? "Receipt" : "Voucher"} style={{ border: "none", background: "var(--primary-light)", color: "var(--primary)", padding: "6px 9px", borderRadius: 6, cursor: "pointer" }}><FileText size={13} /></button>
                   <button onClick={() => handleDelete(p)} style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "6px 9px", borderRadius: 6, cursor: "pointer" }}><Trash2 size={13} /></button>
                 </div>
               </div>
@@ -293,7 +294,8 @@ export default function Payments() {
                     <td style={{ padding: "11px 14px", fontSize: 14, fontWeight: 600, color: p.type === "cash_in" ? "#10b981" : "#ef4444", whiteSpace: "nowrap" }}>
                       {p.type === "cash_in" ? "+" : "-"}Rs. {Number(p.amount).toLocaleString()}
                     </td>
-                    <td style={{ padding: "11px 14px", textAlign: "right" }}>
+                    <td style={{ padding: "11px 14px", textAlign: "right", whiteSpace: "nowrap" }}>
+                      <button onClick={() => openVouchers([p])} title={p.type === "cash_in" ? "View / print receipt" : "View / print voucher"} style={{ border: "none", background: "var(--primary-light)", color: "var(--primary)", padding: "7px 9px", borderRadius: 8, cursor: "pointer", marginRight: 6 }}><FileText size={14} /></button>
                       <button onClick={() => handleDelete(p)} style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "7px 9px", borderRadius: 8, cursor: "pointer" }}><Trash2 size={14} /></button>
                     </td>
                   </tr>
@@ -319,6 +321,7 @@ export default function Payments() {
         onSelectAll={() => bulk.selectAll(filtered.map(p => p.id))}
         onClear={bulk.clear}
         actions={[
+          { label: "Print / PDF", icon: Printer, onClick: () => openVouchers(filtered.filter(p => bulk.selected.has(p.id))) },
           { label: "Edit", icon: Pencil, onClick: () => setShowBulkEdit(true) },
           { label: "Delete", icon: Trash2, variant: "danger", onClick: handleBulkDelete },
         ]}
@@ -494,6 +497,15 @@ export default function Payments() {
             )}
           </div>
         </div>
+      )}
+
+      {/* Receipt / voucher viewer: preview, print, PDF */}
+      {viewDocs && (
+        <DocumentViewer
+          docs={viewDocs}
+          title={viewDocs.length === 1 ? viewDocs[0].title.charAt(0) + viewDocs[0].title.slice(1).toLowerCase() : `${viewDocs.length} documents`}
+          onClose={() => setViewDocs(null)}
+        />
       )}
     </div>
   );

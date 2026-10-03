@@ -4,6 +4,7 @@ import { collection, getDocs } from "../firebase";
 import { useBranch } from "../context/BranchContext";
 import { toDate } from "../utils/dates";
 import { matchesBranch } from "../utils/branchFilter";
+import ExportMenu from "../components/UI/ExportMenu";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line } from "recharts";
 
 export default function Reports() {
@@ -53,6 +54,48 @@ export default function Reports() {
 
   const netProfit = data.income - data.expenses - data.salaries;
 
+  // Export the report that's currently on screen.
+  const rs = (v) => `Rs. ${Number(v || 0).toLocaleString()}`;
+  const getExportData = () => {
+    if (activeTab === "pl") {
+      const rows = [
+        ["INCOME", ""],
+        ["Total Billed (face value)", data.billed || 0],
+        ["Fee Collections (received)", data.collected || 0],
+        ["Concessions (waived)", data.concessions || 0],
+        ["Pending Fees (outstanding)", data.pending],
+        ["Total Income", data.income],
+        ["EXPENSES", ""],
+        ["Operating Expenses", data.expenses],
+        ["Salaries & Payroll", data.salaries],
+        ["Total Expenses", data.expenses + data.salaries],
+        [netProfit >= 0 ? "NET SURPLUS" : "NET DEFICIT", Math.abs(netProfit)],
+      ];
+      return { headers: ["Item", "Amount (Rs.)"], rows, pdfRows: rows.map(([a, v]) => [a, v === "" ? "" : rs(v)]) };
+    }
+    if (activeTab === "bs") {
+      const rows = [];
+      [["Assets", ["Assets"]], ["Liabilities & Equity", ["Liabilities", "Equity"]]].forEach(([title, types]) => {
+        const accs = data.accounts.filter(a => types.includes(a.type));
+        accs.forEach(a => rows.push([title, a.code || "", a.name, Number(a.balance || 0)]));
+        rows.push([title, "", `Total ${title}`, accs.reduce((s, a) => s + Number(a.balance || 0), 0)]);
+      });
+      return { headers: ["Section", "Code", "Account", "Balance (Rs.)"], rows, pdfRows: rows.map(r => [r[0], r[1], r[2], rs(r[3])]) };
+    }
+    if (activeTab === "cf") {
+      const rows = data.monthly.map(m => [m.month, m.income, m.expenses, m.income - m.expenses]);
+      return { headers: ["Month", "Cash In (Rs.)", "Cash Out (Rs.)", "Net (Rs.)"], rows, pdfRows: rows.map(r => [r[0], rs(r[1]), rs(r[2]), rs(r[3])]) };
+    }
+    const rows = data.monthly.map(m => [m.month, m.income]);
+    return { headers: ["Month", "Fees Collected (Rs.)"], rows, pdfRows: rows.map(r => [r[0], rs(r[1])]) };
+  };
+  const exportMeta = {
+    pl: ["profit-loss", "Profit & Loss Statement"],
+    bs: ["balance-sheet", "Balance Sheet"],
+    cf: ["cash-flow", "Cash Flow Statement"],
+    fees: ["fee-collection", "Fee Collection Report"],
+  }[activeTab];
+
   const tabs = [
     { id: "pl", label: "Profit & Loss" },
     { id: "bs", label: "Balance Sheet" },
@@ -62,9 +105,12 @@ export default function Reports() {
 
   return (
     <div>
-      <div style={{ marginBottom: 24 }}>
-        <h2 style={{ fontSize: 22, fontWeight: 700 }}>Reports</h2>
-        <p style={{ color: "var(--text-muted)", fontSize: 14, marginTop: 4 }}>Financial statements and analytics</p>
+      <div style={{ marginBottom: 24, display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, flexWrap: "wrap" }}>
+        <div>
+          <h2 style={{ fontSize: 22, fontWeight: 700 }}>Reports</h2>
+          <p style={{ color: "var(--text-muted)", fontSize: 14, marginTop: 4 }}>Financial statements and analytics</p>
+        </div>
+        <ExportMenu filename={exportMeta[0]} title={exportMeta[1]} getData={getExportData} pdfOptions={{ subtitle: "Current year to date" }} />
       </div>
 
       <div style={{ display: "flex", gap: 8, marginBottom: 24 }}>

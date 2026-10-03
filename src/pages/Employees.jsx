@@ -10,9 +10,9 @@ import BulkBar, { RowCheckbox } from "../components/UI/BulkBar";
 import BulkEditModal from "../components/UI/BulkEditModal";
 import { bulkResultMessage } from "../utils/bulk";
 import { logActivity } from "../utils/auditLog";
-import { exportToCSV, exportToPDF } from "../utils/exportUtils";
+import ExportMenu from "../components/UI/ExportMenu";
 import toast from "react-hot-toast";
-import { Plus, Trash2, X, Edit2, Download, FileText } from "lucide-react";
+import { Plus, Trash2, X, Edit2 } from "lucide-react";
 
 const empty = { name: "", role: "", phone: "", email: "", branchId: "", salary: "", joinDate: "", recurringPayslip: false };
 
@@ -115,25 +115,20 @@ export default function Employees() {
     } catch { toast.error("Error saving"); }
   };
 
-  const handleCSV = () => exportToCSV("employees",
-    ["Name", "Role", "Phone", "Email", "Branch", "Salary", "Auto Payslip"],
-    filtered.map(e => [e.name, e.role, e.phone, e.email, branches.find(b => b.id === e.branchId)?.name || "Main", e.salary, e.recurringPayslip ? "Yes" : "No"])
-  );
-
-  const handlePDF = () => exportToPDF("Employees Report",
-    ["Name", "Role", "Phone", "Branch", "Salary"],
-    filtered.map(e => [e.name, e.role, e.phone, branches.find(b => b.id === e.branchId)?.name || "Main", `Rs. ${Number(e.salary || 0).toLocaleString()}`])
-  );
+  const branchLabel = (e) => branches.find(b => b.id === e.branchId)?.name || "Main";
+  const getExportData = () => ({
+    headers: ["Name", "Role", "Phone", "Email", "Branch", "Salary", "Auto Payslip"],
+    rows: filtered.map(e => [e.name, e.role, e.phone, e.email, branchLabel(e), Number(e.salary || 0), e.recurringPayslip ? "Yes" : "No"]),
+    pdfHeaders: ["Name", "Role", "Phone", "Email", "Branch", "Salary"],
+    pdfRows: filtered.map(e => [e.name, e.role, e.phone, e.email, branchLabel(e), `Rs. ${Number(e.salary || 0).toLocaleString()}`]),
+  });
 
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, flexWrap: "wrap", gap: 10 }}>
         <h2 style={{ fontSize: 20, fontWeight: 700 }}>Employees / Teachers <span style={{ fontSize: 13, fontWeight: 400, color: "var(--text-muted)" }}>({total})</span></h2>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          {!isMobile && <>
-            <button onClick={handleCSV} style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13 }}><Download size={14} /> CSV</button>
-            <button onClick={handlePDF} style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13 }}><FileText size={14} /> PDF</button>
-          </>}
+          <ExportMenu filename="employees" title="Employees Report" getData={getExportData} disabled={filtered.length === 0} />
           <button onClick={() => { setForm(empty); setEditing(null); setShowModal(true); }}
             style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 18px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600 }}>
             <Plus size={16} /> Add Employee

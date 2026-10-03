@@ -2,7 +2,11 @@ import React, { useState, useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { db, collection, onSnapshot, doc, getDoc } from "../firebase";
 import { toMillis, formatDate } from "../utils/dates";
-import { ArrowLeft, FileText, TrendingUp, Wallet } from "lucide-react";
+import { useBranch } from "../context/BranchContext";
+import ExportMenu from "../components/UI/ExportMenu";
+import DocumentViewer from "../components/UI/DocumentViewer";
+import { buildStatementDoc } from "../utils/documents";
+import { ArrowLeft, FileText, TrendingUp, Wallet, Printer } from "lucide-react";
 
 // Per-student financial history: every invoice raised, every payment
 // received, and the running balance. The single most useful screen
@@ -10,6 +14,8 @@ import { ArrowLeft, FileText, TrendingUp, Wallet } from "lucide-react";
 export default function StudentLedger() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const { branches } = useBranch();
+  const [showStatement, setShowStatement] = useState(false);
   const [student, setStudent] = useState(null);
   const [invoices, setInvoices] = useState([]);
   const [payments, setPayments] = useState([]);
@@ -50,9 +56,31 @@ export default function StudentLedger() {
       kind: p.reversed ? "reversed" : (p.type === "cash_in" ? "payment" : "reversal"),
       date: p.date || p.createdAt,
       label: p.type === "cash_in" ? `Payment — ${p.account || ""}` : `Reversal — ${p.account || ""}`,
-      detail: p.description || "", amount: Number(p.amount || 0), id: p.id, reversed: p.reversed,
+      detail: p.description || "", amount: Number(p.amount || 0), id: p.id, reversed: p.reversed, ptype: p.type,
     })),
   ].sort((a, b) => toMillis(a.date) - toMillis(b.date));
+
+  // Statement rows: billed / received columns with a running balance.
+  // Reversed payments stay visible but don't count (same rule as the totals above).
+  const statementRows = events.map((e) => ({
+    date: e.date,
+    label: e.kind === "invoice" ? e.label : e.label.split(" — ")[0],
+    detail: e.kind === "invoice" ? e.detail : (e.detail || e.label.split(" — ")[1] || ""),
+    billed: e.kind === "invoice" ? e.amount : 0,
+    received: e.kind === "invoice" ? 0 : (e.ptype === "cash_in" ? e.amount : -e.amount),
+    reversed: !!e.reversed,
+  }));
+  const branchName = branches?.find((b) => b.id === student?.branchId)?.name || "";
+
+  const getExportData = () => {
+    let billed = 0, received = 0;
+    const rows = statementRows.map((r) => {
+      if (!r.reversed) { billed += r.billed; received += r.received; }
+      return [formatDate(r.date), r.label + (r.reversed ? " (reversed)" : ""), r.detail, r.billed || "", r.received || "", billed - received];
+    });
+    rows.push(["", "TOTAL", "", billed, received, billed - received]);
+    return { headers: ["Date", "Type", "Details", "Billed", "Received", "Balance"], rows };
+  };
 
   const card = (label, value, color, Icon) => (
     <div style={{ flex: 1, minWidth: 150, background: "white", border: "1px solid var(--border)", borderRadius: 12, padding: 16 }}>
@@ -69,9 +97,18 @@ export default function StudentLedger() {
         <ArrowLeft size={16} /> Back
       </button>
 
-      <div style={{ marginBottom: 16 }}>
-        <h2 style={{ fontSize: 22, fontWeight: 700 }}>{student?.name || "Student"} <span style={{ fontSize: 14, fontWeight: 400, color: "var(--text-muted)", fontFamily: "monospace" }}>{student?.studentId}</span></h2>
-        <div style={{ fontSize: 13, color: "var(--text-muted)" }}>{student?.grade} {student?.parentName ? `• Parent: ${student.parentName}` : ""}</div>
+      <div style={{ marginBottom: 16, display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, flexWrap: "wrap" }}>
+        <div>
+          <h2 style={{ fontSize: 22, fontWeight: 700 }}>{student?.name || "Student"} <span style={{ fontSize: 14, fontWeight: 400, color: "var(--text-muted)", fontFamily: "monospace" }}>{student?.studentId}</span></h2>
+          <div style={{ fontSize: 13, color: "var(--text-muted)" }}>{student?.grade} {student?.parentName ? `• Parent: ${student.parentName}` : ""}</div>
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button onClick={() => setShowStatement(true)} disabled={!student}
+            style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 14px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600, fontSize: 13 }}>
+            <Printer size={14} /> Statement
+          </button>
+          <ExportMenu filename={`ledger-${student?.studentId || id}`} title={`Fee Ledger - ${student?.name || "Student"}`} getData={getExportData} disabled={!student || events.length === 0} />
+        </div>
       </div>
 
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 20 }}>
@@ -104,6 +141,14 @@ export default function StudentLedger() {
       <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 10 }}>
         Invoices add to what's billed; payments reduce the balance. Reversed payments are shown struck through and don't count.
       </p>
+
+      {showStatement && student && (
+        <DocumentViewer
+          docs={buildStatementDoc(student, statementRows, { branchName })}
+          title="Fee Statement"
+          onClose={() => setShowStatement(false)}
+        />
+      )}
     </div>
   );
 }
