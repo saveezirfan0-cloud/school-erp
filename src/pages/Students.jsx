@@ -176,7 +176,7 @@ export default function Students() {
       {isMobile ? (
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           {paged.map((s) => (
-            <div key={s.id} style={{ background: "white", borderRadius: 12, padding: 16, border: bulk.isSelected(s.id) ? "1.5px solid var(--primary)" : "1px solid var(--border)" }}>
+            <div key={s.id} onClick={() => navigate(`/students/${s.id}`)} style={{ background: "white", borderRadius: 12, padding: 16, cursor: "pointer", border: bulk.isSelected(s.id) ? "1.5px solid var(--primary)" : "1px solid var(--border)" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                   <RowCheckbox checked={bulk.isSelected(s.id)} onChange={() => bulk.toggle(s.id)} label={`Select ${studentName(s)}`} />
@@ -188,7 +188,7 @@ export default function Students() {
                     <div style={{ fontSize: 12, color: "var(--text-muted)", fontFamily: "monospace" }}>{s.studentId}</div>
                   </div>
                 </div>
-                <div style={{ display: "flex", gap: 6 }}>
+                <div style={{ display: "flex", gap: 6 }} onClick={(e) => e.stopPropagation()}>
                   <button onClick={() => navigate(`/students/${s.id}/ledger`)} title="Ledger" style={{ border: "none", background: "#eff6ff", color: "#2563eb", padding: "7px 9px", borderRadius: 8, cursor: "pointer" }}><Receipt size={14} /></button>
                   <button onClick={() => { setForm(s); setEditing(s.id); setShowModal(true); }} style={{ border: "none", background: "var(--primary-light)", color: "var(--primary)", padding: "7px 9px", borderRadius: 8, cursor: "pointer" }}><Edit2 size={14} /></button>
                   <button onClick={() => handleDelete(s)} style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "7px 9px", borderRadius: 8, cursor: "pointer" }}><Trash2 size={14} /></button>
@@ -224,12 +224,13 @@ export default function Students() {
               </thead>
               <tbody>
                 {paged.map((s) => (
-                  <tr key={s.id} style={{ borderTop: "1px solid var(--border)", background: bulk.isSelected(s.id) ? "var(--primary-light)" : undefined }}>
+                  <tr key={s.id} onClick={() => navigate(`/students/${s.id}`)} title="Open student profile"
+                    style={{ borderTop: "1px solid var(--border)", cursor: "pointer", background: bulk.isSelected(s.id) ? "var(--primary-light)" : undefined }}>
                     <td style={{ padding: "11px 6px 11px 14px" }}>
                       <RowCheckbox checked={bulk.isSelected(s.id)} onChange={() => bulk.toggle(s.id)} label={`Select ${studentName(s)}`} />
                     </td>
                     <td style={{ padding: "11px 14px", fontSize: 12, fontFamily: "monospace" }}>{s.studentId}</td>
-                    <td style={{ padding: "11px 14px", fontSize: 14, fontWeight: 500, whiteSpace: "nowrap" }}>{studentName(s)}</td>
+                    <td style={{ padding: "11px 14px", fontSize: 14, fontWeight: 500, whiteSpace: "nowrap", color: "var(--primary)" }}>{studentName(s)}</td>
                     <td style={{ padding: "11px 14px", fontSize: 13 }}>{s.grade}</td>
                     <td style={{ padding: "11px 14px", fontSize: 13, whiteSpace: "nowrap" }}>{s.parentName}</td>
                     <td style={{ padding: "11px 14px", fontSize: 13 }}>{s.parentPhone}</td>
@@ -240,7 +241,7 @@ export default function Students() {
                         {s.recurringFee ? "Auto" : "Manual"}
                       </span>
                     </td>
-                    <td style={{ padding: "11px 14px" }}>
+                    <td style={{ padding: "11px 14px" }} onClick={(e) => e.stopPropagation()}>
                       <div style={{ display: "flex", gap: 6 }}>
                         <button onClick={() => navigate(`/students/${s.id}/ledger`)} title="Ledger" style={{ border: "none", background: "#eff6ff", color: "#2563eb", padding: "6px 9px", borderRadius: 6, cursor: "pointer" }}><Receipt size={13} /></button>
                         <button onClick={() => { setForm(s); setEditing(s.id); setShowModal(true); }} style={{ border: "none", background: "var(--primary-light)", color: "var(--primary)", padding: "6px 9px", borderRadius: 6, cursor: "pointer" }}><Edit2 size={13} /></button>
@@ -305,6 +306,7 @@ export default function Students() {
                   { label: "Student ID", key: "studentId" },
                   { label: "Grade / Class", key: "grade" },
                   { label: "Date of Birth", key: "dob", type: "date" },
+                  { label: "Admission Date", key: "admissionDate", type: "date" },
                   { label: "Parent Name", key: "parentName" },
                   { label: "Parent Phone (+92...)", key: "parentPhone" },
                   { label: "Email", key: "email", type: "email" },

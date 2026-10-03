@@ -38,6 +38,7 @@ const TABLE_MAP = {
   customRoles: "custom_roles",
   reminderLogs: "reminder_logs",
   auditLog: "audit_log",
+  attendance: "attendance",
 };
 
 // Real (non-jsonb) columns per table. Anything not in this list
@@ -56,6 +57,7 @@ const COLUMNS = {
   custom_roles: ["id", "permissions", "created_at", "updated_at"],
   reminder_logs: ["id", "student_id", "phone", "message", "status", "date", "timestamp", "created_at", "updated_at"],
   audit_log: ["id", "user", "action", "module", "details", "timestamp", "created_at"],
+  attendance: ["id", "subject_type", "subject_id", "date", "status", "branch_id", "created_at", "updated_at"],
 };
 
 const SERVER_TS = "__SERVER_TIMESTAMP__";
@@ -103,6 +105,31 @@ const SOFT_DELETE_TABLES = new Set([
   "payslips", "accounts", "journals", "branches", "reminder_logs",
 ]);
 
+// ---- Historical data scope ----
+//
+// Records imported from the old Manager.io books are tagged
+// `extra.historical = true`. They are hidden from every list read by default
+// so current-year screens and totals (Dashboard, Reports, Bank & Cash balances,
+// pending fees...) are unaffected. Turning the "History" toggle on in the
+// navbar includes them everywhere.
+const HISTORY_TABLES = new Set([
+  "students", "employees", "invoices", "expenses", "payments", "payslips", "journals",
+]);
+const HISTORY_KEY = "showHistorical";
+
+export function isHistoryVisible() {
+  try { return localStorage.getItem(HISTORY_KEY) === "1"; } catch { return false; }
+}
+
+// Persist the choice and reload so every open listener re-fetches with the new scope.
+export function setHistoryVisible(on) {
+  try { localStorage.setItem(HISTORY_KEY, on ? "1" : "0"); } catch { /* storage blocked */ }
+  window.location.reload();
+}
+
+const hiddenByHistory = (table, row) =>
+  HISTORY_TABLES.has(table) && !isHistoryVisible() && row?.extra?.historical === true;
+
 // ---- Reference objects (mirror Firestore's CollectionReference / DocumentReference) ----
 class CollectionRef {
   constructor(name) {
@@ -111,6 +138,7 @@ class CollectionRef {
     this._order = null;               // { col, ascending }
     this._limit = null;
     this._trashed = false;            // when true, read only soft-deleted rows
+    this._where = [];                 // [{ col, value }] equality filters
   }
 }
 class DocRef {
@@ -147,11 +175,20 @@ export function serverTimestamp() {
 // query()/orderBy()/limit(): we only need to carry intent onto the ref.
 export function query(ref, ...clauses) {
   const q = new CollectionRef(ref.name);
+  q._where = [...(ref._where || [])];
   for (const c of clauses) {
     if (c?.__order) q._order = c.__order;
     if (c?.__limit != null) q._limit = c.__limit;
+    if (c?.__where) q._where.push(c.__where);
   }
   return q;
+}
+// Equality filter only (the one operator the app needs). `field` must
+// be a real column (not an `extra` jsonb key) so Postgres and the
+// realtime channel can filter on it.
+export function where(field, op, value) {
+  if (op !== "==") throw new Error(`where(): unsupported operator "${op}" (only "==")`);
+  return { __where: { col: toSnake(field), value } };
 }
 export function orderBy(field, direction = "asc") {
   return { __order: { col: toSnake(field), ascending: direction !== "desc" } };
@@ -189,6 +226,11 @@ function applyQuery(builder, ref) {
   if (SOFT_DELETE_TABLES.has(ref.table)) {
     if (ref._trashed) builder = builder.not("deleted_at", "is", null);
     else builder = builder.is("deleted_at", null);
+  }
+  for (const w of ref._where || []) builder = builder.eq(w.col, w.value);
+  // Hide imported historical rows unless the History toggle is on.
+  if (HISTORY_TABLES.has(ref.table) && !isHistoryVisible()) {
+    builder = builder.or("extra->>historical.is.null,extra->>historical.neq.true");
   }
   if (ref._order) builder = builder.order(ref._order.col, { ascending: ref._order.ascending });
   if (ref._limit != null) builder = builder.limit(ref._limit);
@@ -417,6 +459,8 @@ export function onSnapshot(ref, onNext, onError) {
   }
 
   // Collection subscription: cache + incremental apply.
+  const wheres = ref._where || [];
+  const matchesWhere = (row) => wheres.every((w) => String(row?.[w.col]) === String(w.value));
   let cache = [];            // raw DB rows (snake_case), as returned by Supabase
   const emit = () => {
     if (!active) return;
@@ -465,7 +509,12 @@ export function onSnapshot(ref, onNext, onError) {
     .channel(`rt_${ref.table}_${Math.random().toString(36).slice(2)}`)
     .on(
       "postgres_changes",
-      { event: "*", schema: "public", table: ref.table },
+      {
+        event: "*", schema: "public", table: ref.table,
+        // Realtime supports a single eq filter; any further `where`s are
+        // enforced client-side by belongs() below.
+        ...(wheres.length ? { filter: `${wheres[0].col}=eq.${wheres[0].value}` } : {}),
+      },
       (payload) => {
         if (!active) return;
         const { eventType, new: newRow, old: oldRow } = payload;
@@ -475,6 +524,8 @@ export function onSnapshot(ref, onNext, onError) {
         // whether deleted_at matches what the view wants (live vs trash).
         const soft = SOFT_DELETE_TABLES.has(ref.table);
         const belongs = (row) => {
+          if (!matchesWhere(row)) return false;
+          if (hiddenByHistory(ref.table, row)) return false;
           if (!soft) return true;
           const isTrashed = row && row.deleted_at != null;
           return ref._trashed ? isTrashed : !isTrashed;

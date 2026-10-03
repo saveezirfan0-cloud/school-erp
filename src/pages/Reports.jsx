@@ -1,23 +1,34 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { db } from "../firebase";
 import { collection, getDocs } from "../firebase";
 import { useBranch } from "../context/BranchContext";
 import { toDate } from "../utils/dates";
 import { matchesBranch } from "../utils/branchFilter";
+import { buildMonthlyStatement, printMonthlyStatement, statementPeriodLabel, monthName } from "../utils/monthlyStatement";
+import { FileText } from "lucide-react";
+import toast from "react-hot-toast";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line } from "recharts";
 
+const hsCell = { border: "1px solid #000", padding: "4px 8px" };
+const hsBar = { ...hsCell, background: "#000", color: "#fff", fontWeight: 700 };
+
 export default function Reports() {
-  const { activeBranch } = useBranch();
+  const { activeBranch, branches } = useBranch();
   const [activeTab, setActiveTab] = useState("pl");
+  const now = new Date();
+  const [hsYear, setHsYear] = useState(now.getFullYear());
+  const [hsMonth, setHsMonth] = useState(now.getMonth() + 1);
+  const [raw, setRaw] = useState({ invoices: [], expenses: [], payslips: [], payments: [], accounts: [] });
   const [data, setData] = useState({ income: 0, expenses: 0, fees: 0, pending: 0, salaries: 0, monthly: [], accounts: [] });
 
   useEffect(() => {
     const fetchAll = async () => {
-      const [invoicesSnap, expSnap, payslipsSnap, accountsSnap] = await Promise.all([
+      const [invoicesSnap, expSnap, payslipsSnap, accountsSnap, paymentsSnap] = await Promise.all([
         getDocs(collection(db, "invoices")),
         getDocs(collection(db, "expenses")),
         getDocs(collection(db, "payslips")),
         getDocs(collection(db, "accounts")),
+        getDocs(collection(db, "payments")),
       ]);
 
       // Scope to the active workspace / branch filter. Chart of accounts is
@@ -26,6 +37,15 @@ export default function Reports() {
       const expenses = expSnap.docs.map(d => d.data()).filter(e => matchesBranch(e, activeBranch));
       const payslips = payslipsSnap.docs.map(d => d.data()).filter(p => matchesBranch(p, activeBranch));
       const accounts = accountsSnap.docs.map(d => d.data());
+      // Unfiltered: the monthly statement applies its own branch scope and
+      // needs every payment to compute the opening balance.
+      setRaw({
+        invoices: invoicesSnap.docs.map(d => d.data()),
+        expenses: expSnap.docs.map(d => d.data()),
+        payslips: payslipsSnap.docs.map(d => d.data()),
+        payments: paymentsSnap.docs.map(d => d.data()),
+        accounts,
+      });
 
       // Collected = actual money received (paid_amount), not the
       // invoice face value — because concessions mean paid < amount.
@@ -58,7 +78,21 @@ export default function Reports() {
     { id: "bs", label: "Balance Sheet" },
     { id: "cf", label: "Cash Flow" },
     { id: "fees", label: "Fee Collection" },
+    { id: "hs", label: "Haji Sahab Report" },
   ];
+
+  const statement = useMemo(() => buildMonthlyStatement({
+    year: hsYear, month: hsMonth, ...raw, branches,
+    includeAccountOpening: activeBranch === "all",
+    inScope: (r) => matchesBranch(r, activeBranch),
+  }), [hsYear, hsMonth, raw, branches, activeBranch]);
+
+  const scopeLabel = activeBranch === "all" ? "All branches"
+    : activeBranch === "main" ? "Main" : (branches.find(b => b.id === activeBranch)?.name || "");
+
+  const exportStatement = () => {
+    if (!printMonthlyStatement(statement, { scopeLabel })) toast.error("Pop-up blocked — allow pop-ups to export the PDF");
+  };
 
   return (
     <div>
@@ -233,6 +267,54 @@ export default function Reports() {
                 <Bar dataKey="income" fill="#7a2535" name="Fees Collected" radius={[4, 4, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
+          </div>
+        </div>
+      )}
+
+      {/* Haji Sahab Report — monthly statement */}
+      {activeTab === "hs" && (
+        <div>
+          <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap", marginBottom: 16 }}>
+            <select value={hsMonth} onChange={e => setHsMonth(Number(e.target.value))}
+              style={{ padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14 }}>
+              {Array.from({ length: 12 }, (_, i) => <option key={i + 1} value={i + 1}>{monthName(i + 1)}</option>)}
+            </select>
+            <input type="number" value={hsYear} onChange={e => setHsYear(Number(e.target.value) || now.getFullYear())}
+              style={{ padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14, width: 90 }} />
+            <span style={{ color: "var(--text-muted)", fontSize: 13 }}>{scopeLabel}</span>
+            <button onClick={exportStatement}
+              style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6, padding: "9px 18px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600, fontSize: 14 }}>
+              <FileText size={15} /> Export PDF
+            </button>
+          </div>
+
+          <div style={{ background: "white", border: "1px solid var(--border)", borderRadius: 12, padding: 24, maxWidth: 560 }}>
+            <div style={{ textAlign: "center", marginBottom: 14 }}>
+              <div style={{ fontStyle: "italic", fontWeight: 700 }}>Monthly Statement</div>
+              <div style={{ fontSize: 12, fontWeight: 700 }}>{statementPeriodLabel(hsYear, hsMonth)}</div>
+            </div>
+            {[
+              { bar: "Opening Balance", value: statement.openingBalance },
+              { title: "Income", rows: statement.income, bar: "Total — Income", value: statement.totalIncome },
+              { title: "Expense", rows: statement.expense, bar: "Total — Expense", value: statement.totalExpense },
+              { bar: "Closing Balance", value: statement.closingBalance },
+            ].map(({ title, rows, bar, value }, i) => (
+              <table key={i} style={{ width: "100%", borderCollapse: "collapse", fontSize: 14, marginBottom: 14 }}>
+                <tbody>
+                  {title && <tr><td colSpan={2} style={{ ...hsBar, textAlign: "center", fontSize: 15 }}>{title}</td></tr>}
+                  {(rows || []).map(r => (
+                    <tr key={r.label}>
+                      <td style={{ ...hsCell, fontWeight: 700 }}>{r.label}</td>
+                      <td style={{ ...hsCell, textAlign: "right", width: "34%" }}>{r.amount.toLocaleString()}</td>
+                    </tr>
+                  ))}
+                  <tr>
+                    <td style={hsBar}>{bar}</td>
+                    <td style={{ ...hsBar, textAlign: "right" }}>{value.toLocaleString()}</td>
+                  </tr>
+                </tbody>
+              </table>
+            ))}
           </div>
         </div>
       )}
