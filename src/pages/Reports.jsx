@@ -2,44 +2,57 @@ import React, { useEffect, useState } from "react";
 import { db } from "../firebase";
 import { collection, getDocs } from "../firebase";
 import { useBranch } from "../context/BranchContext";
-import { toDate } from "../utils/dates";
+import { matchesBranch } from "../utils/branchFilter";
+import HajiSahabReport from "../components/reports/HajiSahabReport";
+import { sumInvoices, collectedByMonth } from "../utils/invoiceTotals";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line } from "recharts";
 
 export default function Reports() {
-  const { activeBranch } = useBranch();
+  const { activeBranch, branches } = useBranch();
   const [activeTab, setActiveTab] = useState("pl");
+  const [raw, setRaw] = useState({ invoices: [], expenses: [], payslips: [], payments: [], journals: [], accounts: [] });
   const [data, setData] = useState({ income: 0, expenses: 0, fees: 0, pending: 0, salaries: 0, monthly: [], accounts: [] });
 
   useEffect(() => {
     const fetchAll = async () => {
-      const [invoicesSnap, expSnap, payslipsSnap, accountsSnap] = await Promise.all([
+      const [invoicesSnap, expSnap, payslipsSnap, accountsSnap, paymentsSnap, journalsSnap] = await Promise.all([
         getDocs(collection(db, "invoices")),
         getDocs(collection(db, "expenses")),
         getDocs(collection(db, "payslips")),
         getDocs(collection(db, "accounts")),
+        getDocs(collection(db, "payments")),
+        getDocs(collection(db, "journals")),
       ]);
 
-      const invoices = invoicesSnap.docs.map(d => d.data());
-      const expenses = expSnap.docs.map(d => d.data());
-      const payslips = payslipsSnap.docs.map(d => d.data());
+      // Scope to the active workspace / branch filter. Chart of accounts is
+      // organisation-wide, so it is not filtered.
+      const invoices = invoicesSnap.docs.map(d => d.data()).filter(i => matchesBranch(i, activeBranch));
+      const expenses = expSnap.docs.map(d => d.data()).filter(e => matchesBranch(e, activeBranch));
+      const payslips = payslipsSnap.docs.map(d => d.data()).filter(p => matchesBranch(p, activeBranch));
       const accounts = accountsSnap.docs.map(d => d.data());
+      // Unfiltered: the monthly statement applies its own branch scope and
+      // needs every payment to compute the opening balance.
+      setRaw({
+        invoices: invoicesSnap.docs.map(d => d.data()),
+        expenses: expSnap.docs.map(d => d.data()),
+        payslips: payslipsSnap.docs.map(d => d.data()),
+        payments: paymentsSnap.docs.map(d => d.data()),
+        journals: journalsSnap.docs.map(d => d.data()),
+        accounts,
+      });
 
-      // Collected = actual money received (paid_amount), not the
-      // invoice face value — because concessions mean paid < amount.
-      const collected = invoices.reduce((s, i) => s + Number(i.paidAmount || 0), 0);
-      const concessions = invoices.reduce((s, i) => s + Number(i.concessionAmount || 0), 0);
-      const billed = invoices.reduce((s, i) => s + Number(i.amount || 0), 0);
-      const pending = invoices
-        .filter(i => i.status === "pending" || i.status === "partial")
-        .reduce((s, i) => s + (Number(i.amount || 0) - Number(i.paidAmount || 0) - Number(i.concessionAmount || 0)), 0);
+      // Collected = actual money received, not the invoice face value —
+      // because concessions mean paid < amount. Shared with Dashboard/Fees.
+      const { collected, concessions, billed, pending } = sumInvoices(invoices);
       const fees = collected; // income = money actually collected
       const totalExp = expenses.reduce((s, e) => s + Number(e.amount || 0), 0);
       const salaries = payslips.reduce((s, p) => s + Number(p.netPay || 0), 0);
 
       const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+      const incomeByMonth = collectedByMonth(invoices);
       const monthly = months.map((month, i) => ({
         month,
-        income: invoices.filter(inv => (toDate(inv.paidDate) || new Date()).getMonth() === i).reduce((s, inv) => s + Number(inv.paidAmount || 0), 0),
+        income: incomeByMonth[i],
         expenses: expenses.filter(e => new Date(e.date || Date.now()).getMonth() === i).reduce((s, e) => s + Number(e.amount || 0), 0),
       }));
 
@@ -55,6 +68,7 @@ export default function Reports() {
     { id: "bs", label: "Balance Sheet" },
     { id: "cf", label: "Cash Flow" },
     { id: "fees", label: "Fee Collection" },
+    { id: "hs", label: "Haji Sahab Report" },
   ];
 
   return (
@@ -64,7 +78,7 @@ export default function Reports() {
         <p style={{ color: "var(--text-muted)", fontSize: 14, marginTop: 4 }}>Financial statements and analytics</p>
       </div>
 
-      <div style={{ display: "flex", gap: 8, marginBottom: 24 }}>
+      <div style={{ display: "flex", gap: 8, marginBottom: 24, flexWrap: "wrap" }}>
         {tabs.map(t => (
           <button key={t.id} onClick={() => setActiveTab(t.id)}
             style={{ padding: "8px 20px", borderRadius: 8, border: "1px solid var(--border)", cursor: "pointer", fontSize: 14, fontWeight: 500, background: activeTab === t.id ? "var(--primary)" : "white", color: activeTab === t.id ? "white" : "#475569" }}>
@@ -233,6 +247,9 @@ export default function Reports() {
           </div>
         </div>
       )}
+
+      {/* Haji Sahab Report — monthly statement */}
+      {activeTab === "hs" && <HajiSahabReport raw={raw} branches={branches} activeBranch={activeBranch} />}
     </div>
   );
 }

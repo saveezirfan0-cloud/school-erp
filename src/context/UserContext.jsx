@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useState, useMemo, useCallback } from "react";
 import { db } from "../firebase";
-import { doc, onSnapshot, collection } from "../firebase";
+import { doc, onSnapshot, collection, updateDocs } from "../firebase";
 import { useAuth } from "./AuthContext";
 
 const UserContext = createContext();
@@ -11,6 +11,7 @@ export const ROLES = {
   BRANCH_MANAGER: "branch_manager",
   ACCOUNTANT: "accountant",
   FEE_COLLECTOR: "fee_collector",
+  TEACHER: "teacher",
 };
 
 export const PERMISSIONS = {
@@ -35,6 +36,12 @@ export const PERMISSIONS = {
     canEditAccounting: true,
     canViewReports: true,
     canExport: true,
+    canViewAttendance: true,
+    canEditAttendance: true,
+    canViewExams: true,
+    canEditExams: true,
+    canViewLearning: true,
+    canEditLearning: true,
     canManageBranches: true,
     canManageUsers: true,
     canViewAllBranches: true,
@@ -60,6 +67,12 @@ export const PERMISSIONS = {
     canEditAccounting: false,
     canViewReports: false,
     canExport: false,
+    canViewAttendance: true,
+    canEditAttendance: true,
+    canViewExams: true,
+    canEditExams: true,
+    canViewLearning: true,
+    canEditLearning: true,
     canManageBranches: false,
     canManageUsers: false,
     canViewAllBranches: false,
@@ -85,6 +98,12 @@ export const PERMISSIONS = {
     canEditAccounting: true,
     canViewReports: true,
     canExport: false,
+    canViewAttendance: false,
+    canEditAttendance: false,
+    canViewExams: false,
+    canEditExams: false,
+    canViewLearning: false,
+    canEditLearning: false,
     canManageBranches: false,
     canManageUsers: false,
     canViewAllBranches: true,
@@ -110,6 +129,43 @@ export const PERMISSIONS = {
     canEditAccounting: false,
     canViewReports: false,
     canExport: false,
+    canViewAttendance: false,
+    canEditAttendance: false,
+    canViewExams: false,
+    canEditExams: false,
+    canViewLearning: false,
+    canEditLearning: false,
+    canManageBranches: false,
+    canManageUsers: false,
+    canViewAllBranches: false,
+  },
+  teacher: {
+    canViewDashboard: false,
+    canViewStudents: true,
+    canEditStudents: false,
+    canDeleteStudents: false,
+    canViewEmployees: false,
+    canEditEmployees: false,
+    canDeleteEmployees: false,
+    canViewFees: false,
+    canEditFees: false,
+    canViewExpenses: false,
+    canEditExpenses: false,
+    canDeleteExpenses: false,
+    canViewPayments: false,
+    canEditPayments: false,
+    canViewPayslips: false,
+    canEditPayslips: false,
+    canViewAccounting: false,
+    canEditAccounting: false,
+    canViewReports: false,
+    canExport: true,
+    canViewAttendance: true,
+    canEditAttendance: true,
+    canViewExams: true,
+    canEditExams: true,
+    canViewLearning: true,
+    canEditLearning: true,
     canManageBranches: false,
     canManageUsers: false,
     canViewAllBranches: false,
@@ -203,8 +259,24 @@ export function UserProvider({ children }) {
 
   const isAdmin = role === "admin";
 
+  // Personal sidebar layout (null = use the default). Saved per user on
+  // their own profile row. updateDocs merges into `extra` so this never
+  // overwrites pagePermissions (a plain updateDoc would replace it).
+  const menuLayout = userProfile?.menuLayout || null;
+  const saveMenuLayout = useCallback(async (layout) => {
+    if (!userProfile?.id) return;
+    const previous = userProfile.menuLayout ?? null;
+    setUserProfile((p) => (p ? { ...p, menuLayout: layout } : p));
+    try {
+      await updateDocs("users", [userProfile.id], { menuLayout: layout });
+    } catch (e) {
+      setUserProfile((p) => (p ? { ...p, menuLayout: previous } : p));
+      throw e;
+    }
+  }, [userProfile?.id, userProfile?.menuLayout]);
+
   // If branch_manager, restrict to their assigned branch
-  const assignedBranchId = role === "branch_manager" ? userProfile?.branchId : null;
+  const assignedBranchId = (role === "branch_manager" || role === "teacher") ? userProfile?.branchId : null;
 
   const value = useMemo(() => ({
     userProfile,
@@ -215,7 +287,9 @@ export function UserProvider({ children }) {
     can,
     isAdmin,
     assignedBranchId,
-  }), [userProfile, loadingProfile, role, permissions, customRolePerms, can, isAdmin, assignedBranchId]);
+    menuLayout,
+    saveMenuLayout,
+  }), [userProfile, loadingProfile, role, permissions, customRolePerms, can, isAdmin, assignedBranchId, menuLayout, saveMenuLayout]);
 
   return (
     <UserContext.Provider value={value}>

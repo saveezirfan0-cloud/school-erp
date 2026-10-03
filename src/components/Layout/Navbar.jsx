@@ -1,11 +1,13 @@
 import React from "react";
 import { useAuth } from "../../context/AuthContext";
 import { useBranch } from "../../context/BranchContext";
-import { LogOut, Menu } from "lucide-react";
+import { LogOut, Menu, History } from "lucide-react";
+import { isHistoryVisible, setHistoryVisible } from "../../firebase";
 
 export default function Navbar({ onMenuClick }) {
   const { logout, user } = useAuth();
   const { branches, activeBranch, setActiveBranch } = useBranch();
+  const history = isHistoryVisible();
 
   return (
     <header style={{
@@ -25,6 +27,11 @@ export default function Navbar({ onMenuClick }) {
           <option value="main">🏫 Main Office</option>
           {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
         </select>
+        <button onClick={() => setHistoryVisible(!history)}
+          title={history ? "Showing historical data imported from Manager.io (click to hide)" : "Historical data from Manager.io is hidden (click to show)"}
+          style={{ border: "1px solid " + (history ? "var(--primary)" : "var(--border)"), background: history ? "var(--primary-light)" : "white", color: history ? "var(--primary)" : "var(--text-muted)", cursor: "pointer", display: "flex", alignItems: "center", gap: 4, padding: "6px 10px", borderRadius: 6, fontSize: 13, fontWeight: history ? 600 : 400 }}>
+          <History size={14} /> History {history ? "on" : "off"}
+        </button>
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
         <span style={{ fontSize: 12, color: "var(--text-muted)" }}>{user?.email}</span>

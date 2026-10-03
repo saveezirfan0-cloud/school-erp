@@ -1,0 +1,90 @@
+code,name,type,sub_type,first_created,first_ledger,ledger_count,initial
+,Account Receivables,Assets,Accounts Receivable,2023-03-16,Zohra Majeed Islamic Institute (Banaat).manager,1,
+,Rec,Assets,Accounts Receivable,2023-07-02,Zohra Majeed Islamic Institute.manager,1,
+,Cash,Assets,Bank & Cash,2023-03-16,Zohra Majeed Islamic Institute (Banaat).manager,3,
+C-01,Cash Acc,Assets,Bank & Cash,2022-11-13,Zohra Majeed Islamic Institute.manager,1,yes
+C-02,Petty Cash,Assets,Bank & Cash,2022-11-13,Zohra Majeed Islamic Institute.manager,3,yes
+,Advance to Employee,Assets,Current Assets,2023-07-02,Zohra Majeed Islamic Institute (2023-2024).manager,2,
+,Loan to Employees,Assets,Current Assets,2022-11-13,Zohra Majeed Islamic Institute.manager,1,yes
+,Salary Advance,Assets,Current Assets,2023-09-05,Zohra Majeed Islamic Institute.manager,3,
+,Account Payables,Liabilities,Accounts Payable,2023-03-16,Zohra Majeed Islamic Institute (Banaat).manager,2,
+,Payables,Liabilities,Accounts Payable,2023-07-02,Zohra Majeed Islamic Institute.manager,1,
+,Loan,Liabilities,Current Liabilities,2024-02-06,Zohra Majeed Islamic Institute (2023-2024).manager,1,
+,loan for madarsa,Liabilities,Current Liabilities,2023-03-13,Zohra Majeed Islamic Institute.manager,1,
+,Loan from madarsa,Liabilities,Current Liabilities,2024-02-03,Zohra Majeed Islamic Institute (2023-2024).manager,1,
+,Loan from Waseem Bhai,Liabilities,Current Liabilities,2024-02-06,Zohra Majeed Islamic Institute (2023-2024).manager,1,
+,Molana Abdul Majid,Liabilities,Current Liabilities,2024-05-04,Zohra Majeed Islamic Institute (2023-2024).manager,1,
+,Working Capital,Liabilities,Current Liabilities,2022-11-13,Zohra Majeed Islamic Institute.manager,1,yes
+,Funds contributed,Equity,Capital,2022-11-13,Zohra Majeed Islamic Institute.manager,4,yes
+,Drawings,Equity,Owner's Equity,2022-11-13,Zohra Majeed Islamic Institute.manager,4,yes
+,Share of profit,Equity,Owner's Equity,2022-11-13,Zohra Majeed Islamic Institute.manager,4,yes
+,Retained earnings,Equity,Retained Earnings,2022-11-13,Zohra Majeed Islamic Institute.manager,1,yes
+,Admission Fees,Income,Fee Income,2023-01-03,Zohra Majeed Islamic Institute.manager,3,
+,Course,Income,Fee Income,2023-10-29,Zohra Majeed Islamic Institute (2023-2024).manager,1,
+,Evening Fees,Income,Fee Income,2024-07-13,ZMI - Banat 24-25.manager,1,
+,Fees,Income,Fee Income,2022-11-13,Zohra Majeed Islamic Institute.manager,4,yes
+,GC Fees,Income,Fee Income,2022-11-13,Zohra Majeed Islamic Institute.manager,2,yes
+,June Fees,Income,Fee Income,2024-08-03,ZMI - Banat 24-25.manager,1,
+,Sales,Income,Fee Income,2023-07-02,Zohra Majeed Islamic Institute (2023-2024).manager,1,
+,School Fees,Income,Fee Income,2023-10-29,Zohra Majeed Islamic Institute (2023-2024).manager,1,
+,School Fund,Income,Fee Income,2023-12-24,Zohra Majeed Islamic Institute (2023-2024).manager,1,
+,Summer Course,Income,Fee Income,2024-06-22,Zohra Majeed Islamic Institute (2023-2024).manager,1,
+,Donation,Income,Grants & Donations,2022-11-13,Zohra Majeed Islamic Institute.manager,3,yes
+,Welfare,Income,Grants & Donations,2022-12-04,Zohra Majeed Islamic Institute.manager,5,
+,GC Maintenance,Expenses,Maintenance,2022-11-13,Zohra Majeed Islamic Institute.manager,1,yes
+,Maintenance,Expenses,Maintenance,2022-11-13,Zohra Majeed Islamic Institute.manager,3,yes
+,Repair & Maintenance,Expenses,Maintenance,2023-03-16,Zohra Majeed Islamic Institute (Banaat).manager,1,
+,Repairs and maintenance,Expenses,Maintenance,2022-11-13,Zohra Majeed Islamic Institute.manager,3,yes
+,Annual Event,Expenses,Other Expenses,2023-06-17,Zohra Majeed Islamic Institute.manager,1,
+,B-153,Expenses,Other Expenses,2023-12-02,Zohra Majeed Islamic Institute (2023-2024).manager,1,
+,B-169,Expenses,Other Expenses,2023-12-02,Zohra Majeed Islamic Institute (2023-2024).manager,1,
+,B-224,Expenses,Other Expenses,2024-02-06,Zohra Majeed Islamic Institute (2023-2024).manager,1,
+,Bait Ul Hameed,Expenses,Other Expenses,2024-07-17,ZMI - Banat 24-25.manager,1,
+,C-113 block 4,Expenses,Other Expenses,2023-03-14,Zohra Majeed Islamic Institute.manager,1,
+,Entertainment,Expenses,Other Expenses,2023-03-16,Zohra Majeed Islamic Institute (Banaat).manager,2,
+,Entertainment Expense,Expenses,Other Expenses,2024-07-13,ZMI - Banat 24-25.manager,1,
+,Examiner Fees,Expenses,Other Expenses,2024-07-13,ZMI - Banat 24-25.manager,1,
+,examiners,Expenses,Other Expenses,2022-12-01,Zohra Majeed Islamic Institute.manager,2,
+,Fuel Expense,Expenses,Other Expenses,2024-07-13,ZMI - Banat 24-25.manager,1,
+,GC Expense,Expenses,Other Expenses,2024-07-17,ZMI - Banat 24-25.manager,1,
+,GC Expenses,Expenses,Other Expenses,2023-07-02,Zohra Majeed Islamic Institute (2023-2024).manager,1,
+,GC Misc Expenses,Expenses,Other Expenses,2022-11-14,Zohra Majeed Islamic Institute.manager,1,yes
+,GC Petty Cash,Expenses,Other Expenses,2022-11-13,Zohra Majeed Islamic Institute.manager,1,yes
+,GC Refreshment,Expenses,Other Expenses,2022-11-13,Zohra Majeed Islamic Institute.manager,1,yes
+,Gifts & Giveaways,Expenses,Other Expenses,2022-11-18,Zohra Majeed Islamic Institute.manager,3,
+,Guest,Expenses,Other Expenses,2023-07-22,Zohra Majeed Islamic Institute (2023-2024).manager,1,
+,Guests,Expenses,Other Expenses,2024-07-13,ZMI - Banat 24-25.manager,1,
+,Misc Expense,Expenses,Other Expenses,2024-07-13,ZMI - Banat 24-25.manager,1,
+,Misc Expenses,Expenses,Other Expenses,2022-11-13,Zohra Majeed Islamic Institute.manager,3,yes
+,Refreshment,Expenses,Other Expenses,2022-11-13,Zohra Majeed Islamic Institute.manager,2,yes
+,Refreshments,Expenses,Other Expenses,2023-03-16,Zohra Majeed Islamic Institute (Banaat).manager,2,
+,School expense,Expenses,Other Expenses,2024-02-06,Zohra Majeed Islamic Institute (2023-2024).manager,1,
+,Token Money,Expenses,Other Expenses,2023-10-29,Zohra Majeed Islamic Institute (2023-2024).manager,1,
+,Umer Colony,Expenses,Other Expenses,2024-07-17,ZMI - Banat 24-25.manager,1,
+,Umer Colony Branch,Expenses,Other Expenses,2022-11-13,Zohra Majeed Islamic Institute.manager,2,yes
+,Wifaaq,Expenses,Other Expenses,2023-10-29,Zohra Majeed Islamic Institute (2023-2024).manager,1,
+,Electricity,Expenses,Rent & Utilities,2023-07-02,Zohra Majeed Islamic Institute (2023-2024).manager,1,
+,Electricity Bill,Expenses,Rent & Utilities,2024-07-13,ZMI - Banat 24-25.manager,1,
+,Gas Bill,Expenses,Rent & Utilities,2024-07-13,ZMI - Banat 24-25.manager,1,
+,GC Rent,Expenses,Rent & Utilities,2022-11-13,Zohra Majeed Islamic Institute.manager,1,yes
+,GC Utility Bills,Expenses,Rent & Utilities,2022-11-13,Zohra Majeed Islamic Institute.manager,1,yes
+,Rent,Expenses,Rent & Utilities,2022-11-13,Zohra Majeed Islamic Institute.manager,4,yes
+,Utility Bills,Expenses,Rent & Utilities,2022-11-13,Zohra Majeed Islamic Institute.manager,3,yes
+,Water Bill,Expenses,Rent & Utilities,2024-07-13,ZMI - Banat 24-25.manager,1,
+,Bonus,Expenses,Salaries & Wages,2024-05-11,Zohra Majeed Islamic Institute (2023-2024).manager,1,
+,GC Phone Allowance,Expenses,Salaries & Wages,2022-11-13,Zohra Majeed Islamic Institute.manager,1,yes
+,GC Salaries,Expenses,Salaries & Wages,2022-11-13,Zohra Majeed Islamic Institute.manager,2,yes
+,Lunch Allowance,Expenses,Salaries & Wages,2022-11-13,Zohra Majeed Islamic Institute.manager,3,yes
+,Phone Allowance,Expenses,Salaries & Wages,2022-11-13,Zohra Majeed Islamic Institute.manager,4,yes
+,Salaries,Expenses,Salaries & Wages,2022-11-13,Zohra Majeed Islamic Institute.manager,4,yes
+,Salary Bonus,Expenses,Salaries & Wages,2024-07-13,ZMI - Banat 24-25.manager,1,
+,School Salaries,Expenses,Salaries & Wages,2024-03-09,Zohra Majeed Islamic Institute (2023-2024).manager,1,
+,Water Allowance,Expenses,Salaries & Wages,2022-11-13,Zohra Majeed Islamic Institute.manager,3,yes
+,Cleaning & Laundry,Expenses,Supplies,2023-01-03,Zohra Majeed Islamic Institute.manager,2,
+,Cleaning Expense,Expenses,Supplies,2024-07-13,ZMI - Banat 24-25.manager,1,
+,Designing Expense,Expenses,Supplies,2022-11-13,Zohra Majeed Islamic Institute.manager,3,yes
+,Equipment & Fixtures,Expenses,Supplies,2022-11-13,Zohra Majeed Islamic Institute.manager,3,yes
+,Printing and stationery,Expenses,Supplies,2024-07-13,ZMI - Banat 24-25.manager,1,
+,Stationary,Expenses,Supplies,2022-11-13,Zohra Majeed Islamic Institute.manager,3,yes
+,Fuel Allowance,Expenses,Transport,2022-11-13,Zohra Majeed Islamic Institute.manager,2,yes
+,Travel Allowance,Expenses,Transport,2024-07-13,ZMI - Banat 24-25.manager,1,

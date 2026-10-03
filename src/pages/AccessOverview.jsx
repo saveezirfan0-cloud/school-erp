@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { db, collection, onSnapshot, doc, updateDoc } from "../firebase";
+import { db, collection, onSnapshot, updateDocs } from "../firebase";
 import { useUser } from "../context/UserContext";
 import { PERMISSIONS } from "../context/UserContext";
 import toast from "react-hot-toast";
@@ -25,6 +25,12 @@ const ALL_PERMISSIONS = [
   { key: "canEditPayslips", label: "Generate Payslips", group: "Payslips" },
   { key: "canViewAccounting", label: "View Accounting", group: "Accounting" },
   { key: "canEditAccounting", label: "Edit Accounting", group: "Accounting" },
+  { key: "canViewAttendance", label: "View Attendance", group: "Academics" },
+  { key: "canEditAttendance", label: "Mark Attendance", group: "Academics" },
+  { key: "canViewExams", label: "View Exams & Results", group: "Academics" },
+  { key: "canEditExams", label: "Create Exams / Enter Marks", group: "Academics" },
+  { key: "canViewLearning", label: "View Subjects, Homework & Materials", group: "Academics" },
+  { key: "canEditLearning", label: "Manage Subjects, Homework & Materials", group: "Academics" },
   { key: "canViewReports", label: "View Reports", group: "Reports" },
   { key: "canExport", label: "Export CSV / PDF", group: "Reports" },
   { key: "canManageBranches", label: "Manage Branches", group: "Admin" },
@@ -78,7 +84,7 @@ export default function AccessOverview() {
     // optimistic
     setSelected({ ...selected, pagePermissions: overrides });
     try {
-      await updateDoc(doc(db, "users", selected.id), { pagePermissions: overrides });
+      await updateDocs("users", [selected.id], { pagePermissions: overrides });
     } catch (e) {
       toast.error(e?.message || "Couldn't save");
     }
