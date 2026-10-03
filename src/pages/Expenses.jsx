@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { db } from "../firebase";
-import { collection, addDoc, deleteDoc, doc, onSnapshot, serverTimestamp, updateDocs, deleteDocs } from "../firebase";
+import { collection, deleteDoc, doc, onSnapshot, serverTimestamp, updateDocs, deleteDocs } from "../firebase";
+import { matchesBranch } from "../utils/branchFilter";
 import { useBranch } from "../context/BranchContext";
 import Pagination from "../components/UI/Pagination";
 import { useBulkSelect } from "../hooks/useBulkSelect";
@@ -8,13 +9,17 @@ import BulkBar, { RowCheckbox, HeaderCheckbox } from "../components/UI/BulkBar";
 import BulkEditModal from "../components/UI/BulkEditModal";
 import { runBulk, bulkResultMessage } from "../utils/bulk";
 import { logActivity } from "../utils/auditLog";
-import { recordPayment, bankCashAccounts, reverseSourcePayments } from "../utils/accounting";
+import { createExpenseAndPost, reverseSourcePayments, rememberAccountChoice } from "../utils/accounting";
+import { parsePositiveAmount, sumMoney, todayLocal, isIsoDate, formatMoney } from "../utils/money";
+import { useAccounts } from "../utils/useAccounts";
+import { useSubmitLock } from "../utils/useSubmitLock";
 import { exportToCSV, exportToPDF } from "../utils/exportUtils";
 import toast from "react-hot-toast";
 import { Plus, Trash2, X, Download, FileText, Pencil } from "lucide-react";
 
 const CATEGORIES = ["Rent", "Utilities", "Salaries", "Supplies", "Maintenance", "Transport", "Other"];
 const emptyLine = { description: "", amount: "", category: "" };
+const emptyForm = () => ({ description: "", amount: "", category: "", date: todayLocal(), branchId: "", notes: "", paidAccountId: "" });
 
 function useIsMobile() {
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
@@ -30,12 +35,14 @@ export default function Expenses() {
   const { branches, activeBranch } = useBranch();
   const isMobile = useIsMobile();
   const [expenses, setExpenses] = useState([]);
-  const [accounts, setAccounts] = useState([]);
+  const { accounts, postable, problem: accountsProblem, status: accountsStatus } = useAccounts();
+  const { busy: submitting, run: runSubmit } = useSubmitLock();
   const [showModal, setShowModal] = useState(false);
   const [mode, setMode] = useState("single");
-  const [form, setForm] = useState({ description: "", amount: "", category: "", date: "", branchId: "", notes: "", paidAccount: "" });
+  const [form, setForm] = useState(emptyForm());
   const [bulkLines, setBulkLines] = useState([{ ...emptyLine }, { ...emptyLine }]);
-  const [bulkDate, setBulkDate] = useState("");
+  const [bulkDate, setBulkDate] = useState(todayLocal());
+  const [bulkAccountId, setBulkAccountId] = useState("");
   const [bulkBranch, setBulkBranch] = useState("");
   const [filterCategory, setFilterCategory] = useState("");
   const [filterBranch, setFilterBranch] = useState("");
@@ -54,14 +61,18 @@ export default function Expenses() {
           .sort((a, b) => new Date(b.date) - new Date(a.date))
       )
     );
-    const uAcc = onSnapshot(collection(db, "accounts"), snap =>
-      setAccounts(snap.docs.map(d => ({ id: d.id, ...d.data() })))
-    );
-    return () => { unsub(); uAcc(); };
+    return () => { unsub(); };
   }, []);
 
+  const openModal = () => {
+    setForm({ ...emptyForm(), paidAccountId: "" });
+    setBulkDate(todayLocal());
+    setBulkAccountId("");
+    setShowModal(true);
+  };
+
   const filtered = expenses.filter(e => {
-    const matchBranch = (activeBranch === "all" || e.branchId === activeBranch) && (!filterBranch || e.branchId === filterBranch);
+    const matchBranch = matchesBranch(e, activeBranch) && (!filterBranch || e.branchId === filterBranch);
     const matchCat = !filterCategory || e.category === filterCategory;
     const matchFrom = !filterDateFrom || e.date >= filterDateFrom;
     const matchTo = !filterDateTo || e.date <= filterDateTo;
@@ -76,9 +87,7 @@ export default function Expenses() {
   const safePage = Math.min(Math.max(1, page), pageCount);
   const paged = filtered.slice((safePage - 1) * pageSize, safePage * pageSize);
 
-  const total = filtered.reduce((s, e) => s + Number(e.amount || 0), 0);
-
-  const payAccounts = bankCashAccounts(accounts);
+  const total = sumMoney(filtered.map(e => e.amount));
 
   // multi-select for bulk actions
   const bulk = useBulkSelect(filtered.map(e => e.id));
@@ -118,11 +127,19 @@ export default function Expenses() {
   const handleBulkEditApply = async (changes) => {
     setBulkBusy(true);
     try {
-      const n = bulk.count;
       // "main" is the UI sentinel for the Main branch (stored as "").
       if (changes.branchId === "main") changes.branchId = "";
-      await updateDocs("expenses", [...bulk.selected], { ...changes, updatedAt: serverTimestamp() });
-      toast.success(`${n} expense${n === 1 ? "" : "s"} updated`);
+      // The date and branch of an expense that was paid from an account must
+      // match its cash entry, so those two fields are only changed on unpaid
+      // expenses. Category is safe for all of them.
+      const movesMoney = "date" in changes || "branchId" in changes;
+      const chosen = expenses.filter(e => bulk.selected.has(e.id));
+      const editable = movesMoney ? chosen.filter(e => !e.paidAccount) : chosen;
+      const skipped = chosen.length - editable.length;
+      if (editable.length === 0) { toast.error("Paid expenses can't have their date or branch changed in bulk. Delete (reverses the payment) and re-enter instead."); return; }
+      const n = editable.length;
+      await updateDocs("expenses", editable.map(e => e.id), { ...changes, updatedAt: serverTimestamp() });
+      toast.success(`${n} expense${n === 1 ? "" : "s"} updated${skipped ? ` · ${skipped} paid expense${skipped === 1 ? "" : "s"} skipped (date/branch locked)` : ""}`);
       logActivity("updated", "Expenses", `${n} expenses (bulk): ${Object.keys(changes).join(", ")}`);
       setShowBulkEdit(false);
       bulk.clear();
@@ -131,53 +148,76 @@ export default function Expenses() {
     } finally { setBulkBusy(false); }
   };
 
-  const handleSingle = async (e) => {
+  const handleSingle = (e) => {
     e.preventDefault();
-    const docRef = await addDoc(collection(db, "expenses"), { ...form, createdAt: serverTimestamp() });
-    // If paid from an account, record the cash_out so balances update.
-    if (form.paidAccount) {
+    return runSubmit(async () => {
       try {
-        await recordPayment({
-          type: "cash_out",
-          account: form.paidAccount,
-          amount: form.amount,
-          category: form.category || "Expense",
-          description: form.description || "Expense",
-          reference: docRef?.id || "",
-          branchId: form.branchId || "",
-          date: form.date || undefined,
-          source: "expense",
-          sourceId: docRef?.id || "",
-        });
+        const { paidAccountId, ...expense } = form;
+        const res = await createExpenseAndPost({ expense, accounts, accountId: paidAccountId });
+        const acctName = accounts.find(a => a.id === paidAccountId)?.name || "";
+        if (res.paid && !res.posted) {
+          // Never a plain success: the expense exists but its cash_out does not.
+          toast.error(`Expense saved, but the payment was NOT recorded (${res.error?.message || "unknown error"}). It is flagged as not posted.`, { duration: 9000 });
+        } else {
+          rememberAccountChoice(paidAccountId);
+          toast.success("Expense added");
+        }
+        logActivity("created", "Expenses", `${form.description} · Rs. ${formatMoney(form.amount)}${paidAccountId ? ` paid from ${acctName}${res.posted ? "" : " (NOT posted)"}` : ""}`);
+        setShowModal(false);
+        setForm(emptyForm());
       } catch (err) {
-        toast.error("Expense saved, but payment not recorded: " + (err?.message || ""));
+        toast.error(err?.message || "Could not save the expense", { duration: 7000 });
       }
-    }
-    toast.success("Expense added");
-    logActivity("created", "Expenses", `${form.description} · Rs. ${Number(form.amount || 0).toLocaleString()}${form.paidAccount ? ` paid from ${form.paidAccount}` : ""}`);
-    setShowModal(false);
-    setForm({ description: "", amount: "", category: "", date: "", branchId: "", notes: "", paidAccount: "" });
+    });
   };
 
-  const handleBulk = async (e) => {
+  const handleBulk = (e) => {
     e.preventDefault();
-    const valid = bulkLines.filter(l => l.description && l.amount && l.category);
-    if (valid.length === 0) return toast.error("Add at least one valid row");
-    await Promise.all(valid.map(line =>
-      addDoc(collection(db, "expenses"), { ...line, date: bulkDate, branchId: bulkBranch, createdAt: serverTimestamp() })
-    ));
-    toast.success(`${valid.length} expenses added`);
-    logActivity("created", "Expenses", `${valid.length} expenses (bulk entry)`);
-    setShowModal(false);
-    setBulkLines([{ ...emptyLine }, { ...emptyLine }]);
-    setBulkDate("");
-    setBulkBranch("");
+    return runSubmit(async () => {
+      const valid = bulkLines.filter(l => l.description && l.amount && l.category);
+      if (valid.length === 0) return toast.error("Add at least one valid row");
+      for (const l of valid) {
+        const a = parsePositiveAmount(l.amount, `Amount for "${l.description}"`);
+        if (!a.ok) return toast.error(a.error);
+      }
+      if (!isIsoDate(bulkDate)) return toast.error("Enter a valid date");
+      let ok = 0, unposted = 0;
+      const failures = [];
+      for (const line of valid) {
+        try {
+          const res = await createExpenseAndPost({
+            expense: { ...line, date: bulkDate, branchId: bulkBranch },
+            accounts, accountId: bulkAccountId,
+          });
+          ok++;
+          if (res.paid && !res.posted) unposted++;
+        } catch (err) {
+          failures.push(`${line.description}: ${err?.message || "failed"}`);
+        }
+      }
+      if (bulkAccountId) rememberAccountChoice(bulkAccountId);
+      if (failures.length || unposted) {
+        toast.error(`${ok} saved${unposted ? ` (${unposted} NOT posted to the books)` : ""}${failures.length ? `, ${failures.length} failed: ${failures.slice(0, 3).join("; ")}` : ""}`, { duration: 9000 });
+      } else {
+        toast.success(`${ok} expenses added${bulkAccountId ? " and posted" : ""}`);
+      }
+      if (ok > 0) logActivity("created", "Expenses", `${ok} expenses (bulk entry)${bulkAccountId ? ` paid from ${accounts.find(a => a.id === bulkAccountId)?.name || "account"}` : ""}`);
+      if (failures.length === 0) {
+        setShowModal(false);
+        setBulkLines([{ ...emptyLine }, { ...emptyLine }]);
+        setBulkDate(todayLocal());
+        setBulkBranch("");
+      } else {
+        const failedDescs = new Set(failures.map(f => f.split(":")[0]));
+        setBulkLines(valid.filter(l => failedDescs.has(l.description))); // retry only the failures
+      }
+    });
   };
 
   const updateBulkLine = (idx, field, value) =>
     setBulkLines(p => p.map((l, i) => i === idx ? { ...l, [field]: value } : l));
 
-  const bulkTotal = bulkLines.reduce((s, l) => s + Number(l.amount || 0), 0);
+  const bulkTotal = sumMoney(bulkLines.map(l => l.amount));
 
   const handleCSV = () => exportToCSV("expenses",
     ["Date", "Description", "Category", "Branch", "Amount"],
@@ -199,7 +239,7 @@ export default function Expenses() {
         <div>
           <h2 style={{ fontSize: 20, fontWeight: 700 }}>Expenses</h2>
           <p style={{ color: "var(--text-muted)", fontSize: 13, marginTop: 2 }}>
-            Total: <strong style={{ color: "#ef4444" }}>Rs. {total.toLocaleString()}</strong>
+            Total: <strong style={{ color: "#ef4444" }}>Rs. {formatMoney(total)}</strong>
             <span style={{ marginLeft: 8, color: "var(--text-muted)" }}>({filtered.length} entries)</span>
           </p>
         </div>
@@ -214,7 +254,7 @@ export default function Expenses() {
               </button>
             </>
           )}
-          <button onClick={() => setShowModal(true)}
+          <button onClick={openModal}
             style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 16px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600, fontSize: 13 }}>
             <Plus size={15} /> Add Expense
           </button>
@@ -264,7 +304,7 @@ export default function Expenses() {
                     <RowCheckbox checked={bulk.isSelected(exp.id)} onChange={() => bulk.toggle(exp.id)} label={`Select expense ${exp.description}`} />
                   </div>
                   <div>
-                    <div style={{ fontWeight: 600, fontSize: 15 }}>{exp.description}</div>
+                    <div style={{ fontWeight: 600, fontSize: 15 }}>{exp.description}{exp.ledgerPosted === false && <span title={exp.unpostedReason || "Payment was not posted to the books"} style={{ marginLeft: 6, fontSize: 11, fontWeight: 700, color: "#b45309" }}>NOT POSTED</span>}</div>
                     <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>{exp.date}</div>
                   </div>
                 </div>
@@ -316,7 +356,10 @@ export default function Expenses() {
                       <RowCheckbox checked={bulk.isSelected(exp.id)} onChange={() => bulk.toggle(exp.id)} label={`Select expense ${exp.description}`} />
                     </td>
                     <td style={{ padding: "11px 14px", fontSize: 13, whiteSpace: "nowrap" }}>{exp.date}</td>
-                    <td style={{ padding: "11px 14px", fontSize: 14, fontWeight: 500 }}>{exp.description}</td>
+                    <td style={{ padding: "11px 14px", fontSize: 14, fontWeight: 500 }}>
+                      {exp.description}
+                      {exp.ledgerPosted === false && <span title={exp.unpostedReason || "Payment was not posted to the books"} style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 10, background: "#fef3c7", color: "#b45309" }}>NOT POSTED</span>}
+                    </td>
                     <td style={{ padding: "11px 14px" }}>
                       <span style={{ padding: "3px 10px", borderRadius: 20, fontSize: 12, background: "#f1f5f9", color: "#475569" }}>
                         {exp.category}
@@ -407,7 +450,7 @@ export default function Expenses() {
                   </div>
                   <div>
                     <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 5 }}>Amount (Rs.)</label>
-                    <input type="number" value={form.amount} onChange={e => setForm(p => ({ ...p, amount: e.target.value }))} required
+                    <input type="number" min="0.01" step="0.01" value={form.amount} onChange={e => setForm(p => ({ ...p, amount: e.target.value }))} required
                       style={{ width: "100%", padding: "10px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14, boxSizing: "border-box" }} />
                   </div>
                   <div>
@@ -435,11 +478,14 @@ export default function Expenses() {
                     <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 5 }}>
                       Paid from account <span style={{ color: "var(--text-muted)", fontWeight: 400 }}>(optional — leave blank if unpaid)</span>
                     </label>
-                    <select value={form.paidAccount} onChange={e => setForm(p => ({ ...p, paidAccount: e.target.value }))}
+                    <select value={form.paidAccountId} onChange={e => setForm(p => ({ ...p, paidAccountId: e.target.value }))}
                       style={{ width: "100%", padding: "10px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14 }}>
                       <option value="">Not paid yet</option>
-                      {payAccounts.map(a => <option key={a.id} value={a.name}>{a.name}</option>)}
+                      {postable.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
                     </select>
+                    {postable.length === 0 && accountsStatus !== "loading" && (
+                      <div style={{ fontSize: 12, color: "#b45309", marginTop: 4 }}>{accountsProblem}</div>
+                    )}
                   </div>
                   <div style={{ gridColumn: isMobile ? "1" : "span 2" }}>
                     <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 5 }}>Notes (optional)</label>
@@ -450,8 +496,8 @@ export default function Expenses() {
                 <div style={{ display: "flex", gap: 10, marginTop: 20 }}>
                   <button type="button" onClick={() => setShowModal(false)}
                     style={{ flex: 1, padding: "11px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", fontSize: 14 }}>Cancel</button>
-                  <button type="submit"
-                    style={{ flex: 2, padding: "11px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600, fontSize: 14 }}>Save Expense</button>
+                  <button type="submit" disabled={submitting}
+                    style={{ flex: 2, padding: "11px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: submitting ? "not-allowed" : "pointer", opacity: submitting ? 0.7 : 1, fontWeight: 600, fontSize: 14 }}>{submitting ? "Saving..." : "Save Expense"}</button>
                 </div>
               </form>
             )}
@@ -473,6 +519,17 @@ export default function Expenses() {
                       {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
                     </select>
                   </div>
+                </div>
+
+                <div style={{ marginBottom: 16 }}>
+                  <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 5 }}>
+                    Paid from account <span style={{ color: "var(--text-muted)", fontWeight: 400 }}>(optional, posts every row to the books)</span>
+                  </label>
+                  <select value={bulkAccountId} onChange={e => setBulkAccountId(e.target.value)}
+                    style={{ width: "100%", padding: "10px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14 }}>
+                    <option value="">Not paid yet</option>
+                    {postable.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+                  </select>
                 </div>
 
                 <div style={{ border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden", marginBottom: 16 }}>
@@ -498,7 +555,7 @@ export default function Expenses() {
                         {CATEGORIES.map(c => <option key={c}>{c}</option>)}
                       </select>
                       <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                        <input type="number" value={line.amount} onChange={e => updateBulkLine(idx, "amount", e.target.value)} placeholder="0"
+                        <input type="number" min="0.01" step="0.01" value={line.amount} onChange={e => updateBulkLine(idx, "amount", e.target.value)} placeholder="0"
                           style={{ flex: 1, padding: "8px 10px", border: "1px solid var(--border)", borderRadius: 6, fontSize: 14 }} />
                         {bulkLines.length > 1 && (
                           <button type="button" onClick={() => setBulkLines(p => p.filter((_, i) => i !== idx))}
@@ -514,16 +571,16 @@ export default function Expenses() {
                       style={{ display: "flex", alignItems: "center", gap: 4, padding: "6px 14px", background: "var(--primary-light)", color: "var(--primary)", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 13, fontWeight: 600 }}>
                       <Plus size={13} /> Add Row
                     </button>
-                    <strong style={{ fontSize: 14 }}>Total: Rs. {bulkTotal.toLocaleString()}</strong>
+                    <strong style={{ fontSize: 14 }}>Total: Rs. {formatMoney(bulkTotal)}</strong>
                   </div>
                 </div>
 
                 <div style={{ display: "flex", gap: 10 }}>
                   <button type="button" onClick={() => setShowModal(false)}
                     style={{ flex: 1, padding: "11px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", fontSize: 14 }}>Cancel</button>
-                  <button type="submit"
-                    style={{ flex: 2, padding: "11px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600, fontSize: 14 }}>
-                    Save {bulkLines.filter(l => l.description && l.amount).length} Expenses
+                  <button type="submit" disabled={submitting}
+                    style={{ flex: 2, padding: "11px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: submitting ? "not-allowed" : "pointer", opacity: submitting ? 0.7 : 1, fontWeight: 600, fontSize: 14 }}>
+                    {submitting ? "Saving..." : `Save ${bulkLines.filter(l => l.description && l.amount).length} Expenses`}
                   </button>
                 </div>
               </form>

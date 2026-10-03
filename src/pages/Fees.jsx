@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { db } from "../firebase";
-import { collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot, serverTimestamp, updateDocs, deleteDocs } from "../firebase";
+import { collection, addDoc, deleteDoc, doc, onSnapshot, serverTimestamp, updateDocs, deleteDocs } from "../firebase";
 import { useBranch } from "../context/BranchContext";
 import Pagination from "../components/UI/Pagination";
 import SearchableSelect from "../components/UI/SearchableSelect";
@@ -10,14 +10,34 @@ import BulkEditModal from "../components/UI/BulkEditModal";
 import { runBulk, bulkResultMessage } from "../utils/bulk";
 import { logActivity } from "../utils/auditLog";
 import { sendWhatsAppMessage } from "../utils/whatsapp";
-import { recordPayment, bankCashAccounts, reverseSourcePayments, getSourcePaidTotal } from "../utils/accounting";
+import {
+  collectInvoicePayment, createInvoiceAndCollect, postUnpostedInvoice, reverseSourcePayments,
+  getSourcePaidTotal, needsPosting, pickDefaultAccountId, rememberAccountChoice,
+} from "../utils/accounting";
+import { parsePositiveAmount, sumMoney, subMoney, round2, toMinor, todayLocal, formatMoney } from "../utils/money";
+import { useAccounts } from "../utils/useAccounts";
+import { useSubmitLock } from "../utils/useSubmitLock";
+import { matchesBranch } from "../utils/branchFilter";
 import { exportToCSV, exportToPDF } from "../utils/exportUtils";
 import toast from "react-hot-toast";
-import { Plus, MessageCircle, CheckCircle, X, Trash2, Download, FileText, RefreshCw, Users, Pencil } from "lucide-react";
+import { Plus, MessageCircle, CheckCircle, X, Trash2, Download, FileText, RefreshCw, Users, Pencil, AlertTriangle } from "lucide-react";
 
 const DEFAULT_LINE_ITEMS = [{ description: "Tuition Fee", amount: "" }];
 const LINE_ITEM_PRESETS = ["Tuition Fee", "Registration Fee", "Exam Fee", "Transport Fee", "Custom"];
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+const emptyForm = () => ({ studentId: "", month: "", year: new Date().getFullYear(), dueDate: "", notes: "", directPayment: false, directAccountId: "" });
+
+// Money received so far / still owed on one invoice, in exact paisa maths.
+// Legacy "paid" invoices that carry no paidAmount count as fully collected.
+const invoiceCollected = (i) => {
+  const paid = Number(i.paidAmount);
+  if (Number.isFinite(paid) && toMinor(paid) > 0) return round2(paid);
+  return i.status === "paid" ? Math.max(0, subMoney(i.amount || 0, i.concessionAmount || 0)) : 0;
+};
+const invoiceOutstanding = (i) => {
+  if (i.status === "paid") return 0;
+  return Math.max(0, subMoney(subMoney(i.amount || 0, invoiceCollected(i)), i.concessionAmount || 0));
+};
 
 function useIsMobile() {
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
@@ -30,24 +50,28 @@ function useIsMobile() {
 }
 
 export default function Fees() {
-  const { branches, activeBranch } = useBranch();
+  const { activeBranch } = useBranch();
   const isMobile = useIsMobile();
   const [invoices, setInvoices] = useState([]);
   const [students, setStudents] = useState([]);
-  const [accounts, setAccounts] = useState([]);
+  const { accounts, postable, problem: accountsProblem, status: accountsStatus } = useAccounts();
   const [payModal, setPayModal] = useState(null);
   const [payAccount, setPayAccount] = useState("");
-  const [payDate, setPayDate] = useState(new Date().toISOString().slice(0, 10));
+  const [payDate, setPayDate] = useState(todayLocal());
   const [payAmount, setPayAmount] = useState("");
   const [alreadyPaid, setAlreadyPaid] = useState(0);
+  const [lookupError, setLookupError] = useState(false);
   const [concession, setConcession] = useState(false);
   const [concessionNote, setConcessionNote] = useState("");
-  const [submitting, setSubmitting] = useState(false);
+  const [postModal, setPostModal] = useState(null); // unposted invoice being posted to the books
+  const [postAccount, setPostAccount] = useState("");
+  const { busy: submitting, run: runSubmit } = useSubmitLock();
+  const { busy: bulkLocked, run: runBulkAction } = useSubmitLock();
   const [showModal, setShowModal] = useState(false);
   const [showBulk, setShowBulk] = useState(false);
   const [showRecurring, setShowRecurring] = useState(false);
   const [selectedInvoice, setSelectedInvoice] = useState(null);
-  const [form, setForm] = useState({ studentId: "", month: "", year: new Date().getFullYear(), dueDate: "", notes: "", directPayment: false });
+  const [form, setForm] = useState(emptyForm());
   const [lineItems, setLineItems] = useState(DEFAULT_LINE_ITEMS);
   const [filterStatus, setFilterStatus] = useState("");
   const [filterMonth, setFilterMonth] = useState("");
@@ -58,13 +82,14 @@ export default function Fees() {
   const [bulkMonth, setBulkMonth] = useState("");
   const [bulkYear, setBulkYear] = useState(new Date().getFullYear());
   const [bulkDueDate, setBulkDueDate] = useState("");
+  const [bulkReceiveAccount, setBulkReceiveAccount] = useState("");
   const [bulkStudents, setBulkStudents] = useState([]);
   const [recurringMonth, setRecurringMonth] = useState(MONTHS[new Date().getMonth()]);
   const [recurringYear, setRecurringYear] = useState(new Date().getFullYear());
   const [showBulkEdit, setShowBulkEdit] = useState(false);
   const [bulkPayModal, setBulkPayModal] = useState(false);
   const [bulkPayAccount, setBulkPayAccount] = useState("");
-  const [bulkPayDate, setBulkPayDate] = useState(new Date().toISOString().slice(0, 10));
+  const [bulkPayDate, setBulkPayDate] = useState(todayLocal());
   const [bulkPayWhatsApp, setBulkPayWhatsApp] = useState(false);
   const [bulkBusy, setBulkBusy] = useState(false);
 
@@ -75,21 +100,25 @@ export default function Fees() {
     const u2 = onSnapshot(collection(db, "students"), snap => {
       const s = snap.docs.map(d => ({ id: d.id, ...d.data() }));
       setStudents(s);
-      setBulkStudents(s.map(st => ({ ...st, selected: false, amount: st.monthlyFee || "", paid: false })));
+      // Keep ticks and typed amounts when a student record changes elsewhere.
+      setBulkStudents(prev => s.map(st => {
+        const old = prev.find(p => p.id === st.id);
+        return old
+          ? { ...st, selected: old.selected, amount: old.amount, paid: old.paid }
+          : { ...st, selected: false, amount: st.monthlyFee || "", paid: false };
+      }));
     });
-    const u3 = onSnapshot(collection(db, "accounts"), snap =>
-      setAccounts(snap.docs.map(d => ({ id: d.id, ...d.data() })))
-    );
-    return () => { u1(); u2(); u3(); };
+    return () => { u1(); u2(); };
   }, []);
 
-  const payAccounts = bankCashAccounts(accounts);
+  // The account to pre-select: a remembered one, or the only one. Never an arbitrary pick.
+  const defaultAccountId = () => pickDefaultAccountId(postable);
 
   useEffect(() => { setPage(1); }, [filterStatus, filterMonth, filterBranch, filterStudent, pageSize, activeBranch]);
 
   const filtered = invoices.filter(inv => {
-    const matchBranch = (activeBranch === "all" || inv.branchId === activeBranch) && (!filterBranch || inv.branchId === filterBranch);
-    const matchStatus = !filterStatus || inv.status === filterStatus;
+    const matchBranch = matchesBranch(inv, activeBranch) && (!filterBranch || inv.branchId === filterBranch);
+    const matchStatus = !filterStatus || (filterStatus === "unposted" ? needsPosting(inv) : inv.status === filterStatus);
     const matchMonth = !filterMonth || inv.month === filterMonth;
     const matchStudent = !filterStudent || inv.studentName?.toLowerCase().includes(filterStudent.toLowerCase());
     return matchBranch && matchStatus && matchMonth && matchStudent;
@@ -115,191 +144,216 @@ export default function Fees() {
   // currently-visible/filtered invoices)
   const bulk = useBulkSelect(filtered.map(inv => inv.id));
   const pagedIds = paged.map(inv => inv.id);
-  const totalAmount = lineItems.reduce((s, i) => s + Number(i.amount || 0), 0);
-  const totalCollected = filtered.filter(i => i.status === "paid").reduce((s, i) => s + Number(i.amount), 0);
-  const totalPending = filtered.filter(i => i.status === "pending").reduce((s, i) => s + Number(i.amount), 0);
+  const totalAmount = sumMoney(lineItems.map(i => i.amount));
+  const totalCollected = sumMoney(filtered.map(invoiceCollected));
+  const totalPending = sumMoney(filtered.map(invoiceOutstanding));
+  const unpostedCount = filtered.filter(needsPosting).length;
 
   const addLineItem = () => setLineItems(p => [...p, { description: "", amount: "" }]);
   const removeLineItem = (idx) => setLineItems(p => p.filter((_, i) => i !== idx));
   const updateLineItem = (idx, field, value) => setLineItems(p => p.map((item, i) => i === idx ? { ...item, [field]: value } : item));
 
-  const handleCreate = async (e) => {
+  // Validate and normalise line items: every amount a positive money value.
+  const cleanLineItems = () => {
+    const out = [];
+    for (const li of lineItems) {
+      const a = parsePositiveAmount(li.amount, `${li.description || "Line item"} amount`);
+      if (!a.ok) return { error: a.error };
+      out.push({ ...li, amount: a.value });
+    }
+    if (out.length === 0) return { error: "Add at least one line item" };
+    return { items: out, total: sumMoney(out.map(i => i.amount)) };
+  };
+
+  const openCreate = () => {
+    setForm({ ...emptyForm(), directAccountId: defaultAccountId() });
+    setLineItems(DEFAULT_LINE_ITEMS);
+    setShowModal(true);
+  };
+
+  const handleCreate = (e) => {
     e.preventDefault();
-    if (submitting) return; // block double-submit
-    const student = students.find(s => s.id === form.studentId);
-    if (!student) return toast.error("Student not found");
-    setSubmitting(true);
-    try {
-      const amount = lineItems.reduce((s, i) => s + Number(i.amount || 0), 0);
-      const status = form.directPayment ? "paid" : "pending";
-      const invRef = await addDoc(collection(db, "invoices"), {
-        ...form, studentName: student.name, parentPhone: student.parentPhone,
-        branchId: student.branchId, status, amount, lineItems,
-        paidAmount: form.directPayment ? amount : 0,
-        paidDate: form.directPayment ? new Date().toISOString().slice(0, 10) : null,
-        createdAt: serverTimestamp()
-      });
-      // If receiving payment now, also post it to the ledger so bank
-      // balances stay correct (uses the first available account, or
-      // records without an account if none exist yet).
-      if (form.directPayment) {
-        const acct = payAccounts[0]?.name;
-        if (acct) {
-          await recordPayment({
-            type: "cash_in", account: acct, amount,
-            category: "Fee Collection",
-            description: `Fee — ${student.name} (${form.month || ""})`,
-            reference: invRef.id, branchId: student.branchId || "",
-            source: "invoice", sourceId: invRef.id,
+    return runSubmit(async () => {
+      const student = students.find(s => s.id === form.studentId);
+      if (!student) return toast.error("Student not found");
+      const lines = cleanLineItems();
+      if (lines.error) return toast.error(lines.error);
+      try {
+        const invoiceData = {
+          studentId: student.id, studentName: student.name, parentPhone: student.parentPhone,
+          branchId: student.branchId, month: form.month, year: form.year,
+          dueDate: form.dueDate, notes: form.notes, lineItems: lines.items, amount: lines.total,
+        };
+        if (form.directPayment) {
+          if (!form.directAccountId) return toast.error("Choose the account that received the money");
+          // One shared path: creates the invoice, posts the cash_in, marks it paid.
+          await createInvoiceAndCollect({ invoiceData, accounts, accountId: form.directAccountId, date: todayLocal() });
+          rememberAccountChoice(form.directAccountId);
+          if (student.parentPhone) {
+            await sendWhatsAppMessage(student.parentPhone, `✅ Fee payment of Rs. ${lines.total} received for ${student.name} for ${form.month}. Thank you!`);
+          }
+        } else {
+          await addDoc(collection(db, "invoices"), {
+            ...invoiceData, status: "pending", paidAmount: 0, paidDate: null, createdAt: serverTimestamp(),
           });
         }
-        if (student.parentPhone) {
-          await sendWhatsAppMessage(student.parentPhone, `✅ Fee payment of Rs. ${amount} received for ${student.name} for ${form.month}. Thank you!`);
+        toast.success(form.directPayment ? "Payment received!" : "Invoice created");
+        logActivity(form.directPayment ? "collected" : "created", "Invoices", `Invoice ${student.name} — ${form.month} ${form.year} · Rs. ${formatMoney(lines.total)}${form.directPayment ? " (paid on the spot)" : ""}`);
+        setShowModal(false);
+        setForm(emptyForm());
+        setLineItems(DEFAULT_LINE_ITEMS);
+      } catch (err) {
+        toast.error(err?.message || "Error creating invoice", { duration: 7000 });
+      }
+    });
+  };
+
+  const handleBulkReceive = (e) => {
+    e.preventDefault();
+    return runSubmit(async () => {
+      const selected = bulkStudents.filter(s => s.selected);
+      if (selected.length === 0) return toast.error("Select at least one student");
+      if (!bulkMonth) return toast.error("Choose the month");
+      const paidRows = selected.filter(s => s.paid);
+      if (paidRows.length > 0 && !bulkReceiveAccount) return toast.error("Choose the account that received the money for the rows marked Paid");
+      // validate everything before writing anything
+      for (const s of selected) {
+        const a = parsePositiveAmount(s.amount, `Amount for ${s.name}`);
+        if (!a.ok) return toast.error(a.error);
+      }
+      const exists = (s) => invoices.some(i => i.studentId === s.id && i.month === bulkMonth && Number(i.year) === Number(bulkYear));
+      let count = 0, skipped = 0;
+      const failures = [];
+      for (const s of selected) {
+        if (exists(s)) { skipped++; continue; }
+        try {
+          const amount = round2(s.amount);
+          const invoiceData = {
+            studentId: s.id, studentName: s.name, parentPhone: s.parentPhone,
+            branchId: s.branchId, amount, month: bulkMonth, year: bulkYear,
+            dueDate: bulkDueDate,
+            lineItems: [{ description: "Tuition Fee", amount }],
+          };
+          if (s.paid) {
+            await createInvoiceAndCollect({ invoiceData, accounts, accountId: bulkReceiveAccount, date: todayLocal() });
+            if (s.parentPhone) {
+              await sendWhatsAppMessage(s.parentPhone, `✅ Fee of Rs. ${amount} received for ${s.name} — ${bulkMonth} ${bulkYear}. Thank you!`);
+            }
+          } else {
+            await addDoc(collection(db, "invoices"), {
+              ...invoiceData, status: "pending", paidAmount: 0, paidDate: null, createdAt: serverTimestamp(),
+            });
+          }
+          count++;
+        } catch (err) {
+          failures.push(`${s.name}: ${err?.message || "failed"}`);
         }
       }
-      toast.success(form.directPayment ? "Payment received!" : "Invoice created");
-      logActivity(form.directPayment ? "collected" : "created", "Invoices", `Invoice ${student.name} — ${form.month} ${form.year} · Rs. ${Number(amount).toLocaleString()}${form.directPayment ? " (paid on the spot)" : ""}`);
-      setShowModal(false);
-      setForm({ studentId: "", month: "", year: new Date().getFullYear(), dueDate: "", notes: "", directPayment: false });
-      setLineItems(DEFAULT_LINE_ITEMS);
-    } catch (err) {
-      toast.error(err?.message || "Error creating invoice");
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  const handleBulkReceive = async (e) => {
-    e.preventDefault();
-    const selected = bulkStudents.filter(s => s.selected);
-    if (selected.length === 0) return toast.error("Select at least one student");
-    let count = 0;
-    for (const s of selected) {
-      await addDoc(collection(db, "invoices"), {
-        studentId: s.id, studentName: s.name, parentPhone: s.parentPhone,
-        branchId: s.branchId, status: s.paid ? "paid" : "pending",
-        amount: Number(s.amount), month: bulkMonth, year: bulkYear,
-        dueDate: bulkDueDate,
-        lineItems: [{ description: "Tuition Fee", amount: s.amount }],
-        paidDate: s.paid ? serverTimestamp() : null,
-        createdAt: serverTimestamp()
-      });
-      if (s.paid && s.parentPhone) {
-        await sendWhatsAppMessage(s.parentPhone, `✅ Fee of Rs. ${s.amount} received for ${s.name} — ${bulkMonth} ${bulkYear}. Thank you!`);
+      if (paidRows.length > 0) rememberAccountChoice(bulkReceiveAccount);
+      const parts = [`${count} invoice${count === 1 ? "" : "s"} created`];
+      if (skipped) parts.push(`${skipped} skipped (already exist for ${bulkMonth} ${bulkYear})`);
+      if (failures.length) {
+        toast.error(`${parts.join(", ")}. ${failures.length} failed: ${failures.slice(0, 3).join("; ")}${failures.length > 3 ? "…" : ""}`, { duration: 9000 });
+      } else {
+        toast.success(parts.join(", "));
       }
-      count++;
-    }
-    toast.success(`${count} invoices created`);
-    logActivity("created", "Invoices", `${count} invoices — ${bulkMonth} ${bulkYear} (bulk)`);
-    setShowBulk(false);
+      if (count > 0) logActivity("created", "Invoices", `${count} invoices — ${bulkMonth} ${bulkYear} (bulk)`);
+      if (failures.length === 0) setShowBulk(false);
+    });
   };
 
-  const handleGenerateRecurring = async () => {
+  const handleGenerateRecurring = () => runSubmit(async () => {
     const recurringStudents = students.filter(s => s.recurringFee);
     if (recurringStudents.length === 0) return toast.error("No students have auto-recurring fees enabled");
     const existing = invoices.filter(i => i.month === recurringMonth && Number(i.year) === Number(recurringYear));
     const existingIds = new Set(existing.map(i => i.studentId));
-    let count = 0;
-    for (const s of recurringStudents) {
-      if (existingIds.has(s.id)) continue;
-      await addDoc(collection(db, "invoices"), {
-        studentId: s.id, studentName: s.name, parentPhone: s.parentPhone,
-        branchId: s.branchId, status: "pending", amount: Number(s.monthlyFee),
-        month: recurringMonth, year: recurringYear,
-        lineItems: [{ description: "Tuition Fee", amount: s.monthlyFee }],
-        createdAt: serverTimestamp()
-      });
-      count++;
+    let count = 0, noFee = 0;
+    try {
+      for (const s of recurringStudents) {
+        if (existingIds.has(s.id)) continue;
+        const fee = parsePositiveAmount(s.monthlyFee);
+        if (!fee.ok) { noFee++; continue; } // never create a NaN / zero invoice
+        await addDoc(collection(db, "invoices"), {
+          studentId: s.id, studentName: s.name, parentPhone: s.parentPhone,
+          branchId: s.branchId, status: "pending", amount: fee.value, paidAmount: 0, paidDate: null,
+          month: recurringMonth, year: recurringYear,
+          lineItems: [{ description: "Tuition Fee", amount: fee.value }],
+          createdAt: serverTimestamp()
+        });
+        count++;
+      }
+    } catch (err) {
+      toast.error(`${count} generated before an error: ${err?.message || "failed"}`, { duration: 8000 });
+      return;
     }
-    toast.success(count > 0 ? `Generated ${count} invoices` : "All invoices already exist for this month");
+    toast.success((count > 0 ? `Generated ${count} invoices` : "All invoices already exist for this month") + (noFee ? ` (${noFee} students skipped: no monthly fee set)` : ""));
     if (count > 0) logActivity("generated", "Invoices", `${count} recurring invoices — ${recurringMonth} ${recurringYear}`);
     setShowRecurring(false);
-  };
+  });
 
   const markPaid = async (inv) => {
     setPayModal(inv);
-    setPayAccount(payAccounts[0]?.name || "");
-    setPayDate(new Date().toISOString().slice(0, 10));
+    setPayAccount(defaultAccountId());
+    setPayDate(todayLocal());
+    setConcession(false); setConcessionNote("");
+    setLookupError(false);
+    setAlreadyPaid(0);
+    setPayAmount("");
     // Look up how much has already been received for this invoice.
     try {
       const paid = await getSourcePaidTotal("invoice", inv.id);
       setAlreadyPaid(paid);
-      const remaining = Math.max(0, Number(inv.amount || 0) - paid);
+      const remaining = Math.max(0, subMoney(subMoney(inv.amount || 0, paid), inv.concessionAmount || 0));
       setPayAmount(String(remaining));
     } catch {
-      setAlreadyPaid(0);
-      setPayAmount(String(inv.amount || ""));
+      // Do NOT assume nothing was paid: that would suggest the full fee again.
+      setLookupError(true);
     }
   };
 
-  const confirmPay = async () => {
-    if (submitting) return;
+  const confirmPay = () => runSubmit(async () => {
+    if (lookupError) return toast.error("Could not read what was already paid. Close and reopen this window.");
     if (!payAccount) return toast.error("Select the account that received payment");
-    const amt = Number(payAmount);
-    if (amt < 0) return toast.error("Enter a valid amount");
-    const total = Number(payModal.amount || 0);
-    const newPaid = alreadyPaid + amt;
-    const remainingAfter = total - newPaid;
-
-    // Concession closes out the remaining balance as "forgiven".
-    const concessionAmt = concession ? Math.max(0, remainingAfter) : 0;
-
-    if (newPaid - total > 0.001) return toast.error(`That exceeds the balance. Remaining is Rs. ${(total - alreadyPaid).toLocaleString()}`);
-    if (amt === 0 && !concession) return toast.error("Enter an amount or mark the balance as concession");
-
-    setSubmitting(true);
+    const current = invoices.find(i => i.id === payModal.id) || payModal;
     try {
-      // Only record a real payment if money actually changed hands.
-      if (amt > 0) {
-        await recordPayment({
-          type: "cash_in",
-          account: payAccount,
-          amount: amt,
-          category: "Fee Collection",
-          description: `Fee — ${payModal.studentName || "student"} (${payModal.month || ""})`,
-          reference: payModal.id,
-          branchId: payModal.branchId || "",
-          date: payDate,
-          source: "invoice",
-          sourceId: payModal.id,
-        });
-      }
-
-      // Status: paid if money + concession covers the invoice, else partial.
-      const covered = newPaid + concessionAmt + 0.001 >= total;
-      const status = covered ? "paid" : "partial";
-
-      const existingConcession = Number(payModal.concessionAmount || 0);
-      await updateDoc(doc(db, "invoices", payModal.id), {
-        status,
-        paidAmount: newPaid,
-        paidDate: payDate,
-        paidAccount: payAccount,
-        concessionAmount: existingConcession + concessionAmt,
-        concessionNote: concession ? (concessionNote || "Concession") : (payModal.concessionNote || ""),
+      // The shared helper re-reads the ledger, validates, posts and updates.
+      const res = await collectInvoicePayment({
+        invoice: current, accounts, accountId: payAccount, amount: payAmount === "" ? 0 : payAmount,
+        date: payDate, concession, concessionNote,
       });
-
-      const student = students.find(s => s.id === payModal.studentId);
+      rememberAccountChoice(payAccount);
+      const student = students.find(s => s.id === current.studentId);
       if (student?.parentPhone) {
         let msg;
-        if (status === "paid" && concessionAmt > 0)
-          msg = `✅ Fee settled for ${student.name} (${payModal.month}). Paid Rs. ${amt.toLocaleString()}${concessionAmt > 0 ? `, concession Rs. ${concessionAmt.toLocaleString()}` : ""}. Thank you!`;
-        else if (status === "paid")
-          msg = `✅ Fee fully paid for ${student.name} (${payModal.month}). Thank you!`;
+        if (res.status === "paid" && res.concessionAdded > 0)
+          msg = `✅ Fee settled for ${student.name} (${current.month}). Paid Rs. ${formatMoney(res.cash)}, concession Rs. ${formatMoney(res.concessionAdded)}. Thank you!`;
+        else if (res.status === "paid")
+          msg = `✅ Fee fully paid for ${student.name} (${current.month}). Thank you!`;
         else
-          msg = `✅ Part payment of Rs. ${amt.toLocaleString()} received for ${student.name} (${payModal.month}). Balance: Rs. ${(total - newPaid).toLocaleString()}.`;
+          msg = `✅ Part payment of Rs. ${formatMoney(res.cash)} received for ${student.name} (${current.month}). Balance: Rs. ${formatMoney(res.balance)}.`;
         await sendWhatsAppMessage(student.parentPhone, msg);
       }
-      toast.success(concessionAmt > 0 ? "Recorded with concession" : status === "paid" ? "Payment recorded — fully paid" : "Partial payment recorded");
-      logActivity("collected", "Fees", `Rs. ${amt.toLocaleString()} from ${payModal.studentName || "student"} (${payModal.month || ""}) into ${payAccount}${concessionAmt > 0 ? ` + concession Rs. ${concessionAmt.toLocaleString()}` : ""}`);
+      toast.success(res.concessionAdded > 0 ? "Recorded with concession" : res.status === "paid" ? "Payment recorded — fully paid" : "Partial payment recorded");
+      logActivity(res.cash > 0 ? "collected" : "concession", "Fees", `Rs. ${formatMoney(res.cash)} from ${current.studentName || "student"} (${current.month || ""}) into ${res.accountName || "no account (concession only)"}${res.concessionAdded > 0 ? ` + concession Rs. ${formatMoney(res.concessionAdded)}${concessionNote ? ` (${concessionNote})` : ""}` : ""}`);
       setPayModal(null); setPayAccount(""); setPayAmount("");
       setConcession(false); setConcessionNote("");
     } catch (e) {
-      toast.error(e?.message || "Error recording payment");
-    } finally {
-      setSubmitting(false);
+      toast.error(e?.message || "Error recording payment", { duration: 7000 });
     }
-  };
+  });
+
+  const confirmPostUnposted = () => runSubmit(async () => {
+    if (!postAccount) return toast.error("Select the account that holds this money");
+    try {
+      const res = await postUnpostedInvoice({ invoice: postModal, accounts, accountId: postAccount });
+      rememberAccountChoice(postAccount);
+      toast.success(`Rs. ${formatMoney(res.cash)} posted to the books`);
+      logActivity("posted", "Fees", `Unposted receipt for ${postModal.studentName || "student"} (${postModal.month || ""}) · Rs. ${formatMoney(res.cash)}`);
+      setPostModal(null); setPostAccount("");
+    } catch (e) {
+      toast.error(e?.message || "Could not post to the books", { duration: 7000 });
+    }
+  });
 
   const sendReminder = async (inv) => {
     const student = students.find(s => s.id === inv.studentId);
@@ -311,13 +365,13 @@ export default function Fees() {
   };
 
   const handleDelete = async (inv) => {
-    if (!window.confirm("Delete this invoice? Any recorded payments for it will be reversed. You can restore it from Trash.")) return;
+    if (!window.confirm("Delete this invoice? Any recorded payments for it will be reversed. You can restore it from Trash (the payments are re-posted on restore).")) return;
     try {
       // Reverse any money posted for this invoice so balances don't drift.
       await reverseSourcePayments("invoice", inv.id);
       await deleteDoc(doc(db, "invoices", inv.id));
       toast.success("Invoice deleted");
-      logActivity("deleted", "Invoices", `Invoice ${inv.studentName} — ${inv.month} ${inv.year} · Rs. ${Number(inv.amount || 0).toLocaleString()}`);
+      logActivity("deleted", "Invoices", `Invoice ${inv.studentName} — ${inv.month} ${inv.year} · Rs. ${formatMoney(inv.amount || 0)}`);
     } catch (err) { toast.error(err?.message || "Error deleting"); }
   };
 
@@ -344,6 +398,9 @@ export default function Fees() {
     } finally { setBulkBusy(false); }
   };
 
+  // NOTE: "status" is deliberately not editable in bulk any more. A status
+  // of paid/partial must come from a real payment (Mark Paid), otherwise the
+  // invoice says paid while no money is in the books (ACC-01).
   const handleBulkEditApply = async (changes) => {
     setBulkBusy(true);
     try {
@@ -358,45 +415,33 @@ export default function Fees() {
     } finally { setBulkBusy(false); }
   };
 
-  const handleBulkMarkPaid = async () => {
+  const handleBulkMarkPaid = () => runBulkAction(async () => {
     if (!bulkPayAccount) return toast.error("Select the account that received payment");
-    const targets = selectedInvoices().filter(i => i.status !== "paid");
-    if (targets.length === 0) { setBulkPayModal(false); return toast("All selected invoices are already paid"); }
+    const targets = selectedInvoices().filter(i => i.status !== "paid" && !needsPosting(i));
+    if (targets.length === 0) { setBulkPayModal(false); return toast("Nothing to collect: selected invoices are already paid or unposted"); }
     setBulkBusy(true);
     const t = toast.loading(`Recording payments 0/${targets.length}…`);
     try {
       const { ok, failed } = await runBulk(targets, async (inv) => {
-        // Same flow as the single "Mark Paid": look up what's already
-        // been received, collect the remainder into the chosen
-        // account, then stamp the invoice paid.
-        const already = await getSourcePaidTotal("invoice", inv.id);
-        const total = Number(inv.amount || 0);
-        const remaining = Math.max(0, total - already);
-        if (remaining > 0) {
-          await recordPayment({
-            type: "cash_in", account: bulkPayAccount, amount: remaining,
-            category: "Fee Collection",
-            description: `Fee — ${inv.studentName || "student"} (${inv.month || ""})`,
-            reference: inv.id, branchId: inv.branchId || "", date: bulkPayDate,
-            source: "invoice", sourceId: inv.id,
-          });
-        }
-        await updateDoc(doc(db, "invoices", inv.id), {
-          status: "paid", paidAmount: already + remaining,
-          paidDate: bulkPayDate, paidAccount: bulkPayAccount,
+        // Same shared helper as the single "Mark Paid": it reads the ledger,
+        // collects the remainder into the chosen account and stamps the invoice.
+        const res = await collectInvoicePayment({
+          invoice: inv, accounts, accountId: bulkPayAccount, collectRemaining: true, date: bulkPayDate,
         });
-        if (bulkPayWhatsApp && inv.parentPhone && remaining > 0) {
-          await sendWhatsAppMessage(inv.parentPhone, `✅ Fee of Rs. ${remaining.toLocaleString()} received for ${inv.studentName} (${inv.month || ""}). Thank you!`);
+        if (bulkPayWhatsApp && inv.parentPhone && res.cash > 0) {
+          await sendWhatsAppMessage(inv.parentPhone, `✅ Fee of Rs. ${formatMoney(res.cash)} received for ${inv.studentName} (${inv.month || ""}). Thank you!`);
         }
       }, { chunkSize: 3, onProgress: (d, tot) => toast.loading(`Recording payments ${d}/${tot}…`, { id: t }) });
-      toast[failed.length ? "error" : "success"](bulkResultMessage(ok.length, failed.length, "marked paid", "invoices"), { id: t });
-      if (ok.length) logActivity("collected", "Fees", `${ok.length} invoices marked paid into ${bulkPayAccount} (bulk)`);
+      rememberAccountChoice(bulkPayAccount);
+      const firstErr = failed[0]?.error?.message;
+      toast[failed.length ? "error" : "success"](bulkResultMessage(ok.length, failed.length, "marked paid", "invoices") + (firstErr ? ` (${firstErr})` : ""), { id: t, duration: failed.length ? 8000 : 4000 });
+      if (ok.length) logActivity("collected", "Fees", `${ok.length} invoices marked paid into ${accounts.find(a => a.id === bulkPayAccount)?.name || "account"} (bulk)`);
       setBulkPayModal(false);
       bulk.clear();
     } catch (err) {
       toast.error(err?.message || "Bulk payment failed", { id: t });
     } finally { setBulkBusy(false); }
-  };
+  });
 
   const handleCSV = () => exportToCSV("fees",
     ["Student", "Month", "Year", "Amount", "Status", "Due Date"],
@@ -434,7 +479,7 @@ export default function Fees() {
           )}
           <button onClick={() => setShowRecurring(true)} style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13 }}><RefreshCw size={14} />{!isMobile && " Recurring"}</button>
           <button onClick={() => setShowBulk(true)} style={{ display: "flex", alignItems: "center", gap: 5, padding: "9px 14px", background: "#2a8c7a", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600, fontSize: 13 }}><Users size={14} />{!isMobile && " Bulk"}</button>
-          <button onClick={() => { setForm({ studentId: "", month: "", year: new Date().getFullYear(), dueDate: "", notes: "", directPayment: false }); setLineItems(DEFAULT_LINE_ITEMS); setShowModal(true); }}
+          <button onClick={openCreate}
             style={{ display: "flex", alignItems: "center", gap: 5, padding: "9px 14px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600, fontSize: 13 }}>
             <Plus size={14} />{!isMobile && " New Invoice"}
           </button>
@@ -457,6 +502,13 @@ export default function Fees() {
         ))}
       </div>
 
+      {unpostedCount > 0 && (
+        <div style={{ display: "flex", gap: 8, alignItems: "center", background: "#fffbeb", border: "1px solid #fde68a", color: "#92400e", borderRadius: 10, padding: "9px 12px", fontSize: 13, marginBottom: 14 }}>
+          <AlertTriangle size={15} style={{ flexShrink: 0 }} />
+          <span>{unpostedCount} paid invoice{unpostedCount === 1 ? " is" : "s are"} not in the books (saved while no Bank &amp; Cash account was available). Use <strong>Post</strong> on each one.</span>
+        </div>
+      )}
+
       {/* Filters */}
       <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
         <input value={filterStudent} onChange={e => setFilterStudent(e.target.value)} placeholder="Search student..."
@@ -465,7 +517,9 @@ export default function Fees() {
           style={{ padding: "8px 10px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 13, background: "white" }}>
           <option value="">All</option>
           <option value="paid">Paid</option>
+          <option value="partial">Partial</option>
           <option value="pending">Pending</option>
+          <option value="unposted">Unposted (not in books)</option>
         </select>
         {!isMobile && (
           <select value={filterMonth} onChange={e => setFilterMonth(e.target.value)}
@@ -498,6 +552,7 @@ export default function Fees() {
                 <span style={{ padding: "4px 12px", borderRadius: 20, fontSize: 12, fontWeight: 600, background: inv.status === "paid" ? "#ecfdf5" : inv.status === "partial" ? "#eff6ff" : "#fffbeb", color: inv.status === "paid" ? "#10b981" : inv.status === "partial" ? "#2563eb" : "#f59e0b" }}>
                   {inv.status}{inv.status === "partial" && inv.paidAmount ? ` (Rs. ${Number(inv.paidAmount).toLocaleString()})` : ""}
                 </span>
+                {needsPosting(inv) && <span title={inv.unpostedReason || "Not posted to the books"} style={{ marginLeft: 6, padding: "4px 10px", borderRadius: 20, fontSize: 11, fontWeight: 700, background: "#fef3c7", color: "#b45309" }}>unposted</span>}
               </div>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
                 <div style={{ fontSize: 22, fontWeight: 700, color: "var(--primary)" }}>
@@ -511,7 +566,13 @@ export default function Fees() {
                 </div>
               )}
               <div style={{ display: "flex", gap: 8 }}>
-                {inv.status !== "paid" && (
+                {needsPosting(inv) && (
+                  <button onClick={() => { setPostModal(inv); setPostAccount(defaultAccountId()); }}
+                    style={{ flex: 1, border: "none", background: "#fef3c7", color: "#b45309", padding: "10px", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 700 }}>
+                    Post
+                  </button>
+                )}
+                {inv.status !== "paid" && !needsPosting(inv) && (
                   <button onClick={() => markPaid(inv)}
                     style={{ flex: 1, border: "none", background: "#ecfdf5", color: "#10b981", padding: "10px", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "center", gap: 4 }}>
                     <CheckCircle size={14} /> {inv.status === "partial" ? "Add Payment" : "Mark Paid"}
@@ -570,10 +631,14 @@ export default function Fees() {
                       <span style={{ padding: "3px 10px", borderRadius: 20, fontSize: 11, fontWeight: 600, background: inv.status === "paid" ? "#ecfdf5" : inv.status === "partial" ? "#eff6ff" : "#fffbeb", color: inv.status === "paid" ? "#10b981" : inv.status === "partial" ? "#2563eb" : "#f59e0b", whiteSpace: "nowrap" }}>
                         {inv.status}{inv.status === "partial" && inv.paidAmount ? ` · Rs.${Number(inv.paidAmount).toLocaleString()}` : ""}
                       </span>
+                      {needsPosting(inv) && <span title={inv.unpostedReason || "Not posted to the books"} style={{ marginLeft: 6, padding: "3px 9px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: "#fef3c7", color: "#b45309" }}>unposted</span>}
                     </td>
                     <td style={{ padding: "11px 14px" }}>
                       <div style={{ display: "flex", gap: 5 }}>
-                        {inv.status !== "paid" && (
+                        {needsPosting(inv) && (
+                          <button onClick={() => { setPostModal(inv); setPostAccount(defaultAccountId()); }} style={{ border: "none", background: "#fef3c7", color: "#b45309", padding: "5px 9px", borderRadius: 6, cursor: "pointer", fontSize: 11, fontWeight: 700 }}>Post</button>
+                        )}
+                        {inv.status !== "paid" && !needsPosting(inv) && (
                           <button onClick={() => markPaid(inv)} style={{ border: "none", background: "#ecfdf5", color: "#10b981", padding: "5px 9px", borderRadius: 6, cursor: "pointer", fontSize: 11, display: "flex", alignItems: "center", gap: 3 }}>
                             <CheckCircle size={12} /> {inv.status === "partial" ? "Add" : "Paid"}
                           </button>
@@ -607,7 +672,7 @@ export default function Fees() {
         onClear={bulk.clear}
         actions={[
           { label: "Edit", icon: Pencil, onClick: () => setShowBulkEdit(true) },
-          { label: "Mark Paid", icon: CheckCircle, variant: "success", onClick: () => { setBulkPayAccount(payAccounts[0]?.name || ""); setBulkPayDate(new Date().toISOString().slice(0, 10)); setBulkPayWhatsApp(false); setBulkPayModal(true); } },
+          { label: "Mark Paid", icon: CheckCircle, variant: "success", onClick: () => { setBulkPayAccount(defaultAccountId()); setBulkPayDate(todayLocal()); setBulkPayWhatsApp(false); setBulkPayModal(true); } },
           { label: "Delete", icon: Trash2, variant: "danger", onClick: handleBulkDelete },
         ]}
       />
@@ -623,15 +688,15 @@ export default function Fees() {
             { key: "dueDate", label: "Due Date", type: "date" },
             { key: "month", label: "Month", type: "select", options: MONTHS.map(m => ({ value: m, label: m })) },
             { key: "year", label: "Year", type: "number", placeholder: String(new Date().getFullYear()) },
-            { key: "status", label: "Status", type: "select", options: [{ value: "pending", label: "Pending" }, { value: "partial", label: "Partial" }, { value: "paid", label: "Paid" }], hint: "Changes the label only — no money is recorded or reversed. Use Mark Paid to receive payments." },
           ]}
         />
       )}
 
       {/* Bulk mark-paid modal */}
       {bulkPayModal && (() => {
-        const targets = selectedInvoices().filter(i => i.status !== "paid");
-        const approxOutstanding = targets.reduce((s, i) => s + Math.max(0, Number(i.amount || 0) - Number(i.paidAmount || 0)), 0);
+        const targets = selectedInvoices().filter(i => i.status !== "paid" && !needsPosting(i));
+        const approxOutstanding = sumMoney(targets.map(invoiceOutstanding));
+        const busyNow = bulkBusy || bulkLocked;
         return (
           <div onClick={(e) => { if (e.target === e.currentTarget && !bulkBusy) setBulkPayModal(false); }}
             style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: isMobile ? "flex-end" : "center", justifyContent: "center", zIndex: 1000, padding: isMobile ? 0 : 16 }}>
@@ -643,14 +708,18 @@ export default function Fees() {
               <div style={{ background: "#f8fafc", borderRadius: 10, padding: 14, marginBottom: 16, fontSize: 13, color: "var(--text-muted)" }}>
                 Each selected unpaid invoice will have its remaining balance collected into the account below and be marked <strong>paid</strong>.
                 {bulk.count > targets.length && <> Already-paid invoices in the selection are skipped.</>}
-                <div style={{ marginTop: 8, fontSize: 14, color: "#1e293b" }}>Outstanding (approx.): <strong>Rs. {approxOutstanding.toLocaleString()}</strong></div>
+                <div style={{ marginTop: 8, fontSize: 14, color: "#1e293b" }}>Outstanding (approx.): <strong>Rs. {formatMoney(approxOutstanding)}</strong></div>
               </div>
               <label style={{ display: "block", fontSize: 13, fontWeight: 600, marginBottom: 5 }}>Received into account *</label>
-              <select value={bulkPayAccount} onChange={e => setBulkPayAccount(e.target.value)}
-                style={{ width: "100%", padding: "10px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14, marginBottom: 12, background: "white" }}>
-                <option value="">Select account</option>
-                {payAccounts.map(a => <option key={a.id} value={a.name}>{a.name}</option>)}
-              </select>
+              {postable.length === 0 ? (
+                <div style={{ fontSize: 13, color: "#ef4444", marginBottom: 12 }}>{accountsStatus === "loading" ? "Loading accounts…" : accountsProblem}</div>
+              ) : (
+                <select value={bulkPayAccount} onChange={e => setBulkPayAccount(e.target.value)}
+                  style={{ width: "100%", padding: "10px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14, marginBottom: 12, background: "white" }}>
+                  <option value="">Select account</option>
+                  {postable.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+                </select>
+              )}
               <label style={{ display: "block", fontSize: 13, fontWeight: 600, marginBottom: 5 }}>Payment date</label>
               <input type="date" value={bulkPayDate} onChange={e => setBulkPayDate(e.target.value)}
                 style={{ width: "100%", padding: "10px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14, marginBottom: 12, boxSizing: "border-box" }} />
@@ -661,9 +730,9 @@ export default function Fees() {
               <div style={{ display: "flex", gap: 10 }}>
                 <button onClick={() => setBulkPayModal(false)} disabled={bulkBusy}
                   style={{ flex: 1, padding: "11px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", fontSize: 14, background: "white" }}>Cancel</button>
-                <button onClick={handleBulkMarkPaid} disabled={bulkBusy || targets.length === 0}
-                  style={{ flex: 2, padding: "11px", background: "#10b981", color: "white", border: "none", borderRadius: 8, cursor: bulkBusy ? "wait" : "pointer", fontWeight: 600, fontSize: 14, opacity: bulkBusy ? 0.7 : 1 }}>
-                  {bulkBusy ? "Recording…" : `Collect ${targets.length} Payment${targets.length === 1 ? "" : "s"}`}
+                <button onClick={handleBulkMarkPaid} disabled={busyNow || targets.length === 0 || postable.length === 0}
+                  style={{ flex: 2, padding: "11px", background: "#10b981", color: "white", border: "none", borderRadius: 8, cursor: busyNow ? "wait" : "pointer", fontWeight: 600, fontSize: 14, opacity: busyNow || postable.length === 0 ? 0.7 : 1 }}>
+                  {busyNow ? "Recording…" : `Collect ${targets.length} Payment${targets.length === 1 ? "" : "s"}`}
                 </button>
               </div>
             </div>
@@ -685,24 +754,27 @@ export default function Fees() {
               <div style={{ fontSize: 13, color: "var(--text-muted)" }}>{payModal.month} {payModal.year}</div>
               <div style={{ display: "flex", gap: 16, marginTop: 8 }}>
                 <div><div style={{ fontSize: 11, color: "var(--text-muted)" }}>Invoice</div><div style={{ fontWeight: 700 }}>Rs. {Number(payModal.amount || 0).toLocaleString()}</div></div>
-                <div><div style={{ fontSize: 11, color: "var(--text-muted)" }}>Already paid</div><div style={{ fontWeight: 700, color: "#10b981" }}>Rs. {alreadyPaid.toLocaleString()}</div></div>
-                <div><div style={{ fontSize: 11, color: "var(--text-muted)" }}>Balance</div><div style={{ fontWeight: 700, color: "var(--primary)" }}>Rs. {Math.max(0, Number(payModal.amount || 0) - alreadyPaid).toLocaleString()}</div></div>
+                <div><div style={{ fontSize: 11, color: "var(--text-muted)" }}>Already paid</div><div style={{ fontWeight: 700, color: "#10b981" }}>Rs. {formatMoney(alreadyPaid)}</div></div>
+                <div><div style={{ fontSize: 11, color: "var(--text-muted)" }}>Balance</div><div style={{ fontWeight: 700, color: "var(--primary)" }}>Rs. {formatMoney(Math.max(0, subMoney(subMoney(payModal.amount || 0, alreadyPaid), payModal.concessionAmount || 0)))}</div></div>
               </div>
             </div>
             <label style={{ display: "block", fontSize: 13, fontWeight: 600, marginBottom: 5 }}>Amount to pay now *</label>
-            <input type="number" value={payAmount} onChange={(e) => setPayAmount(e.target.value)}
+            {lookupError && (
+              <div style={{ fontSize: 13, color: "#ef4444", marginBottom: 10 }}>Could not read what has already been paid for this invoice, so payment is blocked. Close this window and try again.</div>
+            )}
+            <input type="number" min="0" step="0.01" value={payAmount} onChange={(e) => setPayAmount(e.target.value)}
               style={{ width: "100%", padding: "10px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14, marginBottom: 12, boxSizing: "border-box" }} />
 
             {/* Concession: forgive the remaining balance for non-profit tracking */}
             {(() => {
               const total = Number(payModal.amount || 0);
-              const remainingAfter = Math.max(0, total - alreadyPaid - Number(payAmount || 0));
+              const remainingAfter = Math.max(0, subMoney(subMoney(subMoney(total, alreadyPaid), payModal.concessionAmount || 0), Number(payAmount) || 0));
               return remainingAfter > 0 ? (
                 <div style={{ background: concession ? "#fffbeb" : "#f8fafc", border: "1px solid " + (concession ? "#fde68a" : "var(--border)"), borderRadius: 10, padding: 12, marginBottom: 12 }}>
                   <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
                     <input type="checkbox" checked={concession} onChange={(e) => setConcession(e.target.checked)} style={{ width: 18, height: 18 }} />
                     <div>
-                      <div style={{ fontSize: 13, fontWeight: 600 }}>Mark remaining Rs. {remainingAfter.toLocaleString()} as concession</div>
+                      <div style={{ fontSize: 13, fontWeight: 600 }}>Mark remaining Rs. {formatMoney(remainingAfter)} as concession</div>
                       <div style={{ fontSize: 11, color: "var(--text-muted)" }}>Closes the invoice; the unpaid amount is tracked as concession (waived).</div>
                     </div>
                   </label>
@@ -715,12 +787,13 @@ export default function Fees() {
             })()}
 
             <label style={{ display: "block", fontSize: 13, fontWeight: 600, marginBottom: 5 }}>Received into account *</label>
-            {payAccounts.length === 0 ? (
-              <div style={{ fontSize: 13, color: "#ef4444", marginBottom: 12 }}>No Bank &amp; Cash accounts yet. Add one in Chart of Accounts first.</div>
+            {postable.length === 0 ? (
+              <div style={{ fontSize: 13, color: "#ef4444", marginBottom: 12 }}>{accountsStatus === "loading" ? "Loading accounts…" : accountsProblem}</div>
             ) : (
               <select value={payAccount} onChange={(e) => setPayAccount(e.target.value)}
                 style={{ width: "100%", padding: "10px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14, marginBottom: 12 }}>
-                {payAccounts.map(a => <option key={a.id} value={a.name}>{a.name}</option>)}
+                <option value="">Select account</option>
+                {postable.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
               </select>
             )}
             <label style={{ display: "block", fontSize: 13, fontWeight: 600, marginBottom: 5 }}>Payment date</label>
@@ -728,10 +801,43 @@ export default function Fees() {
               style={{ width: "100%", padding: "10px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14, marginBottom: 18, boxSizing: "border-box" }} />
             <div style={{ display: "flex", gap: 10 }}>
               <button onClick={() => setPayModal(null)} style={{ flex: 1, padding: "11px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white" }}>Cancel</button>
-              <button onClick={confirmPay} disabled={payAccounts.length === 0 || submitting}
-                style={{ flex: 2, padding: "11px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: (payAccounts.length === 0 || submitting) ? "not-allowed" : "pointer", fontWeight: 600, opacity: (payAccounts.length === 0 || submitting) ? 0.6 : 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+              <button onClick={confirmPay} disabled={postable.length === 0 || submitting || lookupError}
+                style={{ flex: 2, padding: "11px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: (postable.length === 0 || submitting || lookupError) ? "not-allowed" : "pointer", fontWeight: 600, opacity: (postable.length === 0 || submitting || lookupError) ? 0.6 : 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
                 {submitting && <span style={{ width: 15, height: 15, border: "2px solid rgba(255,255,255,0.5)", borderTop: "2px solid white", borderRadius: "50%", animation: "spin 0.7s linear infinite" }} />}
                 {submitting ? "Saving..." : "Confirm Payment"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Post an unposted receipt to the books */}
+      {postModal && (
+        <div onClick={(e) => { if (e.target === e.currentTarget && !submitting) setPostModal(null); }}
+          style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 16 }}>
+          <div style={{ background: "white", borderRadius: 16, padding: 28, width: "100%", maxWidth: 420 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 14 }}>
+              <h3 style={{ fontSize: 17, fontWeight: 700 }}>Post receipt to the books</h3>
+              <button onClick={() => setPostModal(null)} disabled={submitting} style={{ border: "none", background: "none", cursor: "pointer" }}><X size={20} /></button>
+            </div>
+            <div style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 10, padding: 14, marginBottom: 16, fontSize: 13, color: "#92400e" }}>
+              <strong>{postModal.studentName}</strong> ({postModal.month} {postModal.year}) was marked paid, Rs. {formatMoney(postModal.paidAmount || postModal.amount || 0)}, but never posted to a Bank &amp; Cash account. Choose the account that actually holds this money.
+            </div>
+            <label style={{ display: "block", fontSize: 13, fontWeight: 600, marginBottom: 5 }}>Account *</label>
+            {postable.length === 0 ? (
+              <div style={{ fontSize: 13, color: "#ef4444", marginBottom: 12 }}>{accountsStatus === "loading" ? "Loading accounts…" : accountsProblem}</div>
+            ) : (
+              <select value={postAccount} onChange={(e) => setPostAccount(e.target.value)}
+                style={{ width: "100%", padding: "10px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14, marginBottom: 18 }}>
+                <option value="">Select account</option>
+                {postable.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+              </select>
+            )}
+            <div style={{ display: "flex", gap: 10 }}>
+              <button onClick={() => setPostModal(null)} disabled={submitting} style={{ flex: 1, padding: "11px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white" }}>Cancel</button>
+              <button onClick={confirmPostUnposted} disabled={submitting || postable.length === 0}
+                style={{ flex: 2, padding: "11px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: (submitting || postable.length === 0) ? "not-allowed" : "pointer", fontWeight: 600, opacity: (submitting || postable.length === 0) ? 0.6 : 1 }}>
+                {submitting ? "Posting..." : "Post to books"}
               </button>
             </div>
           </div>
@@ -784,6 +890,20 @@ export default function Fees() {
                   <div style={{ fontSize: 11, color: "var(--text-muted)" }}>WhatsApp receipt sent to parent automatically</div>
                 </div>
               </div>
+              {form.directPayment && (
+                <div style={{ marginBottom: 16 }}>
+                  <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 5 }}>Received into account *</label>
+                  {postable.length === 0 ? (
+                    <div style={{ fontSize: 13, color: "#ef4444" }}>{accountsStatus === "loading" ? "Loading accounts…" : accountsProblem}</div>
+                  ) : (
+                    <select value={form.directAccountId} onChange={e => setForm(p => ({ ...p, directAccountId: e.target.value }))} required
+                      style={{ width: "100%", padding: "10px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14 }}>
+                      <option value="">Select account</option>
+                      {postable.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+                    </select>
+                  )}
+                </div>
+              )}
 
               {/* Line Items */}
               <div style={{ marginBottom: 16 }}>
@@ -802,7 +922,7 @@ export default function Fees() {
                         <option value="">Select type</option>
                         {LINE_ITEM_PRESETS.map(p => <option key={p}>{p}</option>)}
                       </select>
-                      <input type="number" value={item.amount} onChange={e => updateLineItem(idx, "amount", e.target.value)} placeholder="0"
+                      <input type="number" min="0.01" step="0.01" value={item.amount} onChange={e => updateLineItem(idx, "amount", e.target.value)} placeholder="0"
                         style={{ padding: "8px 10px", border: "1px solid var(--border)", borderRadius: 6, fontSize: 14, width: 100 }} />
                       {lineItems.length > 1 && (
                         <button type="button" onClick={() => removeLineItem(idx)} style={{ border: "none", background: "none", cursor: "pointer", color: "#ef4444" }}><Trash2 size={14} /></button>
@@ -810,7 +930,7 @@ export default function Fees() {
                     </div>
                   ))}
                   <div style={{ display: "flex", justifyContent: "flex-end", padding: "10px 12px", background: "#f8fafc" }}>
-                    <strong style={{ fontSize: 15 }}>Total: Rs. {totalAmount.toLocaleString()}</strong>
+                    <strong style={{ fontSize: 15 }}>Total: Rs. {formatMoney(totalAmount)}</strong>
                   </div>
                 </div>
               </div>
@@ -818,8 +938,8 @@ export default function Fees() {
               <div style={{ display: "flex", gap: 10 }}>
                 <button type="button" onClick={() => setShowModal(false)}
                   style={{ flex: 1, padding: "11px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", fontSize: 14 }}>Cancel</button>
-                <button type="submit" disabled={submitting}
-                  style={{ flex: 2, padding: "11px", background: form.directPayment ? "#10b981" : "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: submitting ? "not-allowed" : "pointer", fontWeight: 600, fontSize: 14, opacity: submitting ? 0.7 : 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+                <button type="submit" disabled={submitting || (form.directPayment && postable.length === 0)}
+                  style={{ flex: 2, padding: "11px", background: form.directPayment ? "#10b981" : "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: (submitting || (form.directPayment && postable.length === 0)) ? "not-allowed" : "pointer", fontWeight: 600, fontSize: 14, opacity: (submitting || (form.directPayment && postable.length === 0)) ? 0.7 : 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
                   {submitting && <span style={{ width: 15, height: 15, border: "2px solid rgba(255,255,255,0.5)", borderTop: "2px solid white", borderRadius: "50%", display: "inline-block", animation: "spin 0.7s linear infinite" }} />}
                   {submitting ? "Saving..." : (form.directPayment ? "Receive Payment" : "Create Invoice")}
                 </button>
@@ -867,6 +987,21 @@ export default function Fees() {
                 <span style={{ fontSize: 13, color: "var(--text-muted)" }}>{bulkStudents.filter(s => s.selected).length} selected</span>
               </div>
 
+              {bulkStudents.some(s => s.selected && s.paid) && (
+                <div style={{ marginBottom: 12 }}>
+                  <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 5 }}>Rows ticked Paid were received into *</label>
+                  {postable.length === 0 ? (
+                    <div style={{ fontSize: 13, color: "#ef4444" }}>{accountsStatus === "loading" ? "Loading accounts…" : accountsProblem}</div>
+                  ) : (
+                    <select value={bulkReceiveAccount} onChange={e => setBulkReceiveAccount(e.target.value)}
+                      style={{ width: "100%", padding: "10px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14 }}>
+                      <option value="">Select account</option>
+                      {postable.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+                    </select>
+                  )}
+                </div>
+              )}
+
               <div style={{ border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden", marginBottom: 16, maxHeight: 320, overflowY: "auto" }}>
                 {bulkStudents.map((s, idx) => (
                   <div key={s.id} style={{ display: "grid", gridTemplateColumns: "36px 1fr auto auto", padding: "10px 12px", borderBottom: "1px solid var(--border)", gap: 10, alignItems: "center", background: s.selected ? "#fef9f9" : "white" }}>
@@ -877,7 +1012,7 @@ export default function Fees() {
                       <div style={{ fontSize: 14, fontWeight: 500 }}>{s.name}</div>
                       <div style={{ fontSize: 11, color: "var(--text-muted)" }}>{s.grade}</div>
                     </div>
-                    <input type="number" value={s.amount}
+                    <input type="number" min="0.01" step="0.01" value={s.amount}
                       onChange={e => setBulkStudents(p => p.map((st, i) => i === idx ? { ...st, amount: e.target.value } : st))}
                       style={{ padding: "6px 8px", border: "1px solid var(--border)", borderRadius: 6, fontSize: 13, width: 90 }}
                       placeholder="Amount" />
@@ -894,9 +1029,9 @@ export default function Fees() {
               <div style={{ display: "flex", gap: 10 }}>
                 <button type="button" onClick={() => setShowBulk(false)}
                   style={{ flex: 1, padding: "11px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", fontSize: 14 }}>Cancel</button>
-                <button type="submit"
-                  style={{ flex: 2, padding: "11px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600, fontSize: 14 }}>
-                  Create {bulkStudents.filter(s => s.selected).length} Invoices
+                <button type="submit" disabled={submitting}
+                  style={{ flex: 2, padding: "11px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: submitting ? "not-allowed" : "pointer", opacity: submitting ? 0.7 : 1, fontWeight: 600, fontSize: 14 }}>
+                  {submitting ? "Saving..." : `Create ${bulkStudents.filter(s => s.selected).length} Invoices`}
                 </button>
               </div>
             </form>
@@ -932,9 +1067,9 @@ export default function Fees() {
             <div style={{ display: "flex", gap: 10 }}>
               <button onClick={() => setShowRecurring(false)}
                 style={{ flex: 1, padding: "11px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", fontSize: 14 }}>Cancel</button>
-              <button onClick={handleGenerateRecurring}
-                style={{ flex: 2, padding: "11px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600, fontSize: 14 }}>
-                Generate Now
+              <button onClick={handleGenerateRecurring} disabled={submitting}
+                style={{ flex: 2, padding: "11px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: submitting ? "not-allowed" : "pointer", opacity: submitting ? 0.7 : 1, fontWeight: 600, fontSize: 14 }}>
+                {submitting ? "Generating..." : "Generate Now"}
               </button>
             </div>
           </div>
@@ -954,7 +1089,7 @@ export default function Fees() {
                 { label: "Student", value: selectedInvoice.studentName },
                 { label: "Period", value: `${selectedInvoice.month} ${selectedInvoice.year}` },
                 { label: "Due Date", value: selectedInvoice.dueDate || "—" },
-                { label: "Status", value: selectedInvoice.status },
+                { label: "Status", value: selectedInvoice.status + (needsPosting(selectedInvoice) ? " (unposted)" : "") },
               ].map(({ label, value }) => (
                 <div key={label} style={{ padding: "10px 14px", background: "#f8fafc", borderRadius: 8 }}>
                   <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 3 }}>{label}</div>

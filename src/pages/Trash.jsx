@@ -1,9 +1,11 @@
 import React, { useState, useEffect } from "react";
-import { db, trashCollection, doc, onSnapshot, restoreDoc, hardDeleteDoc, emptyTrash, restoreDocs, hardDeleteDocs } from "../firebase";
+import { db, trashCollection, doc, onSnapshot, hardDeleteDoc, emptyTrash, hardDeleteDocs } from "../firebase";
 import { useUser } from "../context/UserContext";
 import { useBulkSelect } from "../hooks/useBulkSelect";
 import BulkBar, { RowCheckbox, HeaderCheckbox } from "../components/UI/BulkBar";
-import { bulkResultMessage } from "../utils/bulk";
+import { runBulk, bulkResultMessage } from "../utils/bulk";
+import { restoreWithLedger, ledgerSourceFor } from "../utils/accounting";
+import { useSubmitLock } from "../utils/useSubmitLock";
 import { logActivity } from "../utils/auditLog";
 import toast from "react-hot-toast";
 import { Trash2, RotateCcw, X, AlertTriangle } from "lucide-react";
@@ -23,8 +25,24 @@ const TRASH_SOURCES = [
   { key: "reminderLogs", label: "Reminders",  primary: "message",     secondary: (r) => r.status || "" },
 ];
 
+// The payments ledger is append-only: posted money is corrected with
+// reversal entries, never removed. Payments in Trash (deleted before that
+// rule existed) can still be restored, but not destroyed.
+const LEDGER_LOCKED = new Set(["payments"]);
+
+// A trashed payment may only be restored when it is a plain manual entry.
+// Payments created by an invoice / expense / payslip come back through that
+// document, and reversal rows are only ever meaningful next to their original.
+const restoreBlockReason = (key, r) => {
+  if (key !== "payments") return "";
+  if (r.reversalOf) return "This is a reversal entry. Restore the document it belongs to instead.";
+  if (r.source) return "This payment belongs to an invoice, expense or payslip. Restore that document and its payments come back with it.";
+  return "";
+};
+
 export default function Trash() {
   const { isAdmin } = useUser();
+  const { busy: restoring, run: runRestore } = useSubmitLock();
   const [active, setActive] = useState("students");
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -41,16 +59,22 @@ export default function Trash() {
     return unsub;
   }, [active]);
 
-  const handleRestore = async (r) => {
+  const handleRestore = (r) => runRestore(async () => {
+    const why = restoreBlockReason(active, r);
+    if (why) return toast.error(why, { duration: 6000 });
+    if (active === "payments" && !window.confirm("Restoring this payment puts its amount back into the account balance. Continue?")) return;
     try {
-      await restoreDoc(doc(db, active, r.id));
-      toast.success("Restored");
-      logActivity("restored", "Trash", `${source.label}: ${r[source.primary] || r.id}`);
+      // Invoices, expenses and payslips get the ledger entries that the delete
+      // reversed re-posted, so status and money agree again.
+      const res = await restoreWithLedger(active, r.id);
+      toast.success(res.reposted > 0 ? `Restored, ${res.reposted} payment${res.reposted === 1 ? "" : "s"} re-posted to the ledger` : "Restored");
+      logActivity("restored", "Trash", `${source.label}: ${r[source.primary] || r.id}${res.reposted ? ` (+${res.reposted} ledger entr${res.reposted === 1 ? "y" : "ies"})` : ""}`);
     }
-    catch (e) { toast.error(e?.message || "Error restoring"); }
-  };
+    catch (e) { toast.error(e?.message || "Error restoring", { duration: 7000 }); }
+  });
 
   const handleDeleteForever = async (r) => {
+    if (LEDGER_LOCKED.has(active)) return toast.error("Payments are part of the ledger and cannot be permanently deleted.");
     if (!window.confirm("Permanently delete this record? This cannot be undone.")) return;
     try {
       await hardDeleteDoc(doc(db, active, r.id));
@@ -66,23 +90,28 @@ export default function Trash() {
   const visibleIds = rows.map((r) => r.id);
   const [bulkBusy, setBulkBusy] = useState(false);
 
-  const handleBulkRestore = async () => {
-    const ids = [...bulk.selected];
-    if (ids.length === 0) return;
+  const handleBulkRestore = () => runRestore(async () => {
+    const chosen = rows.filter((r) => bulk.selected.has(r.id));
+    const eligible = chosen.filter((r) => !restoreBlockReason(active, r));
+    const skipped = chosen.length - eligible.length;
+    if (eligible.length === 0) return toast.error("None of the selected rows can be restored here. Restore the invoice, expense or payslip they belong to.", { duration: 6000 });
     setBulkBusy(true);
     try {
-      await restoreDocs(active, ids);
-      toast.success(bulkResultMessage(ids.length, 0, "restored", source.label.toLowerCase()));
-      logActivity("restored", "Trash", `${ids.length} ${source.label.toLowerCase()} (bulk)`);
+      // One at a time per row so each document's ledger entries are re-posted and a failure names the row.
+      const { ok, failed } = await runBulk(eligible, (r) => restoreWithLedger(active, r.id), { chunkSize: 2 });
+      const firstErr = failed[0]?.error?.message;
+      toast[failed.length ? "error" : "success"](bulkResultMessage(ok.length, failed.length, "restored", source.label.toLowerCase()) + (skipped ? ` · ${skipped} skipped` : "") + (firstErr ? ` (${firstErr})` : ""), { duration: failed.length ? 8000 : 4000 });
+      if (ok.length) logActivity("restored", "Trash", `${ok.length} ${source.label.toLowerCase()} (bulk)`);
       bulk.clear();
     } catch (e) {
       toast.error(e?.message || "Bulk restore failed");
     } finally { setBulkBusy(false); }
-  };
+  });
 
   const handleBulkDeleteForever = async () => {
     const ids = [...bulk.selected];
     if (ids.length === 0) return;
+    if (LEDGER_LOCKED.has(active)) return toast.error("Payments are part of the ledger and cannot be permanently deleted.");
     if (!window.confirm(`Permanently delete ${ids.length} ${source.label.toLowerCase()}? This cannot be undone.`)) return;
     setBulkBusy(true);
     try {
@@ -97,6 +126,7 @@ export default function Trash() {
 
   const handleEmpty = async () => {
     if (!rows.length) return;
+    if (LEDGER_LOCKED.has(active)) return toast.error("Payments are part of the ledger and cannot be permanently deleted.");
     if (!window.confirm(`Permanently delete all ${rows.length} ${source.label.toLowerCase()} in Trash? This cannot be undone.`)) return;
     try { await emptyTrash(active); toast.success("Trash emptied"); logActivity("emptied trash", "Trash", `${rows.length} ${source.label.toLowerCase()} deleted forever`); }
     catch (e) { toast.error(e?.message || "Error emptying trash"); }
@@ -108,7 +138,7 @@ export default function Trash() {
         <h2 style={{ fontSize: 20, fontWeight: 700, display: "flex", alignItems: "center", gap: 8 }}>
           <Trash2 size={20} /> Trash <span style={{ fontSize: 13, fontWeight: 400, color: "var(--text-muted)" }}>({rows.length})</span>
         </h2>
-        {rows.length > 0 && (
+        {rows.length > 0 && !LEDGER_LOCKED.has(active) && (
           <button onClick={handleEmpty}
             style={{ display: "flex", alignItems: "center", gap: 6, padding: "9px 14px", background: "#fef2f2", color: "var(--danger)", border: "1px solid #fecaca", borderRadius: 8, cursor: "pointer", fontWeight: 600, fontSize: 13 }}>
             <AlertTriangle size={14} /> Empty {source.label} Trash
@@ -156,14 +186,16 @@ export default function Trash() {
                 </div>
               </div>
               <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
-                <button onClick={() => handleRestore(r)} title="Restore"
-                  style={{ display: "flex", alignItems: "center", gap: 5, border: "1px solid var(--border)", background: "white", color: "#16a34a", padding: "7px 11px", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 600 }}>
+                <button onClick={() => handleRestore(r)} disabled={restoring} title={restoreBlockReason(active, r) || "Restore"}
+                  style={{ display: "flex", alignItems: "center", gap: 5, border: "1px solid var(--border)", background: "white", color: "#16a34a", padding: "7px 11px", borderRadius: 8, cursor: restoring ? "wait" : "pointer", fontSize: 13, fontWeight: 600, opacity: restoreBlockReason(active, r) ? 0.45 : 1 }}>
                   <RotateCcw size={14} /> Restore
                 </button>
-                <button onClick={() => handleDeleteForever(r)} title="Delete forever"
-                  style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "7px 9px", borderRadius: 8, cursor: "pointer" }}>
-                  <X size={16} />
-                </button>
+                {!LEDGER_LOCKED.has(active) && (
+                  <button onClick={() => handleDeleteForever(r)} title="Delete forever"
+                    style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "7px 9px", borderRadius: 8, cursor: "pointer" }}>
+                    <X size={16} />
+                  </button>
+                )}
               </div>
             </div>
             ))}
@@ -176,17 +208,19 @@ export default function Trash() {
         count={bulk.count}
         total={rows.length}
         noun={source.label.toLowerCase()}
-        busy={bulkBusy}
+        busy={bulkBusy || restoring}
         onSelectAll={() => bulk.selectAll(rows.map((r) => r.id))}
         onClear={bulk.clear}
         actions={[
           { label: "Restore", icon: RotateCcw, variant: "success", onClick: handleBulkRestore },
-          { label: "Delete Forever", icon: Trash2, variant: "danger", onClick: handleBulkDeleteForever },
+          ...(LEDGER_LOCKED.has(active) ? [] : [{ label: "Delete Forever", icon: Trash2, variant: "danger", onClick: handleBulkDeleteForever }]),
         ]}
       />
 
       <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 12 }}>
         Deleted records are kept here until you restore them or permanently delete them. Permanent deletion cannot be undone.
+        {ledgerSourceFor(active) && " Restoring an invoice, expense or payslip re-posts the payments that were reversed when it was deleted."}
+        {LEDGER_LOCKED.has(active) && " Payments are part of the ledger and cannot be permanently deleted."}
       </p>
     </div>
   );
