@@ -91,7 +91,7 @@ export default function Expenses() {
   const payAccounts = bankCashAccounts(accounts);
 
   // multi-select for bulk actions
-  const bulk = useBulkSelect(filtered.map(e => e.id));
+  const bulk = useBulkSelect(expenses.map(e => e.id), activeBranch);
   const pagedIds = paged.map(e => e.id);
   const [showBulkEdit, setShowBulkEdit] = useState(false);
   const [bulkBusy, setBulkBusy] = useState(false);

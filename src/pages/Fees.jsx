@@ -146,7 +146,7 @@ export default function Fees() {
 
   // multi-select for bulk actions (selection only ever contains
   // currently-visible/filtered invoices)
-  const bulk = useBulkSelect(filtered.map(inv => inv.id));
+  const bulk = useBulkSelect(invoices.map(inv => inv.id), activeBranch);
   const pagedIds = paged.map(inv => inv.id);
   const totalAmount = lineItems.reduce((s, i) => s + Number(i.amount || 0), 0);
   // Same formulas as Dashboard and Reports (see utils/invoiceTotals); only the

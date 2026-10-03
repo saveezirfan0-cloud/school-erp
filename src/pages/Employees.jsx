@@ -56,7 +56,7 @@ export default function Employees() {
   const active = !!(search || filterRole || sortField);
 
   // multi-select for bulk actions
-  const bulk = useBulkSelect(filtered.map(e => e.id));
+  const bulk = useBulkSelect(employees.map(e => e.id), activeBranch);
   const [showBulkEdit, setShowBulkEdit] = useState(false);
   const [bulkBusy, setBulkBusy] = useState(false);
 

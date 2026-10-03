@@ -62,7 +62,7 @@ export default function Students() {
   const active = !!(search || filterGrades.length || sortField);
 
   // multi-select for bulk actions
-  const bulk = useBulkSelect(filtered.map((s) => s.id));
+  const bulk = useBulkSelect(rows.map((s) => s.id), activeBranch);
   const pagedIds = paged.map((s) => s.id);
   const [showBulkEdit, setShowBulkEdit] = useState(false);
   const [showBulkAdd, setShowBulkAdd] = useState(false);
