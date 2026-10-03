@@ -14,6 +14,7 @@ export const NUMERIC_COLUMNS = {
   payslips: ["amount"],
   accounts: ["balance"],
   journals: ["amount"],
+  budgets: ["amount"],
 };
 
 export function coerceColumn(table, column, value) {

@@ -1,18 +1,26 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import toast from "react-hot-toast";
 import { db } from "../firebase";
 import { collection, getAllDocs } from "../firebase";
 import { useBranch } from "../context/BranchContext";
+import { useUser } from "../context/UserContext";
 import { exportToCSV, exportToPDF } from "../utils/exportUtils";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer, ComposedChart, Line, CartesianGrid,
 } from "recharts";
 import {
-  prepareData, allRecordDates, presetRange, customRange, previousRange, resolveRange, rangeLabel, isoDay,
+  prepareData, allRecordDates, presetRange, customRange, comparisonRange, resolveRange, rangeLabel, isoDay,
   computeFinancials, buildSeries, branchBreakdown, computeCashFlow, computeBalanceSheet,
-  filterFeeRows, summarizeFees, buildHighlights, change, formatRs, formatPct,
+  filterFeeRows, summarizeFees, classDetail, teachersForGrade, buildHighlights, buildSummaryText,
+  change, formatRs, formatPct, COMPARE_MODES,
 } from "../utils/reportData";
+import { computeBudget } from "../utils/budgetData";
+import { buildStatements, printStatements } from "../utils/studentStatement";
 import HajiSahabReport from "../components/reports/HajiSahabReport";
 import ReportFilters, { Field, Select, controlStyle } from "../components/Reports/ReportFilters";
+import BudgetTab from "../components/Reports/BudgetTab";
+import ClassDrilldown from "../components/Reports/ClassDrilldown";
 import { Card, Delta, KpiCard, KpiGrid, Highlights, BarList, DataTable, compact, moneyTip, cardStyle } from "../components/Reports/ReportParts";
 
 const GREEN = "#10b981", RED = "#ef4444", AMBER = "#f59e0b", INDIGO = "#4f46e5", BRAND = "#7a2535", INK = "#1e293b";
@@ -22,20 +30,30 @@ const TABS = [
   { id: "bs", label: "Balance Sheet" },
   { id: "cf", label: "Cash Flow" },
   { id: "fees", label: "Fee Collection" },
+  { id: "budget", label: "Budget vs Actual" },
   { id: "hs", label: "Haji Sahab Report" },
 ];
 const STATUS_OPTIONS = [
   { value: "paid", label: "Paid" }, { value: "partial", label: "Partially paid" },
   { value: "pending", label: "Pending" }, { value: "overdue", label: "Overdue" },
 ];
+const BASIS_OPTIONS = [
+  { value: "cash", label: "Cash received" },
+  { value: "accrual", label: "Billed (accrual)" },
+];
 const fmtDate = (d) => (d ? d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }) : "");
 
 export default function Reports() {
   const { activeBranch, branches } = useBranch();
+  const { can } = useUser();
+  const navigate = useNavigate();
   const today = useMemo(() => new Date(), []);
 
   // ---- raw data (fetched once, filtered in memory) ----
   const [raw, setRaw] = useState(null);
+  const [budgets, setBudgets] = useState([]);
+  const [budgetError, setBudgetError] = useState(false);
+  const [subjects, setSubjects] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -51,9 +69,14 @@ export default function Reports() {
     } catch (e) {
       console.error("Reports load error:", e);
       setError(e?.message || "Could not load report data");
-    } finally {
-      setLoading(false);
     }
+    // Optional tables: a missing table (SQL not run yet) must not break the core reports.
+    const [b, sub] = await Promise.allSettled([getAllDocs(collection(db, "budgets")), getAllDocs(collection(db, "subjects"))]);
+    const rows = (r) => r.value.docs.map(d => ({ id: d.id, ...d.data() }));
+    setBudgetError(b.status === "rejected");
+    setBudgets(b.status === "fulfilled" ? rows(b) : []);
+    setSubjects(sub.status === "fulfilled" ? rows(sub) : []);
+    setLoading(false);
   }, []);
   useEffect(() => { load(); }, [load]);
 
@@ -64,18 +87,20 @@ export default function Reports() {
   const [preset, setPreset] = useState(DEFAULT_PRESET);
   const [custom, setCustom] = useState({ from: "", to: "" });
   const [granularity, setGranularity] = useState("auto");
-  const [compare, setCompare] = useState(true);
+  const [compareMode, setCompareMode] = useState("prev");
+  const [basis, setBasis] = useState("cash");       // P&L income basis
   const [account, setAccount] = useState("");       // cash flow
   const [grade, setGrade] = useState("");           // fees
   const [status, setStatus] = useState("");
   const [feeAccount, setFeeAccount] = useState("");
   const [search, setSearch] = useState("");
+  const [openGrade, setOpenGrade] = useState("");   // class drill-down
 
-  const dirty = branch !== activeBranch || preset !== DEFAULT_PRESET || granularity !== "auto" || !compare
+  const dirty = branch !== activeBranch || preset !== DEFAULT_PRESET || granularity !== "auto" || compareMode !== "prev" || basis !== "cash"
     || account || grade || status || feeAccount || search;
   const reset = () => {
     setBranch(activeBranch); setPreset(DEFAULT_PRESET); setCustom({ from: "", to: "" }); setGranularity("auto");
-    setCompare(true); setAccount(""); setGrade(""); setStatus(""); setFeeAccount(""); setSearch("");
+    setCompareMode("prev"); setBasis("cash"); setAccount(""); setGrade(""); setStatus(""); setFeeAccount(""); setSearch(""); setOpenGrade("");
   };
 
   const branchOptions = useMemo(() => [
@@ -91,13 +116,21 @@ export default function Reports() {
     () => (preset === "custom" ? customRange(custom.from, custom.to) : presetRange(preset, today)),
     [preset, custom, today]
   );
-  const prevRange = useMemo(() => (compare ? previousRange(range) : null), [compare, range]);
+  const prevRange = useMemo(() => comparisonRange(range, compareMode), [compareMode, range]);
+  const compareShort = COMPARE_MODES.find(m => m.id === compareMode)?.short || "";
+  const vsText = compareMode === "yoy" ? "the same period last year" : "the previous period";
   const resolved = useMemo(() => resolveRange(range, allRecordDates(data), today), [range, data, today]);
 
-  const fin = useMemo(() => computeFinancials(data, { range, branch }), [data, range, branch]);
-  const prevFin = useMemo(() => (prevRange ? computeFinancials(data, { range: prevRange, branch }) : null), [data, prevRange, branch]);
-  const series = useMemo(() => buildSeries(data, { range: resolved, branch, granularity }), [data, resolved, branch, granularity]);
-  const branchRows = useMemo(() => (branch === "all" ? branchBreakdown(data, branches, { range }) : null), [data, branches, range, branch]);
+  const fin = useMemo(() => computeFinancials(data, { range, branch, basis }), [data, range, branch, basis]);
+  const prevFin = useMemo(() => (prevRange ? computeFinancials(data, { range: prevRange, branch, basis }) : null), [data, prevRange, branch, basis]);
+  const series = useMemo(() => buildSeries(data, { range: resolved, branch, granularity, basis }), [data, resolved, branch, granularity, basis]);
+  // the comparison period's income, laid over the chart bucket by bucket
+  const chartData = useMemo(() => {
+    if (!prevRange) return series.buckets;
+    const prev = buildSeries(data, { range: prevRange, branch, granularity: series.granularity, basis }).buckets;
+    return series.buckets.map((b, i) => ({ ...b, prevIncome: prev[i]?.income }));
+  }, [series, prevRange, data, branch, basis]);
+  const branchRows = useMemo(() => (branch === "all" ? branchBreakdown(data, branches, { range, basis }) : null), [data, branches, range, branch, basis]);
 
   const feeRows = useMemo(
     () => filterFeeRows(data.invoices, { branch, grade, status, account: feeAccount, search, today }),
@@ -105,24 +138,41 @@ export default function Reports() {
   );
   const fees = useMemo(() => summarizeFees(feeRows, { range, granularity, today }), [feeRows, range, granularity, today]);
   const prevFees = useMemo(() => (prevRange ? summarizeFees(feeRows, { range: prevRange, today }) : null), [feeRows, prevRange, today]);
+  const drill = useMemo(() => (openGrade ? {
+    grade: openGrade,
+    students: classDetail(feeRows, openGrade, { range, today }),
+    teachers: teachersForGrade(subjects, openGrade, branch),
+  } : null), [openGrade, feeRows, range, today, subjects, branch]);
 
   const cash = useMemo(() => computeCashFlow(data, { range: resolved, branch, account, granularity }), [data, resolved, branch, account, granularity]);
   const sheet = useMemo(() => computeBalanceSheet(data, { asAt: range.to, branch }), [data, range, branch]);
+  const budget = useMemo(() => computeBudget({ budgets, fin, range: resolved, branch, today }), [budgets, fin, resolved, branch, today]);
+  const expenseCategories = useMemo(() => [...new Set(data.expenses.map(e => (e.category || "").trim()).filter(Boolean))], [data.expenses]);
 
   const gradeOptions = useMemo(() => [...new Set(data.invoices.map(i => i._grade))].sort().map(g => ({ value: g, label: g })), [data.invoices]);
   const feeAccountOptions = useMemo(() => [...new Set(data.invoices.map(i => i.paidAccount).filter(Boolean))].sort().map(a => ({ value: a, label: a })), [data.invoices]);
+  const canEditBudget = typeof can === "function" && can("canEditAccounting");
+
+  const printStatementsFor = (studentIds) => {
+    const ids = new Set(studentIds);
+    const students = (raw?.students || []).filter(s => ids.has(s.id));
+    if (!students.length) return toast.error("No students to print");
+    const statements = buildStatements({ students, invoices: raw.invoices, payments: raw.payments, today: isoDay(today) });
+    if (!printStatements(statements)) toast.error("Allow pop-ups to print statements");
+  };
 
   const periodText = activeTab === "bs"
     ? `As at ${range.to ? fmtDate(range.to) : "today"}`
     : rangeLabel(range);
-  const summary = `${branchName(branch)} · ${periodText}${prevRange && activeTab !== "bs" && activeTab !== "cf" ? ` · vs ${rangeLabel(prevRange)}` : ""}`;
+  const comparing = prevRange && (activeTab === "pl" || activeTab === "fees");
+  const summary = `${branchName(branch)} · ${periodText}${comparing ? ` · vs ${rangeLabel(prevRange)}` : ""}`;
 
   // ---- exports (each tab exports its main table) ----
   const exportSpec = () => {
     const title = `${TABS.find(t => t.id === activeTab).label} — ${branchName(branch)} — ${periodText}`;
     if (activeTab === "pl") {
       const lines = plLines(fin, prevFin, true);
-      const headers = ["Line", "Amount (Rs.)", ...(prevFin ? ["Previous period (Rs.)"] : [])];
+      const headers = ["Line", "Amount (Rs.)", ...(prevFin ? [`${compareShort} (Rs.)`] : [])];
       const rows = lines.map(l => [l.label, l.kind === "section" ? "" : Math.round(l.value), ...(prevFin ? [l.kind === "section" ? "" : Math.round(l.prev || 0)] : [])]);
       return { title, headers, rows };
     }
@@ -142,6 +192,13 @@ export default function Reports() {
         rows: cash.transactions.map(p => [isoDay(p._on), p.account, p.type === "cash_in" ? "Cash in" : "Cash out", p.category || "", p.description || "", branchLabelOf(p), Math.round(p._amount)]),
       };
     }
+    if (activeTab === "budget") {
+      return {
+        title,
+        headers: ["Line", "Per month (Rs.)", "Budget for period (Rs.)", "Actual (Rs.)", "Variance (Rs.)", "Used %"],
+        rows: budget.lines.map(l => [l.label, Math.round(l.monthly), Math.round(l.budget), Math.round(l.actual), Math.round(l.variance), l.pct === null ? "" : Math.round(l.pct * 100)]),
+      };
+    }
     const inBilled = fees.cohort;
     return {
       title,
@@ -152,6 +209,40 @@ export default function Reports() {
   const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
   const handleCSV = () => { const s = exportSpec(); exportToCSV(`report-${activeTab}-${slug(branchName(branch))}-${isoDay(today)}`, s.headers, s.rows); };
   const handlePDF = () => { const s = exportSpec(); exportToPDF(s.title, s.headers, s.rows.map(r => r.map(c => (typeof c === "number" ? c.toLocaleString() : c)))); };
+
+  // Opens the user's mail app with a text summary (no automatic sending).
+  const handleEmail = () => {
+    const label = TABS.find(t => t.id === activeTab).label;
+    const scope = `${branchName(branch)} · ${periodText}`;
+    let lines = [], highlights = [];
+    if (activeTab === "pl") {
+      const inc = prevFin && change(fin.income, prevFin.income);
+      lines = [
+        [basis === "accrual" ? "Income (billed less concessions)" : "Income (collected)", formatRs(fin.income)],
+        ["Total expenses", formatRs(fin.totalExpenses)],
+        [fin.net >= 0 ? "Net surplus" : "Net deficit", formatRs(Math.abs(fin.net))],
+        ["Margin", formatPct(fin.margin)],
+        ...(inc?.pct != null ? [[`Income vs ${vsText}`, `${inc.pct >= 0 ? "+" : "-"}${Math.abs(Math.round(inc.pct * 100))}%`]] : []),
+      ];
+      highlights = buildHighlights({ cur: fin, prev: prevFin, fees: null, branches: branchRows, vs: vsText });
+    } else if (activeTab === "fees") {
+      lines = [
+        ["Billed", formatRs(fees.billed)], ["Collected", formatRs(fees.collected)],
+        ["Outstanding", formatRs(fees.outstanding)], ["Overdue", formatRs(fees.overdue)],
+        ["Collection rate", formatPct(fees.rate)], ["Students owing", String(fees.defaulters.length)],
+      ];
+      highlights = buildHighlights({ cur: fin, prev: null, fees, branches: null, only: "fees" });
+    } else if (activeTab === "cf") {
+      lines = [["Opening balance", formatRs(cash.opening)], ["Cash in", formatRs(cash.inflow)], ["Cash out", formatRs(cash.outflow)], ["Closing balance", formatRs(cash.closing)]];
+    } else if (activeTab === "budget") {
+      lines = [["Spending budget", formatRs(budget.expenseBudget)], ["Actual spending", formatRs(budget.expenseActual)], ["Budget used", formatPct(budget.expensePct)]];
+      highlights = budget.over.map(l => ({ text: `${l.label} is ${l.status === "unbudgeted" ? "unbudgeted" : "over budget"}: ${formatRs(l.actual)} spent${l.budget ? ` of ${formatRs(l.budget)}` : ""}.` }));
+    } else {
+      lines = [["Total assets", formatRs(sheet.assets.total)], ["Liabilities & equity", formatRs(sheet.liabilitiesEquity.total)]];
+    }
+    const body = buildSummaryText({ title: `${label} report`, scope, lines, highlights });
+    window.location.href = `mailto:?subject=${encodeURIComponent(`${label} — ${scope}`)}&body=${encodeURIComponent(body)}`;
+  };
 
   return (
     <div>
@@ -173,12 +264,13 @@ export default function Reports() {
         branchOptions={branchOptions} branch={branch} onBranch={setBranch}
         preset={preset} onPreset={setPreset} custom={custom} onCustom={setCustom}
         periodLabel={activeTab === "bs" ? "As at (end of period)" : "Period"}
-        granularity={activeTab === "bs" ? undefined : granularity} onGranularity={setGranularity}
-        showCompare={activeTab === "pl" || activeTab === "fees"} compare={compare} onCompare={setCompare}
+        granularity={activeTab === "bs" || activeTab === "budget" ? undefined : granularity} onGranularity={setGranularity}
+        showCompare={activeTab === "pl" || activeTab === "fees"} compareMode={compareMode} onCompareMode={setCompareMode}
         dirty={Boolean(dirty)} onReset={reset} summary={summary}
-        onRefresh={load} refreshing={loading} onCSV={raw ? handleCSV : undefined} onPDF={raw ? handlePDF : undefined}
+        onRefresh={load} refreshing={loading} onCSV={raw ? handleCSV : undefined} onPDF={raw ? handlePDF : undefined} onEmail={raw ? handleEmail : undefined}
       >
-        {activeTab === "cf" && <Select label="Account" value={account} onChange={setAccount} allLabel="All accounts" options={cash.accountNames.map(n => ({ value: n, label: n }))} />}
+        {activeTab === "pl" && <Select label="Income basis" value={basis} onChange={setBasis} options={BASIS_OPTIONS} />}
+        {activeTab === "cf" && <Select label="Account" value={account} onChange={setAccount} allLabel="All accounts" options={cash.accountOptions} />}
         {activeTab === "fees" && (
           <>
             <Select label="Class / grade" value={grade} onChange={setGrade} allLabel="All grades" options={gradeOptions} />
@@ -200,14 +292,21 @@ export default function Reports() {
       {!raw && !error && <div style={{ ...cardStyle, padding: 32, textAlign: "center", color: "var(--text-muted)" }}>Loading reports…</div>}
 
       {raw && activeTab === "pl" && (
-        <ProfitLoss fin={fin} prevFin={prevFin} series={series} branchRows={branchRows} range={range}
-          highlights={buildHighlights({ cur: fin, prev: prevFin, fees: null, branches: branchRows })} />
+        <ProfitLoss fin={fin} prevFin={prevFin} chartData={chartData} granularity={series.granularity} branchRows={branchRows} range={range}
+          basis={basis} compareShort={compareShort}
+          highlights={buildHighlights({ cur: fin, prev: prevFin, fees: null, branches: branchRows, vs: vsText })} />
       )}
       {raw && activeTab === "bs" && <BalanceSheet sheet={sheet} />}
       {raw && activeTab === "cf" && <CashFlow cash={cash} branchLabelOf={branchLabelOf} />}
+      {raw && activeTab === "budget" && (
+        <BudgetTab budgets={budgets} budgetError={budgetError} result={budget} branch={branch} categories={expenseCategories}
+          canEdit={canEditBudget} onSaved={load} />
+      )}
       {raw && activeTab === "hs" && <HajiSahabReport raw={raw} branches={branches} activeBranch={activeBranch} />}
       {raw && activeTab === "fees" && (
-        <FeeCollection fees={fees} prevFees={prevFees}
+        <FeeCollection fees={fees} prevFees={prevFees} drill={drill} openGrade={openGrade}
+          onToggleGrade={(g) => setOpenGrade(cur => (cur === g ? "" : g))} onCloseGrade={() => setOpenGrade("")}
+          onPrint={printStatementsFor} onOpenLedger={(id) => navigate(`/students/${id}/ledger`)}
           highlights={buildHighlights({ cur: fin, prev: null, fees, branches: null, only: "fees" })} />
       )}
     </div>
@@ -224,11 +323,20 @@ function plLines(cur, prev, detail) {
   const subs = (list, indent = "   ") => detail && cur[list].forEach(r => L.push({ kind: "sub", label: `${indent}${r.label}`, value: r.amount, prev: prevOf(list, r.label), goodWhen: list === "byHead" ? "up" : "down" }));
 
   L.push({ kind: "section", label: "Income" });
-  line("Total billed (face value)", cur.billed, prev?.billed, { muted: true });
-  line("Fee collections (received)", cur.collected, prev?.collected, { color: GREEN });
-  subs("byHead");
-  line("Concessions (waived)", cur.concessions, prev?.concessions, { color: AMBER, goodWhen: "down" });
-  line("Pending fees (outstanding)", cur.pending, prev?.pending, { muted: true, goodWhen: "down" });
+  if (cur.basis === "accrual") {
+    line("Fees billed (face value)", cur.billed, prev?.billed);
+    line("Concessions (waived)", cur.concessions, prev?.concessions, { color: AMBER, goodWhen: "down" });
+    line("Fee revenue (billed less concessions)", cur.income, prev?.income, { color: GREEN });
+    subs("byHead");
+    line("Cash received in period", cur.collected, prev?.collected, { muted: true });
+    line("Pending fees (outstanding)", cur.pending, prev?.pending, { muted: true, goodWhen: "down" });
+  } else {
+    line("Total billed (face value)", cur.billed, prev?.billed, { muted: true });
+    line("Fee collections (received)", cur.collected, prev?.collected, { color: GREEN });
+    subs("byHead");
+    line("Concessions (waived)", cur.concessions, prev?.concessions, { color: AMBER, goodWhen: "down" });
+    line("Pending fees (outstanding)", cur.pending, prev?.pending, { muted: true, goodWhen: "down" });
+  }
   L.push({ kind: "total", label: "Total income", value: cur.income, prev: prev?.income, color: GREEN });
 
   L.push({ kind: "section", label: "Expenses" });
@@ -241,7 +349,7 @@ function plLines(cur, prev, detail) {
   return L;
 }
 
-function ProfitLoss({ fin, prevFin, series, branchRows, range, highlights }) {
+function ProfitLoss({ fin, prevFin, chartData, granularity, branchRows, range, basis, compareShort, highlights }) {
   const [detail, setDetail] = useState(true);
   const lines = plLines(fin, prevFin, detail);
   const surplus = fin.net >= 0;
@@ -251,7 +359,7 @@ function ProfitLoss({ fin, prevFin, series, branchRows, range, highlights }) {
   return (
     <div>
       <KpiGrid>
-        <KpiCard label="Income (collected)" value={formatRs(fin.income)} color={GREEN} bg="#ecfdf5" delta={prevFin && change(fin.income, prevFin.income)} />
+        <KpiCard label={basis === "accrual" ? "Income (billed)" : "Income (collected)"} value={formatRs(fin.income)} color={GREEN} bg="#ecfdf5" delta={prevFin && change(fin.income, prevFin.income)} />
         <KpiCard label="Total expenses" value={formatRs(fin.totalExpenses)} color={RED} bg="#fef2f2" goodWhen="down" delta={prevFin && change(fin.totalExpenses, prevFin.totalExpenses)} />
         <KpiCard label={surplus ? "Net surplus" : "Net deficit"} value={formatRs(Math.abs(fin.net))} color={surplus ? GREEN : RED} bg={surplus ? "#ecfdf5" : "#fef2f2"} delta={prevFin && change(fin.net, prevFin.net)} />
         <KpiCard label="Margin" value={formatPct(fin.margin)} sub="of fee income" color={INDIGO} bg="#eef2ff" />
@@ -259,7 +367,7 @@ function ProfitLoss({ fin, prevFin, series, branchRows, range, highlights }) {
 
       <Highlights items={highlights} />
 
-      <Card title="Profit & Loss Statement" subtitle={`${rangeLabel(range)} · income is cash received, expenses by date / payslip period`} style={{ marginBottom: 24 }} pad={0}
+      <Card title="Profit & Loss Statement" subtitle={`${rangeLabel(range)} · income is ${basis === "accrual" ? "fees billed less concessions" : "cash received"}, expenses by date / payslip period`} style={{ marginBottom: 24 }} pad={0}
         right={<label style={{ fontSize: 13, display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}><input type="checkbox" checked={detail} onChange={e => setDetail(e.target.checked)} /> Show breakdown</label>}>
         <div className="table-scroll">
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
@@ -267,7 +375,7 @@ function ProfitLoss({ fin, prevFin, series, branchRows, range, highlights }) {
               <thead><tr style={{ color: "var(--text-muted)", fontSize: 12 }}>
                 <th style={{ textAlign: "left", padding: "10px 24px", fontWeight: 600 }} />
                 <th style={{ ...num, padding: "10px 12px", fontWeight: 600 }}>This period</th>
-                <th style={{ ...num, padding: "10px 12px", fontWeight: 600 }}>Previous</th>
+                <th style={{ ...num, padding: "10px 12px", fontWeight: 600 }}>{compareShort}</th>
                 <th style={{ ...num, padding: "10px 24px 10px 12px", fontWeight: 600 }}>Change</th>
               </tr></thead>
             )}
@@ -296,9 +404,9 @@ function ProfitLoss({ fin, prevFin, series, branchRows, range, highlights }) {
         </div>
       </Card>
 
-      <Card title={`Income vs expenses by ${series.granularity}`} style={{ marginBottom: 24 }}>
+      <Card title={`Income vs expenses by ${granularity}`} style={{ marginBottom: 24 }}>
         <ResponsiveContainer width="100%" height={300}>
-          <ComposedChart data={series.buckets}>
+          <ComposedChart data={chartData}>
             <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
             <XAxis dataKey="label" interval="preserveStartEnd" minTickGap={16} />
             <YAxis tickFormatter={compact} width={48} />
@@ -308,6 +416,9 @@ function ProfitLoss({ fin, prevFin, series, branchRows, range, highlights }) {
             <Bar dataKey="expenses" name="Operating expenses" fill={RED} radius={[4, 4, 0, 0]} />
             <Bar dataKey="payroll" name="Payroll" fill={INDIGO} radius={[4, 4, 0, 0]} />
             <Line type="monotone" dataKey="net" name="Net" stroke={INK} strokeWidth={2} dot={false} />
+            {chartData.some(b => b.prevIncome !== undefined) && (
+              <Line type="monotone" dataKey="prevIncome" name={`Income (${compareShort.toLowerCase()})`} stroke="#94a3b8" strokeWidth={2} strokeDasharray="5 4" dot={false} />
+            )}
           </ComposedChart>
         </ResponsiveContainer>
       </Card>
@@ -457,7 +568,7 @@ const STATUS_STYLE = {
   overdue: { bg: "#fef2f2", fg: "#dc2626", label: "Overdue" },
 };
 
-function FeeCollection({ fees, prevFees, highlights }) {
+function FeeCollection({ fees, prevFees, highlights, drill, openGrade, onToggleGrade, onCloseGrade, onPrint, onOpenLedger }) {
   const [showAll, setShowAll] = useState(false);
   const defaulters = showAll ? fees.defaulters : fees.defaulters.slice(0, 10);
   const total = Object.values(fees.statusCounts).reduce((a, b) => a + b, 0);
@@ -507,9 +618,10 @@ function FeeCollection({ fees, prevFees, highlights }) {
         <Card title="Received by account"><BarList rows={fees.byAccount} color={BRAND} empty="No payments in this period." /></Card>
       </div>
 
-      <Card title="By class / grade" pad={0} style={{ marginBottom: 24 }}>
+      <Card title="By class / grade" subtitle="Click a class to see its students, teachers and printable statements" pad={0} style={{ marginBottom: drill ? 12 : 24 }}>
         <DataTable
           rows={fees.byGrade} rowKey={r => r.grade} empty="No invoices for this selection."
+          onRowClick={r => onToggleGrade(r.grade)} activeKey={openGrade}
           columns={[
             { key: "grade", label: "Grade" },
             { key: "students", label: "Students", align: "right" },
@@ -521,6 +633,8 @@ function FeeCollection({ fees, prevFees, highlights }) {
           ]}
         />
       </Card>
+
+      {drill && <ClassDrilldown {...drill} onClose={onCloseGrade} onPrint={onPrint} onOpenLedger={onOpenLedger} />}
 
       <Card title="By fee type" subtitle="Invoice line items — collected is spread across items in proportion" pad={0} style={{ marginBottom: 24 }}>
         <DataTable
@@ -545,6 +659,7 @@ function FeeCollection({ fees, prevFees, highlights }) {
             { key: "invoices", label: "Unpaid invoices", align: "right" },
             { key: "oldest", label: "Oldest due", render: r => fmtDate(r.oldestDue) || "—" },
             { key: "outstanding", label: "Outstanding", align: "right", render: r => <strong style={{ color: AMBER }}>{formatRs(r.outstanding)}</strong> },
+            { key: "stmt", label: "", align: "right", render: r => r.studentId && <button onClick={() => onPrint([r.studentId])} aria-label={`Print statement for ${r.student}`} style={{ ...controlStyle, padding: "4px 10px", cursor: "pointer" }}>Statement</button> },
           ]}
         />
       </Card>
