@@ -1,8 +1,11 @@
 import React, { useMemo, useState } from "react";
-import { ChevronDown, ChevronLeft, ChevronRight, FileText, Download, TrendingUp, TrendingDown, Wallet, Scale } from "lucide-react";
+import { ChevronDown, ChevronLeft, ChevronRight, FileText, Download, TrendingUp, TrendingDown, Wallet, Scale, SlidersHorizontal } from "lucide-react";
 import toast from "react-hot-toast";
 import { matchesBranch } from "../../utils/branchFilter";
 import { exportToCSV } from "../../utils/exportUtils";
+import { useUser } from "../../context/UserContext";
+import { applyLayout, normalizeLayout, isDefaultLayout, flattenHeads } from "../../config/reportLayout";
+import ReportLayoutEditor from "./ReportLayoutEditor";
 import {
   buildMonthlyStatement, printMonthlyStatement, statementCsvRows, statementPeriodLabel,
   percentChange, monthName, fmtNum,
@@ -19,7 +22,7 @@ function Delta({ pct, upIsGood }) {
   const good = (pct > 0) === upIsGood;
   return (
     <span style={{ fontSize: 11, fontWeight: 600, color: good ? "#10b981" : "#ef4444" }}>
-      {pct > 0 ? "▲" : "▼"} {Math.abs(pct)}% <span style={{ fontWeight: 400, color: "var(--text-muted)" }}>vs last month</span>
+      {pct > 0 ? "▲" : "▼"} {Math.abs(pct) > 999 ? "999%+" : `${Math.abs(pct)}%`} <span style={{ fontWeight: 400, color: "var(--text-muted)" }}>vs last month</span>
     </span>
   );
 }
@@ -39,7 +42,7 @@ function StatCard({ label, value, icon: Icon, color, bg, children }) {
 
 // One column of the statement (Income or Expense): grouped sections with
 // subtotals, share bars and a per-branch split under each head.
-function Section({ title, section, color, tint, emptyText, extra }) {
+function Section({ title, section, color, tint, emptyText, extra, options }) {
   const [closed, setClosed] = useState({});
   return (
     <div style={{ ...card, overflow: "hidden" }}>
@@ -64,19 +67,24 @@ function Section({ title, section, color, tint, emptyText, extra }) {
               style={{ width: "100%", textAlign: "left", background: tint, border: "none", cursor: "pointer", padding: "11px 20px", display: "block" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <ChevronDown size={15} color="var(--primary)" style={{ transform: isClosed ? "rotate(-90deg)" : "none", transition: "transform .15s", flexShrink: 0 }} />
-                <span style={{ flex: 1, fontWeight: 700, fontSize: 14, color: "var(--sidebar-bg)" }}>{g.label}</span>
-                <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{share}%</span>
-                <span style={{ fontWeight: 700, fontSize: 14, minWidth: 90, textAlign: "right" }}>{fmtNum(g.total)}</span>
+                <span style={{ flex: 1, fontWeight: 700, fontSize: 14, color: "var(--sidebar-bg)" }}>
+                  {g.label}
+                  {g.excluded && <span title="Shown for reference — not part of the total" style={{ marginLeft: 8, fontSize: 10, fontWeight: 600, color: "#92400e", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 10, padding: "1px 7px" }}>not counted</span>}
+                </span>
+                {!g.excluded && options.shareBars !== false && <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{share}%</span>}
+                <span style={{ fontWeight: 700, fontSize: 14, minWidth: 90, textAlign: "right", opacity: g.excluded ? 0.6 : 1 }}>{fmtNum(g.total)}</span>
               </div>
-              <div style={{ height: 3, borderRadius: 2, background: "rgba(0,0,0,0.06)", marginTop: 7, marginLeft: 23 }}>
-                <div style={{ height: 3, borderRadius: 2, background: color, width: `${share}%` }} />
-              </div>
+              {!g.excluded && options.shareBars !== false && (
+                <div style={{ height: 3, borderRadius: 2, background: "rgba(0,0,0,0.06)", marginTop: 7, marginLeft: 23 }}>
+                  <div style={{ height: 3, borderRadius: 2, background: color, width: `${share}%` }} />
+                </div>
+              )}
             </button>
             {!isClosed && g.heads.map((h) => (
               <div key={h.label} style={{ display: "flex", justifyContent: "space-between", gap: 12, padding: "9px 20px 9px 43px", borderTop: "1px solid #f1f5f9", fontSize: 14 }}>
                 <div style={{ minWidth: 0 }}>
                   <div>{h.label}</div>
-                  {h.branches.length > 1 && (
+                  {options.branchSplit !== false && h.branches.length > 1 && (
                     <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>
                       {h.branches.map((b) => `${b.name} ${fmtNum(b.amount)}`).join(" · ")}
                     </div>
@@ -88,6 +96,13 @@ function Section({ title, section, color, tint, emptyText, extra }) {
           </div>
         );
       })}
+
+      {(section.hiddenAmount > 0 || section.excludedAmount > 0) && (
+        <div style={{ padding: "10px 20px", fontSize: 11, color: "var(--text-muted)", background: "#f8fafc" }}>
+          {section.hiddenAmount > 0 && <div>Rs. {fmtNum(section.hiddenAmount)} hidden by your report layout</div>}
+          {section.excludedAmount > 0 && <div>Rs. {fmtNum(section.excludedAmount)} shown but not counted in the total</div>}
+        </div>
+      )}
     </div>
   );
 }
@@ -96,6 +111,11 @@ export default function HajiSahabReport({ raw, branches, activeBranch }) {
   const now = new Date();
   const [year, setYear] = useState(now.getFullYear());
   const [month, setMonth] = useState(now.getMonth() + 1);
+
+  const { hajiLayout, saveHajiLayout } = useUser();
+  const layout = useMemo(() => normalizeLayout(hajiLayout), [hajiLayout]);
+  const [editing, setEditing] = useState(false);
+  const options = layout.options;
 
   const allBranches = activeBranch === "all";
   const scopeLabel = allBranches ? "All branches"
@@ -108,11 +128,24 @@ export default function HajiSahabReport({ raw, branches, activeBranch }) {
       // Account opening balances are organisation-wide, so only add them for "All".
       includeAccountOpening: activeBranch === "all",
     });
-    return {
-      statement: build(year, month),
-      previous: month === 1 ? build(year - 1, 12) : build(year, month - 1),
-    };
-  }, [year, month, raw, branches, activeBranch]);
+    const current = build(year, month);
+    const prior = month === 1 ? build(year - 1, 12) : build(year, month - 1);
+    // The layout applies to both months so the comparison is like for like.
+    return { statement: applyLayout(current, layout), previous: applyLayout(prior, layout) };
+  }, [year, month, raw, branches, activeBranch, layout]);
+
+  // Every head seen this year, so the editor can list heads that are quiet this month.
+  const yearHeads = useMemo(() => {
+    if (!editing) return [];
+    const seen = new Map();
+    for (let m = 1; m <= 12; m++) {
+      const st = buildMonthlyStatement({
+        year, month: m, ...raw, branches, inScope: (r) => matchesBranch(r, activeBranch), includeAccountOpening: false,
+      });
+      ["income", "expense"].forEach((side) => flattenHeads(side, st[side]).forEach((h) => { if (!seen.has(h.id)) seen.set(h.id, { ...h, side }); }));
+    }
+    return [...seen.values()];
+  }, [editing, year, raw, branches, activeBranch]);
 
   const step = (delta) => {
     const idx = year * 12 + (month - 1) + delta;
@@ -145,6 +178,10 @@ export default function HajiSahabReport({ raw, branches, activeBranch }) {
         <button onClick={() => step(1)} style={iconBtn} title="Next month"><ChevronRight size={16} /></button>
         <span style={{ color: "var(--text-muted)", fontSize: 13, marginLeft: 4 }}>{scopeLabel}</span>
         <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
+          <button onClick={() => setEditing(true)} title="Rename, hide or regroup sections, add manual lines"
+            style={{ ...iconBtn, gap: 6, fontWeight: 600, fontSize: 13, color: isDefaultLayout(layout) ? "#475569" : "var(--primary)", borderColor: isDefaultLayout(layout) ? "var(--border)" : "var(--primary)" }}>
+            <SlidersHorizontal size={14} /> Customize{!isDefaultLayout(layout) && " •"}
+          </button>
           <button onClick={exportCsv} style={{ ...iconBtn, gap: 6, fontWeight: 600, fontSize: 13, color: "#475569" }}>
             <Download size={14} /> CSV
           </button>
@@ -173,10 +210,10 @@ export default function HajiSahabReport({ raw, branches, activeBranch }) {
           <span style={{ fontSize: 11, color: "var(--text-muted)" }}>Cash &amp; bank on the 1st</span>
         </StatCard>
         <StatCard label="Total income" value={statement.totalIncome} icon={TrendingUp} color="#10b981" bg="#ecfdf5">
-          <Delta pct={percentChange(statement.totalIncome, previous.totalIncome)} upIsGood />
+          {options.comparison !== false && <Delta pct={percentChange(statement.totalIncome, previous.totalIncome)} upIsGood />}
         </StatCard>
         <StatCard label="Total expense" value={statement.totalExpense} icon={TrendingDown} color="#ef4444" bg="#fef2f2">
-          <Delta pct={percentChange(statement.totalExpense, previous.totalExpense)} upIsGood={false} />
+          {options.comparison !== false && <Delta pct={percentChange(statement.totalExpense, previous.totalExpense)} upIsGood={false} />}
         </StatCard>
         <StatCard label="Closing balance" value={statement.closingBalance} icon={Scale} color="var(--primary)" bg="var(--primary-light)">
           <span style={{ fontSize: 11, color: "var(--text-muted)" }}>Opening + income − expense</span>
@@ -190,11 +227,11 @@ export default function HajiSahabReport({ raw, branches, activeBranch }) {
       )}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(340px, 1fr))", gap: 16, marginBottom: 16, alignItems: "start" }}>
-        <Section title="Income" section={statement.income} color="#10b981" tint="#f0fdf4" emptyText="No income recorded this month" />
-        <Section title="Expense" section={statement.expense} color="#ef4444" tint="#fef2f2" emptyText="No expenses recorded this month" />
+        <Section title="Income" section={statement.income} color="#10b981" tint="#f0fdf4" emptyText="No income recorded this month" options={options} />
+        <Section title="Expense" section={statement.expense} color="#ef4444" tint="#fef2f2" emptyText="No expenses recorded this month" options={options} />
       </div>
 
-      {allBranches && statement.cashAccounts.length > 0 && (
+      {allBranches && options.accounts !== false && statement.cashAccounts.length > 0 && (
         <div style={{ ...card, overflow: "hidden" }}>
           <div style={{ padding: "16px 20px", background: "#f8fafc", borderBottom: "1px solid var(--border)" }}>
             <h3 style={{ fontWeight: 700, fontSize: 15 }}>Bank &amp; Cash accounts</h3>
@@ -228,6 +265,17 @@ export default function HajiSahabReport({ raw, branches, activeBranch }) {
             </div>
           )}
         </div>
+      )}
+
+      {editing && (
+        <ReportLayoutEditor
+          layout={layout}
+          heads={yearHeads}
+          month={`${year}-${String(month).padStart(2, "0")}`}
+          onSave={saveHajiLayout}
+          onReset={() => saveHajiLayout(null)}
+          onClose={() => setEditing(false)}
+        />
       )}
     </div>
   );

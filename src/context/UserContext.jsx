@@ -219,6 +219,21 @@ export function UserProvider({ children }) {
     }
   }, [userProfile?.id, userProfile?.menuLayout]);
 
+  // Personal layout of the Haji Sahab report (null = default). Saved the same
+  // way as the menu layout, on the user's own profile row.
+  const hajiLayout = userProfile?.hajiLayout || null;
+  const saveHajiLayout = useCallback(async (layout) => {
+    if (!userProfile?.id) return;
+    const previous = userProfile.hajiLayout ?? null;
+    setUserProfile((p) => (p ? { ...p, hajiLayout: layout } : p));
+    try {
+      await updateDocs("users", [userProfile.id], { hajiLayout: layout });
+    } catch (e) {
+      setUserProfile((p) => (p ? { ...p, hajiLayout: previous } : p));
+      throw e;
+    }
+  }, [userProfile?.id, userProfile?.hajiLayout]);
+
   // If branch_manager, restrict to their assigned branch
   const assignedBranchId = role === "branch_manager" ? userProfile?.branchId : null;
 
@@ -233,7 +248,9 @@ export function UserProvider({ children }) {
     assignedBranchId,
     menuLayout,
     saveMenuLayout,
-  }), [userProfile, loadingProfile, role, permissions, customRolePerms, can, isAdmin, assignedBranchId, menuLayout, saveMenuLayout]);
+    hajiLayout,
+    saveHajiLayout,
+  }), [userProfile, loadingProfile, role, permissions, customRolePerms, can, isAdmin, assignedBranchId, menuLayout, saveMenuLayout, hajiLayout, saveHajiLayout]);
 
   return (
     <UserContext.Provider value={value}>
