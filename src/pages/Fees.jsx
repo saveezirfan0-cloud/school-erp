@@ -15,6 +15,7 @@ import { logActivity } from "../utils/auditLog";
 import { sendWhatsAppMessage } from "../utils/whatsapp";
 import { recordPayment, bankCashAccounts, reverseSourcePayments, getSourcePaidTotal } from "../utils/accounting";
 import { exportToCSV, exportToPDF } from "../utils/exportUtils";
+import { sumInvoices } from "../utils/invoiceTotals";
 import toast from "react-hot-toast";
 import { Plus, MessageCircle, CheckCircle, X, Trash2, Download, FileText, RefreshCw, Users, Pencil, Search } from "lucide-react";
 
@@ -148,8 +149,9 @@ export default function Fees() {
   const bulk = useBulkSelect(filtered.map(inv => inv.id));
   const pagedIds = paged.map(inv => inv.id);
   const totalAmount = lineItems.reduce((s, i) => s + Number(i.amount || 0), 0);
-  const totalCollected = filtered.filter(i => i.status === "paid").reduce((s, i) => s + Number(i.amount), 0);
-  const totalPending = filtered.filter(i => i.status === "pending").reduce((s, i) => s + Number(i.amount), 0);
+  // Same formulas as Dashboard and Reports (see utils/invoiceTotals); only the
+  // scope differs — these cover the currently filtered invoices.
+  const { collected: totalCollected, pending: totalPending } = sumInvoices(filtered);
 
   const addLineItem = () => setLineItems(p => [...p, { description: "", amount: "" }]);
   const removeLineItem = (idx) => setLineItems(p => p.filter((_, i) => i !== idx));
@@ -213,6 +215,7 @@ export default function Fees() {
         amount: Number(s.amount), month: bulkMonth, year: bulkYear,
         dueDate: bulkDueDate,
         lineItems: [{ description: "Tuition Fee", amount: s.amount }],
+        paidAmount: s.paid ? Number(s.amount) : 0,
         paidDate: s.paid ? serverTimestamp() : null,
         createdAt: serverTimestamp()
       });
@@ -499,6 +502,7 @@ export default function Fees() {
           style={{ padding: "8px 10px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 13, background: "white" }}>
           <option value="">All</option>
           <option value="paid">Paid</option>
+          <option value="partial">Partial</option>
           <option value="pending">Pending</option>
         </select>
         {!isMobile && (
