@@ -1,8 +1,8 @@
 import React, { useMemo, useState } from "react";
 import { NavLink, useLocation } from "react-router-dom";
-import { ChevronDown, ChevronRight, X, SlidersHorizontal } from "lucide-react";
+import { ChevronDown, ChevronRight, ChevronsDownUp, ChevronsUpDown, X, SlidersHorizontal, Search, Star } from "lucide-react";
 import { useUser } from "../../context/UserContext";
-import { MENU_ITEMS, normalizeLayout, resolveMenu } from "../../config/menu";
+import { MENU_ITEMS, normalizeLayout, resolveMenu, isItemAllowed } from "../../config/menu";
 import MenuEditor from "./MenuEditor";
 
 const COLLAPSED_KEY = "zmi.menu.collapsed";
@@ -19,30 +19,45 @@ const readCollapsed = () => {
 const isOnPage = (pathname, to) =>
   to === "/" ? pathname === "/" : pathname === to || pathname.startsWith(to + "/");
 
-export default function Sidebar({ onClose }) {
-  const { can, isAdmin, menuLayout } = useUser();
-  const { pathname } = useLocation();
-  const [collapsed, setCollapsed] = useState(readCollapsed);
-  const [editing, setEditing] = useState(false);
+const PINNED_ID = "__pinned";
 
+export default function Sidebar({ onClose, onSearch }) {
+  const { can, isAdmin, menuLayout, menuPrefs, saveMenuPrefs } = useUser();
+  const { pathname } = useLocation();
+  const [editing, setEditing] = useState(false);
+  // Synced with the profile; localStorage only seeds the first paint.
+  const [localCollapsed] = useState(readCollapsed);
+  const collapsed = menuPrefs.collapsed ?? localCollapsed;
+
+  const access = { can, isAdmin };
   const sections = useMemo(
     () => resolveMenu(normalizeLayout(menuLayout), { can, isAdmin }),
     [menuLayout, can, isAdmin]
   );
+  const pinned = menuPrefs.pinned.filter((k) => isItemAllowed(k, access));
+  const allSections = pinned.length ? [{ id: PINNED_ID, label: "Pinned", items: pinned }, ...sections] : sections;
+  const labelled = allSections.filter((s) => s.label.trim()).map((s) => s.id);
+  const allCollapsed = labelled.length > 0 && labelled.every((id) => collapsed.includes(id));
 
-  const toggleSection = (id) => {
-    setCollapsed((prev) => {
-      const next = prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id];
-      try { localStorage.setItem(COLLAPSED_KEY, JSON.stringify(next)); } catch { /* storage unavailable */ }
-      return next;
-    });
+  const setCollapsed = (next) => {
+    try { localStorage.setItem(COLLAPSED_KEY, JSON.stringify(next)); } catch { /* storage unavailable */ }
+    saveMenuPrefs({ ...menuPrefs, collapsed: next });
+  };
+  const toggleSection = (id) =>
+    setCollapsed(collapsed.includes(id) ? collapsed.filter((x) => x !== id) : [...collapsed, id]);
+  const toggleAll = () => setCollapsed(allCollapsed ? [] : labelled);
+
+  const togglePin = (key) => {
+    const next = menuPrefs.pinned.includes(key) ? menuPrefs.pinned.filter((k) => k !== key) : [...menuPrefs.pinned, key];
+    saveMenuPrefs({ ...menuPrefs, pinned: next });
   };
 
   const renderLink = (key, nested) => {
     const { to, icon: Icon, label } = MENU_ITEMS[key];
+    const isPinned = menuPrefs.pinned.includes(key);
     return (
+      <div key={key} className="nav-row" style={{ position: "relative" }}>
       <NavLink
-        key={key}
         to={to}
         end={to === "/"}
         onClick={onClose}
@@ -65,6 +80,16 @@ export default function Sidebar({ onClose }) {
         <Icon size={16} />
         {label}
       </NavLink>
+      <button
+        className="nav-star"
+        onClick={() => togglePin(key)}
+        aria-label={isPinned ? `Unpin ${label}` : `Pin ${label}`}
+        title={isPinned ? "Unpin" : "Pin to top"}
+        style={{ position: "absolute", right: 6, top: "50%", transform: "translateY(-50%)", border: "none", background: "transparent", padding: 5, borderRadius: 6, display: "flex", color: isPinned ? "#f5c451" : "rgba(255,255,255,0.5)" }}
+      >
+        <Star size={13} fill={isPinned ? "#f5c451" : "none"} />
+      </button>
+      </div>
     );
   };
 
@@ -121,7 +146,26 @@ export default function Sidebar({ onClose }) {
 
       {/* Nav */}
       <nav style={{ flex: 1, padding: "10px 8px", overflowY: "auto" }}>
-        {sections.map((section) => {
+        <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
+          <button
+            onClick={onSearch}
+            aria-label="Search pages"
+            style={{ flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 8, padding: "7px 10px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.12)", background: "rgba(255,255,255,0.06)", color: "rgba(255,255,255,0.55)", fontSize: 13, textAlign: "left" }}
+          >
+            <Search size={14} />
+            <span style={{ flex: 1 }}>Search…</span>
+            <kbd className="hide-mobile" style={{ fontSize: 10, padding: "1px 5px", borderRadius: 4, border: "1px solid rgba(255,255,255,0.2)", fontFamily: "inherit" }}>Ctrl K</kbd>
+          </button>
+          <button
+            onClick={toggleAll}
+            aria-label={allCollapsed ? "Expand all sections" : "Collapse all sections"}
+            title={allCollapsed ? "Expand all" : "Collapse all"}
+            style={{ border: "1px solid rgba(255,255,255,0.12)", background: "rgba(255,255,255,0.06)", color: "rgba(255,255,255,0.55)", borderRadius: 8, padding: "0 9px", display: "flex", alignItems: "center" }}
+          >
+            {allCollapsed ? <ChevronsUpDown size={15} /> : <ChevronsDownUp size={15} />}
+          </button>
+        </div>
+        {allSections.map((section) => {
           // Unlabelled section: plain top-level links.
           if (!section.label.trim()) {
             return <div key={section.id} style={{ marginBottom: 6 }}>{section.items.map((k) => renderLink(k, false))}</div>;

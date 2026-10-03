@@ -2,14 +2,18 @@
 //
 // Multi-select state for list pages (bulk edit / bulk delete).
 //
-// Pass in the ids the selection is allowed to contain — normally the
-// *filtered* rows, all pages. The hook automatically prunes ids that
-// disappear (deleted in another session, filtered out, etc.), so a
-// bulk action can never touch a row the user can no longer see.
+// Pass in the ids the selection is allowed to contain — normally ALL rows
+// of the collection, not the filtered ones, so ticking rows, then changing
+// the search/filters and ticking more keeps the earlier ticks. The hook
+// prunes ids that no longer exist (deleted in another session, etc.).
+//
+// `resetKey` (optional): when it changes (e.g. the active branch), the
+// selection is cleared so a bulk action can't touch rows from a scope the
+// user has switched away from.
 
 import { useEffect, useMemo, useState } from "react";
 
-export function useBulkSelect(validIds = []) {
+export function useBulkSelect(validIds = [], resetKey = null) {
   const [selected, setSelected] = useState(() => new Set());
 
   // Stable key so the prune effect only runs when the id set changes.
@@ -23,6 +27,10 @@ export function useBulkSelect(validIds = []) {
       return next.size === prev.size ? prev : next;
     });
   }, [validKey]);
+
+  useEffect(() => {
+    setSelected((prev) => (prev.size === 0 ? prev : new Set()));
+  }, [resetKey]);
 
   const isSelected = (id) => selected.has(id);
 

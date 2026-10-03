@@ -14,7 +14,7 @@ export default function Unauthorized() {
         <p style={{ color: "#64748b", fontSize: 14, marginBottom: 28 }}>You don't have permission to view this page. Contact your administrator.</p>
         <button onClick={() => navigate("/")}
           style={{ width: "100%", padding: "12px", background: "#7a2535", color: "white", border: "none", borderRadius: 10, cursor: "pointer", fontWeight: 600, fontSize: 14 }}>
-          Go to Dashboard
+          Go to my home page
         </button>
       </div>
     </div>

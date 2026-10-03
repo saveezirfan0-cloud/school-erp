@@ -26,8 +26,12 @@ export default function Journals() {
   }, []);
 
   // multi-select for bulk actions
-  const bulk = useBulkSelect(journals.map(j => j.id));
-  const visibleIds = journals.map(j => j.id);
+  // Entries auto-posted from Expenses are managed with their expense, so they
+  // can't be selected, edited or deleted here.
+  const isAuto = (j) => j.source === "expense";
+  const manualIds = journals.filter(j => !isAuto(j)).map(j => j.id);
+  const bulk = useBulkSelect(manualIds);
+  const visibleIds = manualIds;
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -108,10 +112,13 @@ export default function Journals() {
             {journals.map(j => (
               <tr key={j.id} style={{ borderTop: "1px solid var(--border)", background: bulk.isSelected(j.id) ? "var(--primary-light)" : undefined }}>
                 <td style={{ padding: "12px 6px 12px 16px" }}>
-                  <RowCheckbox checked={bulk.isSelected(j.id)} onChange={() => bulk.toggle(j.id)} label={`Select journal entry ${j.reference || j.description}`} />
+                  {!isAuto(j) && <RowCheckbox checked={bulk.isSelected(j.id)} onChange={() => bulk.toggle(j.id)} label={`Select journal entry ${j.reference || j.description}`} />}
                 </td>
                 <td style={{ padding: "12px 16px", fontSize: 13 }}>{j.date}</td>
-                <td style={{ padding: "12px 16px", fontSize: 12, fontFamily: "monospace", fontWeight: 600 }}>{j.reference}</td>
+                <td style={{ padding: "12px 16px", fontSize: 12, fontFamily: "monospace", fontWeight: 600 }}>
+                  {j.reference}
+                  {isAuto(j) && <span title="Posted automatically from Expenses; edit or delete the expense instead" style={{ marginLeft: 6, padding: "1px 6px", borderRadius: 4, fontSize: 10, fontFamily: "inherit", background: "#eef2ff", color: "#4f46e5" }}>Auto</span>}
+                </td>
                 <td style={{ padding: "12px 16px", fontSize: 13, fontWeight: 500 }}>{j.description}</td>
                 <td style={{ padding: "12px 16px" }}>
                   <span style={{ padding: "3px 10px", borderRadius: 6, fontSize: 12, background: "#ecfdf5", color: "#10b981", fontWeight: 600 }}>
@@ -126,7 +133,7 @@ export default function Journals() {
                 <td style={{ padding: "12px 16px", fontSize: 14, fontWeight: 700 }}>Rs. {Number(j.amount).toLocaleString()}</td>
                 <td style={{ padding: "12px 16px", fontSize: 13, color: "var(--text-muted)" }}>{j.notes}</td>
                 <td style={{ padding: "12px 16px", textAlign: "right" }}>
-                  <button onClick={() => handleDelete(j)} style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "7px 9px", borderRadius: 8, cursor: "pointer" }}><Trash2 size={14} /></button>
+                  {!isAuto(j) && <button onClick={() => handleDelete(j)} style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "7px 9px", borderRadius: 8, cursor: "pointer" }}><Trash2 size={14} /></button>}
                 </td>
               </tr>
             ))}
@@ -138,10 +145,10 @@ export default function Journals() {
       {/* Bulk actions bar */}
       <BulkBar
         count={bulk.count}
-        total={journals.length}
+        total={manualIds.length}
         noun="entries"
         busy={bulkBusy}
-        onSelectAll={() => bulk.selectAll(journals.map(j => j.id))}
+        onSelectAll={() => bulk.selectAll(manualIds)}
         onClear={bulk.clear}
         actions={[
           { label: "Edit", icon: Pencil, onClick: () => setShowBulkEdit(true) },

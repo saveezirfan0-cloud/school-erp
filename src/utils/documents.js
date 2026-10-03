@@ -20,6 +20,7 @@
 // }
 import toast from "react-hot-toast";
 import { toDate } from "./dates";
+import { invoiceCollected, invoiceConcession, invoiceOutstanding } from "./invoiceTotals";
 import {
   ORG_NAME, ORG_FOOTER, BRAND, escapeHtml, safeFilename, toPdfText,
   needsUnicodeFallback, loadLogo, loadPdfLibs, printHTML,
@@ -50,14 +51,15 @@ const today = () => fmtDate(new Date());
 // ---------------------------------------------------------------------------
 
 export function buildInvoiceDoc(inv, { student, branchName } = {}) {
+  // Same figures as the Fees screen and reports (utils/invoiceTotals.js).
   const total = Number(inv.amount || 0);
-  const paid = Number(inv.paidAmount || 0);
-  const concession = Number(inv.concessionAmount || 0);
-  const balance = Math.max(0, total - paid - concession);
+  const paid = invoiceCollected(inv);
+  const concession = invoiceConcession(inv);
+  const balance = invoiceOutstanding(inv);
   const items = (inv.lineItems && inv.lineItems.length ? inv.lineItems : [{ description: "Fee", amount: total }]);
-  const status = inv.status === "paid"
+  const status = balance <= 0
     ? { label: "PAID", tone: "success" }
-    : inv.status === "partial"
+    : paid > 0
       ? { label: "PARTIALLY PAID", tone: "info" }
       : { label: "PENDING", tone: "warning" };
 
@@ -99,9 +101,11 @@ export function buildReceiptDoc(inv, payments, { student, branchName } = {}) {
   const live = (payments || [])
     .filter(p => p.type === "cash_in" && !p.reversed && !p.reversalOf)
     .sort((a, b) => String(a.date || "").localeCompare(String(b.date || "")));
-  const received = live.reduce((s, p) => s + Number(p.amount || 0), 0);
+  // Prefer the ledger entries; invoices paid before payments were tracked
+  // (bulk-created / imported) fall back to the invoice's own figures.
+  const received = live.length ? live.reduce((s, p) => s + Number(p.amount || 0), 0) : invoiceCollected(inv);
   const total = Number(inv.amount || 0);
-  const concession = Number(inv.concessionAmount || 0);
+  const concession = invoiceConcession(inv);
   const balance = Math.max(0, total - received - concession);
   const last = live[live.length - 1];
 
@@ -130,7 +134,7 @@ export function buildReceiptDoc(inv, payments, { student, branchName } = {}) {
       head: ["Date", "Description", "Received Into", "Amount"],
       rows: live.length
         ? live.map(p => [fmtDate(p.date) || "—", p.description || "Fee payment", p.account || "—", money(p.amount)])
-        : [[fmtDate(inv.paidDate) || "—", "Fee payment", inv.paidAccount || "—", money(inv.paidAmount || 0)]],
+        : [[fmtDate(inv.paidDate) || "—", "Fee payment", inv.paidAccount || "—", money(received)]],
       align: ["left", "left", "left", "right"],
     },
     totals,
@@ -203,9 +207,12 @@ export function buildPaymentDoc(p, { branchName } = {}) {
 }
 
 // rows: [{ date, label, detail, billed, received, reversed }] in date order.
-export function buildStatementDoc(student, rows, { branchName } = {}) {
+// `concession` is the total amount waived; it is listed as a final row and
+// reduces the balance (same rule as utils/fees.js summarizeInvoices).
+export function buildStatementDoc(student, rows, { branchName, concession = 0 } = {}) {
   let billed = 0;
   let received = 0;
+  let waived = 0;
   const body = rows.map(r => {
     if (!r.reversed) { billed += r.billed || 0; received += r.received || 0; }
     return [
@@ -213,10 +220,14 @@ export function buildStatementDoc(student, rows, { branchName } = {}) {
       `${r.label}${r.reversed ? " (reversed)" : ""}${r.detail ? ` - ${r.detail}` : ""}`,
       r.billed && !r.reversed ? money(r.billed) : "",
       r.received && !r.reversed ? (r.received < 0 ? `- ${money(-r.received)}` : money(r.received)) : "",
-      money(billed - received),
+      money(billed - received - waived),
     ];
   });
-  const balance = billed - received;
+  if (concession > 0) {
+    waived = concession;
+    body.push(["", "Concession (waived)", "", money(concession), money(billed - received - waived)]);
+  }
+  const balance = Math.max(0, billed - received - waived);
   return {
     kind: "statement",
     title: "FEE STATEMENT",
@@ -239,6 +250,7 @@ export function buildStatementDoc(student, rows, { branchName } = {}) {
     totals: [
       ["Total Billed", money(billed)],
       ["Total Received", money(received)],
+      ...(waived > 0 ? [["Concession (waived)", money(waived)]] : []),
       ["Balance Due", money(balance), true],
     ],
     notes: "",

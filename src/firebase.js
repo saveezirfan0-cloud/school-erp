@@ -17,6 +17,7 @@
 // ============================================================
 
 import { supabase } from "./lib/supabaseClient";
+import { coerceColumn } from "./utils/columns";
 
 export { supabase };
 // `auth` / `storage` kept for import compatibility (see firebaseAuthShim usage).
@@ -38,6 +39,14 @@ const TABLE_MAP = {
   customRoles: "custom_roles",
   reminderLogs: "reminder_logs",
   auditLog: "audit_log",
+  attendance: "attendance",
+  // LMS / academics (supabase/lms.sql)
+  subjects: "subjects",
+  exams: "exams",
+  examResults: "exam_results",
+  assignments: "assignments",
+  submissions: "submissions",
+  materials: "materials",
 };
 
 // Real (non-jsonb) columns per table. Anything not in this list
@@ -56,6 +65,13 @@ const COLUMNS = {
   custom_roles: ["id", "permissions", "created_at", "updated_at"],
   reminder_logs: ["id", "student_id", "phone", "message", "status", "date", "timestamp", "created_at", "updated_at"],
   audit_log: ["id", "user", "action", "module", "details", "timestamp", "created_at"],
+  subjects: ["id", "name", "code", "grade", "teacher", "branch_id", "created_at", "updated_at"],
+  attendance: ["id", "subject_type", "subject_id", "date", "status", "branch_id", "created_at", "updated_at"],
+  exams: ["id", "name", "term", "exam_type", "grade", "date", "total_marks", "published", "branch_id", "created_at", "updated_at"],
+  exam_results: ["id", "exam_id", "student_id", "subject_id", "marks_obtained", "max_marks", "absent", "remarks", "branch_id", "created_at", "updated_at"],
+  assignments: ["id", "title", "description", "subject_id", "grade", "assigned_date", "due_date", "max_marks", "attachment_url", "branch_id", "created_at", "updated_at"],
+  submissions: ["id", "assignment_id", "student_id", "status", "submitted_date", "marks", "feedback", "attachment_url", "branch_id", "created_at", "updated_at"],
+  materials: ["id", "title", "description", "kind", "url", "subject_id", "grade", "branch_id", "created_at", "updated_at"],
 };
 
 const SERVER_TS = "__SERVER_TIMESTAMP__";
@@ -75,7 +91,7 @@ function encode(table, data) {
     if (k === "id") continue; // id handled separately
     const val = v === SERVER_TS ? new Date().toISOString() : v;
     const snake = toSnake(k);
-    if (cols.includes(snake)) row[snake] = val;
+    if (cols.includes(snake)) row[snake] = coerceColumn(table, snake, val);
     else extra[k] = val;
   }
   if (Object.keys(extra).length) row.extra = extra;
@@ -101,6 +117,7 @@ function decode(row) {
 const SOFT_DELETE_TABLES = new Set([
   "students", "employees", "invoices", "expenses", "payments",
   "payslips", "accounts", "journals", "branches", "reminder_logs",
+  "subjects", "exams", "assignments", "materials",
 ]);
 
 // ---- Historical data scope ----
@@ -136,6 +153,7 @@ class CollectionRef {
     this._order = null;               // { col, ascending }
     this._limit = null;
     this._trashed = false;            // when true, read only soft-deleted rows
+    this._where = [];                 // [{ col, value }] equality filters
   }
 }
 class DocRef {
@@ -172,11 +190,22 @@ export function serverTimestamp() {
 // query()/orderBy()/limit(): we only need to carry intent onto the ref.
 export function query(ref, ...clauses) {
   const q = new CollectionRef(ref.name);
+  q._where = [...(ref._where || [])];
   for (const c of clauses) {
     if (c?.__order) q._order = c.__order;
     if (c?.__limit != null) q._limit = c.__limit;
+    if (c?.__where) q._where.push(c.__where);
   }
   return q;
+}
+// Equality (or `in`) filter. `field` must
+// be a real column (not an `extra` jsonb key) so Postgres and the
+// realtime channel can filter on it.
+// `where(f, "in", [a, b])` matches any of the listed values.
+export function where(field, op, value) {
+  if (op === "in" && Array.isArray(value)) return { __where: { col: toSnake(field), value, op: "in" } };
+  if (op !== "==") throw new Error(`where(): unsupported operator "${op}" (only "==" and "in")`);
+  return { __where: { col: toSnake(field), value, op: "==" } };
 }
 export function orderBy(field, direction = "asc") {
   return { __order: { col: toSnake(field), ascending: direction !== "desc" } };
@@ -215,6 +244,7 @@ function applyQuery(builder, ref) {
     if (ref._trashed) builder = builder.not("deleted_at", "is", null);
     else builder = builder.is("deleted_at", null);
   }
+  for (const w of ref._where || []) builder = w.op === "in" ? builder.in(w.col, w.value) : builder.eq(w.col, w.value);
   // Hide imported historical rows unless the History toggle is on.
   if (HISTORY_TABLES.has(ref.table) && !isHistoryVisible()) {
     builder = builder.or("extra->>historical.is.null,extra->>historical.neq.true");
@@ -250,6 +280,23 @@ export async function updateDoc(ref, data) {
   const row = encode(ref.table, data);
   const { error } = await supabase.from(ref.table).update(row).eq("id", ref.id);
   if (error) throw error;
+}
+
+// Insert-or-update many rows in one request. `onConflict` lists the columns
+// of a unique index (e.g. "subject_type,subject_id,date"); rows that hit it
+// are updated instead of rejected.
+//
+// `onConflict` is either that snake_case comma-separated string, or an array
+// of camelCase field names (e.g. ["examId","studentId","subjectId"]) which is
+// converted for you. On conflict the whole row is replaced, including `extra`,
+// so pass complete rows rather than partial patches.
+export async function upsertDocs(name, rows, onConflict) {
+  const table = TABLE_MAP[name] || name;
+  if (!rows || rows.length === 0) return 0;
+  const conflict = Array.isArray(onConflict) ? onConflict.map(toSnake).join(",") : onConflict;
+  const { error } = await supabase.from(table).upsert(rows.map((r) => encode(table, r)), { onConflict: conflict });
+  if (error) throw error;
+  return rows.length;
 }
 
 export async function deleteDoc(ref) {
@@ -325,7 +372,7 @@ export async function updateDocs(name, ids, data) {
     if (k === "id") continue;
     const val = v === SERVER_TS ? new Date().toISOString() : v;
     const snake = toSnake(k);
-    if (cols.includes(snake)) direct[snake] = val;
+    if (cols.includes(snake)) direct[snake] = coerceColumn(table, snake, val);
     else extraPatch[k] = val;
   }
 
@@ -399,6 +446,23 @@ export async function getDocs(ref) {
   return querySnap(data);
 }
 
+// Like getDocs(), but pages through the whole table. PostgREST caps a
+// single response at 1000 rows by default, so anything that sums over
+// a collection (reports) must page or its totals silently truncate.
+// Rows are ordered by id so range() pages are stable.
+export async function getAllDocs(ref, pageSize = 1000) {
+  const rows = [];
+  for (let from = 0; ; from += pageSize) {
+    let builder = supabase.from(ref.table).select("*");
+    builder = applyQuery(builder, ref).order("id", { ascending: true }).range(from, from + pageSize - 1);
+    const { data, error } = await builder;
+    if (error) throw error;
+    rows.push(...(data || []));
+    if (!data || data.length < pageSize) break;
+  }
+  return querySnap(rows);
+}
+
 export async function getDoc(ref) {
   const { data, error } = await supabase
     .from(ref.table)
@@ -446,6 +510,18 @@ export function onSnapshot(ref, onNext, onError) {
   }
 
   // Collection subscription: cache + incremental apply.
+  const wheres = ref._where || [];
+  const matchesWhere = (row) => wheres.every((w) => (w.op === "in"
+    ? w.value.some((v) => String(row?.[w.col]) === String(v))
+    : String(row?.[w.col]) === String(w.value)));
+  // Realtime takes a single filter (and `in` is capped at 100 values); the
+  // rest is enforced client-side by belongs() below.
+  const rtFilter = (() => {
+    const w = wheres[0];
+    if (!w) return undefined;
+    if (w.op === "in") return w.value.length && w.value.length <= 100 ? `${w.col}=in.(${w.value.join(",")})` : undefined;
+    return `${w.col}=eq.${w.value}`;
+  })();
   let cache = [];            // raw DB rows (snake_case), as returned by Supabase
   const emit = () => {
     if (!active) return;
@@ -494,7 +570,10 @@ export function onSnapshot(ref, onNext, onError) {
     .channel(`rt_${ref.table}_${Math.random().toString(36).slice(2)}`)
     .on(
       "postgres_changes",
-      { event: "*", schema: "public", table: ref.table },
+      {
+        event: "*", schema: "public", table: ref.table,
+        ...(rtFilter ? { filter: rtFilter } : {}),
+      },
       (payload) => {
         if (!active) return;
         const { eventType, new: newRow, old: oldRow } = payload;
@@ -504,6 +583,7 @@ export function onSnapshot(ref, onNext, onError) {
         // whether deleted_at matches what the view wants (live vs trash).
         const soft = SOFT_DELETE_TABLES.has(ref.table);
         const belongs = (row) => {
+          if (!matchesWhere(row)) return false;
           if (hiddenByHistory(ref.table, row)) return false;
           if (!soft) return true;
           const isTrashed = row && row.deleted_at != null;

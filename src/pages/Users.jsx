@@ -20,6 +20,7 @@ const DEFAULT_ROLE_LABELS = {
   branch_manager: { label: "Branch Manager", color: "#2a8c7a", bg: "#e6f4f1" },
   accountant: { label: "Accountant", color: "#4f46e5", bg: "#eef2ff" },
   fee_collector: { label: "Fee Collector", color: "#f59e0b", bg: "#fffbeb" },
+  teacher: { label: "Teacher", color: "#0ea5e9", bg: "#f0f9ff" },
 };
 
 const ALL_PERMISSIONS = [
@@ -41,6 +42,12 @@ const ALL_PERMISSIONS = [
   { key: "canEditPayslips", label: "Generate Payslips", group: "Payslips" },
   { key: "canViewAccounting", label: "View Accounting", group: "Accounting" },
   { key: "canEditAccounting", label: "Edit Accounting", group: "Accounting" },
+  { key: "canViewAttendance", label: "View Attendance", group: "Academics" },
+  { key: "canEditAttendance", label: "Mark Attendance", group: "Academics" },
+  { key: "canViewExams", label: "View Exams & Results", group: "Academics" },
+  { key: "canEditExams", label: "Create Exams / Enter Marks", group: "Academics" },
+  { key: "canViewLearning", label: "View Subjects, Homework & Materials", group: "Academics" },
+  { key: "canEditLearning", label: "Manage Subjects, Homework & Materials", group: "Academics" },
   { key: "canViewReports", label: "View Reports", group: "Reports" },
   { key: "canExport", label: "Export CSV / PDF", group: "Reports" },
   { key: "canManageBranches", label: "Manage Branches", group: "Admin" },
@@ -95,7 +102,7 @@ export default function Users() {
       setUsers(snap.docs.map(d => ({ id: d.id, ...d.data() })))
     );
     const u2 = onSnapshot(collection(db, "customRoles"), snap =>
-      setCustomRoles(snap.docs.map(d => ({ id: d.id, ...d.data() })))
+      setCustomRoles(snap.docs.filter(d => !d.id.startsWith("menu:")).map(d => ({ id: d.id, ...d.data() })))
     );
     return () => { u1(); u2(); };
   }, []);

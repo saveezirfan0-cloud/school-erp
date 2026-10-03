@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { db } from "../firebase";
 import { collection, onSnapshot, addDoc, serverTimestamp } from "../firebase";
+import { paymentInAccount } from "../utils/accounting";
 import { useParams, useNavigate } from "react-router-dom";
 import ExportMenu from "../components/UI/ExportMenu";
 import { ArrowLeft, ArrowUpCircle, ArrowDownCircle, Plus, X } from "lucide-react";
@@ -29,7 +30,7 @@ export default function AccountDetail() {
 
   if (!account) return <div style={{ padding: 40, color: "var(--text-muted)" }}>Loading...</div>;
 
-  const txns = payments.filter(p => p.account === account.name).sort((a, b) => new Date(b.date) - new Date(a.date));
+  const txns = payments.filter(p => paymentInAccount(p, account)).sort((a, b) => new Date(b.date) - new Date(a.date));
   const inflow = txns.filter(p => p.type === "cash_in").reduce((s, p) => s + Number(p.amount), 0);
   const outflow = txns.filter(p => p.type === "cash_out").reduce((s, p) => s + Number(p.amount), 0);
   const balance = Number(account.balance || 0) + inflow - outflow;
@@ -56,12 +57,12 @@ export default function AccountDetail() {
   const handleTransfer = async (e) => {
     e.preventDefault();
     await addDoc(collection(db, "payments"), {
-      type: "cash_out", account: account.name, amount: transfer.amount,
+      type: "cash_out", account: account.name, accountId: account.id, amount: transfer.amount,
       date: transfer.date, description: `Transfer to ${transfer.toAccount}: ${transfer.description}`,
       category: "Bank Transfer", createdAt: serverTimestamp()
     });
     await addDoc(collection(db, "payments"), {
-      type: "cash_in", account: transfer.toAccount, amount: transfer.amount,
+      type: "cash_in", account: transfer.toAccount, accountId: allAccounts.find(a => a.name === transfer.toAccount)?.id || "", amount: transfer.amount,
       date: transfer.date, description: `Transfer from ${account.name}: ${transfer.description}`,
       category: "Bank Transfer", createdAt: serverTimestamp()
     });

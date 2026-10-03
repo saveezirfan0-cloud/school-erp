@@ -1,20 +1,35 @@
 import React, { useState } from "react";
-import { db, addDoc, updateDoc, deleteDoc, doc, collection, serverTimestamp, updateDocs, deleteDocs } from "../firebase";
+import { db, supabase, addDoc, updateDoc, deleteDoc, doc, collection, serverTimestamp, updateDocs, deleteDocs } from "../firebase";
 import { useBranch } from "../context/BranchContext";
 import { useCollection } from "../hooks/useCollection";
 import { useBulkSelect } from "../hooks/useBulkSelect";
+import { usePersistentState } from "../hooks/usePersistentState";
+import { studentName } from "../utils/studentLabel";
 import ListToolbar from "../components/UI/ListToolbar";
 import Pagination from "../components/UI/Pagination";
 import BulkBar, { RowCheckbox, HeaderCheckbox } from "../components/UI/BulkBar";
 import BulkEditModal from "../components/UI/BulkEditModal";
+import BulkAddStudentsModal from "../components/UI/BulkAddStudentsModal";
 import { bulkResultMessage } from "../utils/bulk";
 import { logActivity } from "../utils/auditLog";
 import ExportMenu from "../components/UI/ExportMenu";
 import toast from "react-hot-toast";
-import { Plus, Edit2, Trash2, X, Receipt } from "lucide-react";
+import { Plus, Users, Edit2, Trash2, X, Receipt, CalendarCheck, GraduationCap } from "lucide-react";
 import { useNavigate } from "react-router-dom";
+import { isLeftStudent, leftStatusFields } from "../utils/studentStatus";
+import { useUser } from "../context/UserContext";
+import RollCallModal from "../components/Profile/RollCallModal";
 
 const emptyStudent = { name: "", studentId: "", grade: "", parentName: "", parentPhone: "", email: "", branchId: "", monthlyFee: "", address: "", dob: "", recurringFee: false };
+
+// Invoices copy the student's branch when they are created. When a student
+// moves branch, carry their invoices along so branch-scoped fees/dashboards
+// stay correct. Best effort: the dashboard also resolves branch via the student.
+async function syncInvoiceBranch(studentIds, branchId) {
+  if (!studentIds.length) return;
+  const { error } = await supabase.from("invoices").update({ branch_id: branchId || "" }).in("student_id", studentIds);
+  if (error) console.error("Could not update invoice branch:", error);
+}
 
 function useIsMobile() {
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
@@ -28,11 +43,15 @@ function useIsMobile() {
 
 export default function Students() {
   const { branches, activeBranch } = useBranch();
+  const { can } = useUser();
+  const canSeeAcademics = can("canViewAttendance") || can("canViewExams") || can("canViewLearning");
   const isMobile = useIsMobile();
   const navigate = useNavigate();
+  const [showRollCall, setShowRollCall] = useState(false);
 
   const [search, setSearch] = useState("");
-  const [filterGrade, setFilterGrade] = useState("");
+  // Multi-select class filter (Hifz, Class 1, ...). Remembered between visits.
+  const [filterGrades, setFilterGrades] = usePersistentState("students.filterGrades", []);
   const [sortField, setSortField] = useState("");
   const [sortDir, setSortDir] = useState("asc");
   const [page, setPage] = useState(1);
@@ -45,38 +64,42 @@ export default function Students() {
   const { rows, filtered, paged, total, pageCount, page: safePage } = useCollection("students", {
     activeBranch,
     search,
-    searchFields: ["name", "studentId", "parentName", "parentPhone"],
-    filters: { grade: filterGrade },
+    searchFields: ["name", "studentId", "grade", "parentName", "parentPhone", "email"],
+    filters: { grade: filterGrades },
     sortBy: sortField,
     sortDir,
     page,
     pageSize,
   });
 
-  const grades = [...new Set(rows.map((s) => s.grade).filter(Boolean))].sort();
-  const active = !!(search || filterGrade || sortField);
+  // Include any remembered selection that no longer matches a student, so it stays visible and removable.
+  const grades = [...new Set([...rows.map((s) => s.grade).filter(Boolean), ...filterGrades])].sort();
+  const active = !!(search || filterGrades.length || sortField);
 
   // multi-select for bulk actions
-  const bulk = useBulkSelect(filtered.map((s) => s.id));
+  const bulk = useBulkSelect(rows.map((s) => s.id), activeBranch);
   const pagedIds = paged.map((s) => s.id);
   const [showBulkEdit, setShowBulkEdit] = useState(false);
+  const [showBulkAdd, setShowBulkAdd] = useState(false);
   const [bulkBusy, setBulkBusy] = useState(false);
 
-  React.useEffect(() => { setPage(1); }, [search, filterGrade, pageSize, activeBranch]);
+  React.useEffect(() => { setPage(1); }, [search, filterGrades, pageSize, activeBranch]);
 
-  const clearAll = () => { setSearch(""); setFilterGrade(""); setSortField(""); setSortDir("asc"); };
+  const clearAll = () => { setSearch(""); setFilterGrades([]); setSortField(""); setSortDir("asc"); };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     try {
       if (editing) {
+        const before = rows.find((r) => r.id === editing);
         await updateDoc(doc(db, "students", editing), { ...form, updatedAt: serverTimestamp() });
+        if (before && (before.branchId || "") !== (form.branchId || "")) await syncInvoiceBranch([editing], form.branchId);
         toast.success("Student updated");
-        logActivity("updated", "Students", `${form.name}${form.studentId ? ` (${form.studentId})` : ""}`);
+        logActivity("updated", "Students", `${form.name || "Unnamed"}${form.studentId ? ` (${form.studentId})` : ""}`);
       } else {
         await addDoc(collection(db, "students"), { ...form, createdAt: serverTimestamp() });
         toast.success("Student added");
-        logActivity("created", "Students", `${form.name}${form.studentId ? ` (${form.studentId})` : ""}`);
+        logActivity("created", "Students", `${form.name || "Unnamed"}${form.studentId ? ` (${form.studentId})` : ""}`);
       }
       setShowModal(false); setForm(emptyStudent); setEditing(null);
     } catch (err) { toast.error(err?.message || "Error saving"); }
@@ -87,7 +110,7 @@ export default function Students() {
     try {
       await deleteDoc(doc(db, "students", s.id));
       toast.success("Student moved to Trash");
-      logActivity("deleted", "Students", `${s.name}${s.studentId ? ` (${s.studentId})` : ""}`);
+      logActivity("deleted", "Students", `${studentName(s)}${s.name && s.studentId ? ` (${s.studentId})` : ""}`);
     }
     catch (err) { toast.error(err?.message || "Error deleting"); }
   };
@@ -113,6 +136,7 @@ export default function Students() {
       const n = bulk.count;
       if (changes.branchId === "main") changes.branchId = "";
       await updateDocs("students", [...bulk.selected], { ...changes, updatedAt: serverTimestamp() });
+      if ("branchId" in changes) await syncInvoiceBranch([...bulk.selected], changes.branchId);
       toast.success(`${n} student${n === 1 ? "" : "s"} updated`);
       logActivity("updated", "Students", `${n} students (bulk): ${Object.keys(changes).join(", ")}`);
       setShowBulkEdit(false);
@@ -136,6 +160,15 @@ export default function Students() {
         <h2 style={{ fontSize: 20, fontWeight: 700 }}>Students <span style={{ fontSize: 13, fontWeight: 400, color: "var(--text-muted)" }}>({total})</span></h2>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <ExportMenu filename="students" title="Students Report" getData={getExportData} disabled={filtered.length === 0} />
+          <button onClick={() => setShowBulkAdd(true)}
+            style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 14px", background: "white", color: "var(--primary)", border: "1px solid var(--primary)", borderRadius: 8, cursor: "pointer", fontWeight: 600, fontSize: 13 }}>
+            <Users size={15} /> Bulk Add
+          </button>
+          {can("canEditStudents") && (
+            <button onClick={() => setShowRollCall(true)} style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13 }}>
+              <CalendarCheck size={14} /> Attendance
+            </button>
+          )}
           <button onClick={() => { setForm(emptyStudent); setEditing(null); setShowModal(true); }}
             style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 16px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600, fontSize: 13 }}>
             <Plus size={15} /> Add Student
@@ -146,9 +179,9 @@ export default function Students() {
       <ListToolbar
         search={search}
         onSearch={setSearch}
-        searchPlaceholder="Search name, ID, parent, phone..."
+        searchPlaceholder="Search name, ID, class, parent, phone..."
         filters={[
-          { key: "grade", value: filterGrade, onChange: setFilterGrade, placeholder: "All Grades", options: grades.map((g) => ({ value: g, label: g })) },
+          { key: "grade", multi: true, value: filterGrades, onChange: setFilterGrades, placeholder: "All Classes", options: grades.map((g) => ({ value: g, label: g })) },
         ]}
         sort={{
           field: sortField, dir: sortDir,
@@ -168,20 +201,21 @@ export default function Students() {
       {isMobile ? (
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           {paged.map((s) => (
-            <div key={s.id} style={{ background: "white", borderRadius: 12, padding: 16, border: bulk.isSelected(s.id) ? "1.5px solid var(--primary)" : "1px solid var(--border)" }}>
+            <div key={s.id} onClick={() => navigate(`/students/${s.id}`)} style={{ background: "white", borderRadius: 12, padding: 16, cursor: "pointer", border: bulk.isSelected(s.id) ? "1.5px solid var(--primary)" : "1px solid var(--border)" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <RowCheckbox checked={bulk.isSelected(s.id)} onChange={() => bulk.toggle(s.id)} label={`Select ${s.name}`} />
+                  <RowCheckbox checked={bulk.isSelected(s.id)} onChange={() => bulk.toggle(s.id)} label={`Select ${studentName(s)}`} />
                   <div style={{ width: 40, height: 40, borderRadius: "50%", background: "var(--primary-light)", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, color: "var(--primary)", fontSize: 16 }}>
-                    {s.name?.charAt(0)?.toUpperCase()}
+                    {studentName(s).charAt(0).toUpperCase()}
                   </div>
                   <div>
-                    <div style={{ fontWeight: 600, fontSize: 15 }}>{s.name}</div>
+                    <div style={{ fontWeight: 600, fontSize: 15 }}>{studentName(s)}</div>
                     <div style={{ fontSize: 12, color: "var(--text-muted)", fontFamily: "monospace" }}>{s.studentId}</div>
                   </div>
                 </div>
-                <div style={{ display: "flex", gap: 6 }}>
+                <div style={{ display: "flex", gap: 6 }} onClick={(e) => e.stopPropagation()}>
                   <button onClick={() => navigate(`/students/${s.id}/ledger`)} title="Ledger" style={{ border: "none", background: "#eff6ff", color: "#2563eb", padding: "7px 9px", borderRadius: 8, cursor: "pointer" }}><Receipt size={14} /></button>
+                  {canSeeAcademics && <button onClick={() => navigate(`/students/${s.id}/academics`)} title="Academics" aria-label="Academics" style={{ border: "none", background: "#ecfdf5", color: "#059669", padding: "7px 9px", borderRadius: 8, cursor: "pointer" }}><GraduationCap size={14} /></button>}
                   <button onClick={() => { setForm(s); setEditing(s.id); setShowModal(true); }} style={{ border: "none", background: "var(--primary-light)", color: "var(--primary)", padding: "7px 9px", borderRadius: 8, cursor: "pointer" }}><Edit2 size={14} /></button>
                   <button onClick={() => handleDelete(s)} style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "7px 9px", borderRadius: 8, cursor: "pointer" }}><Trash2 size={14} /></button>
                 </div>
@@ -216,25 +250,27 @@ export default function Students() {
               </thead>
               <tbody>
                 {paged.map((s) => (
-                  <tr key={s.id} style={{ borderTop: "1px solid var(--border)", background: bulk.isSelected(s.id) ? "var(--primary-light)" : undefined }}>
+                  <tr key={s.id} onClick={() => navigate(`/students/${s.id}`)} title="Open student profile"
+                    style={{ borderTop: "1px solid var(--border)", cursor: "pointer", background: bulk.isSelected(s.id) ? "var(--primary-light)" : undefined }}>
                     <td style={{ padding: "11px 6px 11px 14px" }}>
-                      <RowCheckbox checked={bulk.isSelected(s.id)} onChange={() => bulk.toggle(s.id)} label={`Select ${s.name}`} />
+                      <RowCheckbox checked={bulk.isSelected(s.id)} onChange={() => bulk.toggle(s.id)} label={`Select ${studentName(s)}`} />
                     </td>
                     <td style={{ padding: "11px 14px", fontSize: 12, fontFamily: "monospace" }}>{s.studentId}</td>
-                    <td style={{ padding: "11px 14px", fontSize: 14, fontWeight: 500, whiteSpace: "nowrap" }}>{s.name}</td>
+                    <td style={{ padding: "11px 14px", fontSize: 14, fontWeight: 500, whiteSpace: "nowrap", color: "var(--primary)" }}>{studentName(s)}{isLeftStudent(s) && <span style={{ marginLeft: 8, padding: "2px 8px", borderRadius: 20, fontSize: 11, background: "#fef2f2", color: "#ef4444", fontWeight: 600 }}>Left</span>}</td>
                     <td style={{ padding: "11px 14px", fontSize: 13 }}>{s.grade}</td>
                     <td style={{ padding: "11px 14px", fontSize: 13, whiteSpace: "nowrap" }}>{s.parentName}</td>
                     <td style={{ padding: "11px 14px", fontSize: 13 }}>{s.parentPhone}</td>
-                    <td style={{ padding: "11px 14px", fontSize: 13, fontWeight: 600 }}>Rs. {s.monthlyFee}</td>
+                    <td style={{ padding: "11px 14px", fontSize: 13, fontWeight: 600 }}>Rs. {s.monthlyFee || 0}</td>
                     <td style={{ padding: "11px 14px", fontSize: 13 }}>{branches.find((b) => b.id === s.branchId)?.name || "Main Office"}</td>
                     <td style={{ padding: "11px 14px" }}>
                       <span style={{ padding: "2px 8px", borderRadius: 20, fontSize: 11, fontWeight: 600, background: s.recurringFee ? "#ecfdf5" : "#f8fafc", color: s.recurringFee ? "#10b981" : "var(--text-muted)" }}>
                         {s.recurringFee ? "Auto" : "Manual"}
                       </span>
                     </td>
-                    <td style={{ padding: "11px 14px" }}>
+                    <td style={{ padding: "11px 14px" }} onClick={(e) => e.stopPropagation()}>
                       <div style={{ display: "flex", gap: 6 }}>
                         <button onClick={() => navigate(`/students/${s.id}/ledger`)} title="Ledger" style={{ border: "none", background: "#eff6ff", color: "#2563eb", padding: "6px 9px", borderRadius: 6, cursor: "pointer" }}><Receipt size={13} /></button>
+                        {canSeeAcademics && <button onClick={() => navigate(`/students/${s.id}/academics`)} title="Academics" aria-label="Academics" style={{ border: "none", background: "#ecfdf5", color: "#059669", padding: "6px 9px", borderRadius: 6, cursor: "pointer" }}><GraduationCap size={13} /></button>}
                         <button onClick={() => { setForm(s); setEditing(s.id); setShowModal(true); }} style={{ border: "none", background: "var(--primary-light)", color: "var(--primary)", padding: "6px 9px", borderRadius: 6, cursor: "pointer" }}><Edit2 size={13} /></button>
                         <button onClick={() => handleDelete(s)} style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "6px 9px", borderRadius: 6, cursor: "pointer" }}><Trash2 size={13} /></button>
                       </div>
@@ -253,6 +289,15 @@ export default function Students() {
         onPage={setPage} onPageSize={setPageSize}
       />
 
+      {showRollCall && (
+        <RollCallModal
+          subjectType="student" noun="students"
+          scopeLabel={filterGrades.length ? filterGrades.join(", ") : "all classes in the current list"}
+          people={filtered.map((s) => ({ id: s.id, name: s.name, sub: [s.studentId, s.grade].filter(Boolean).join(" • "), branchId: s.branchId }))}
+          onClose={() => setShowRollCall(false)}
+        />
+      )}
+
       {/* Bulk actions bar */}
       <BulkBar
         count={bulk.count}
@@ -266,6 +311,16 @@ export default function Students() {
           { label: "Delete", icon: Trash2, variant: "danger", onClick: handleBulkDelete },
         ]}
       />
+
+      {showBulkAdd && (
+        <BulkAddStudentsModal
+          branches={branches}
+          activeBranch={activeBranch}
+          existingIds={rows.map((s) => (s.studentId || "").trim().toLowerCase()).filter(Boolean)}
+          onClose={() => setShowBulkAdd(false)}
+          onDone={({ keepOpen } = {}) => { if (!keepOpen) setShowBulkAdd(false); }}
+        />
+      )}
 
       {/* Bulk edit modal */}
       {showBulkEdit && (
@@ -293,10 +348,11 @@ export default function Students() {
             <form onSubmit={handleSubmit}>
               <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 14 }}>
                 {[
-                  { label: "Full Name", key: "name", required: true },
-                  { label: "Student ID", key: "studentId", required: true },
+                  { label: "Full Name", key: "name" },
+                  { label: "Student ID", key: "studentId" },
                   { label: "Grade / Class", key: "grade" },
                   { label: "Date of Birth", key: "dob", type: "date" },
+                  { label: "Admission Date", key: "admissionDate", type: "date" },
                   { label: "Parent Name", key: "parentName" },
                   { label: "Parent Phone (+92...)", key: "parentPhone" },
                   { label: "Email", key: "email", type: "email" },
@@ -315,6 +371,13 @@ export default function Students() {
                     <option value="">Main Office</option>
                     {branches.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
                   </select>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, padding: 12, border: "1px solid var(--border)", borderRadius: 8, background: isLeftStudent(form) ? "#fef2f2" : "#f8fafc" }}>
+                  <input type="checkbox" id="studentLeft" checked={isLeftStudent(form)} onChange={(e) => setForm((p) => ({ ...p, ...leftStatusFields(e.target.checked) }))} style={{ width: 18, height: 18 }} />
+                  <div>
+                    <label htmlFor="studentLeft" style={{ fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Student has left</label>
+                    <div style={{ fontSize: 11, color: "var(--text-muted)" }}>Keeps their records, stops new fee invoices</div>
+                  </div>
                 </div>
                 <div style={{ display: "flex", alignItems: "center", gap: 10, padding: 12, border: "1px solid var(--border)", borderRadius: 8, background: form.recurringFee ? "#f0fdf4" : "#f8fafc" }}>
                   <input type="checkbox" id="recurringFee" checked={form.recurringFee || false} onChange={(e) => setForm((p) => ({ ...p, recurringFee: e.target.checked }))} style={{ width: 18, height: 18 }} />

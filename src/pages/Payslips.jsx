@@ -104,7 +104,7 @@ export default function Payslips() {
 
   // multi-select for bulk actions (this page shows all filtered rows,
   // no pagination, so the header checkbox covers the whole list)
-  const bulk = useBulkSelect(filtered.map(p => p.id));
+  const bulk = useBulkSelect(payslips.map(p => p.id), activeBranch);
   const visibleIds = filtered.map(p => p.id);
   const [showBulkEdit, setShowBulkEdit] = useState(false);
   const [bulkPayOpen, setBulkPayOpen] = useState(false);
@@ -498,6 +498,7 @@ export default function Payslips() {
                     }}
                     options={employees.map(emp => ({ value: emp.id, label: emp.name, sublabel: emp.role || "" }))}
                     placeholder="Search employee..."
+                    rememberKey="payslips.employee"
                   />
                 </div>
                 <div>
