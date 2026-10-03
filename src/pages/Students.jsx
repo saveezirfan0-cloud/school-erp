@@ -7,11 +7,12 @@ import ListToolbar from "../components/UI/ListToolbar";
 import Pagination from "../components/UI/Pagination";
 import BulkBar, { RowCheckbox, HeaderCheckbox } from "../components/UI/BulkBar";
 import BulkEditModal from "../components/UI/BulkEditModal";
+import BulkAddStudentsModal from "../components/UI/BulkAddStudentsModal";
 import { bulkResultMessage } from "../utils/bulk";
 import { logActivity } from "../utils/auditLog";
 import { exportToCSV, exportToPDF } from "../utils/exportUtils";
 import toast from "react-hot-toast";
-import { Plus, Edit2, Trash2, X, Download, FileText, Receipt } from "lucide-react";
+import { Plus, Users, Edit2, Trash2, X, Download, FileText, Receipt } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 
 const emptyStudent = { name: "", studentId: "", grade: "", parentName: "", parentPhone: "", email: "", branchId: "", monthlyFee: "", address: "", dob: "", recurringFee: false };
@@ -60,6 +61,7 @@ export default function Students() {
   const bulk = useBulkSelect(filtered.map((s) => s.id));
   const pagedIds = paged.map((s) => s.id);
   const [showBulkEdit, setShowBulkEdit] = useState(false);
+  const [showBulkAdd, setShowBulkAdd] = useState(false);
   const [bulkBusy, setBulkBusy] = useState(false);
 
   React.useEffect(() => { setPage(1); }, [search, filterGrade, pageSize, activeBranch]);
@@ -140,6 +142,10 @@ export default function Students() {
             <button onClick={handleCSV} style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13 }}><Download size={14} /> CSV</button>
             <button onClick={handlePDF} style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13 }}><FileText size={14} /> PDF</button>
           </>}
+          <button onClick={() => setShowBulkAdd(true)}
+            style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 14px", background: "white", color: "var(--primary)", border: "1px solid var(--primary)", borderRadius: 8, cursor: "pointer", fontWeight: 600, fontSize: 13 }}>
+            <Users size={15} /> Bulk Add
+          </button>
           <button onClick={() => { setForm(emptyStudent); setEditing(null); setShowModal(true); }}
             style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 16px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600, fontSize: 13 }}>
             <Plus size={15} /> Add Student
@@ -270,6 +276,16 @@ export default function Students() {
           { label: "Delete", icon: Trash2, variant: "danger", onClick: handleBulkDelete },
         ]}
       />
+
+      {showBulkAdd && (
+        <BulkAddStudentsModal
+          branches={branches}
+          activeBranch={activeBranch}
+          existingIds={rows.map((s) => (s.studentId || "").trim().toLowerCase()).filter(Boolean)}
+          onClose={() => setShowBulkAdd(false)}
+          onDone={({ keepOpen } = {}) => { if (!keepOpen) setShowBulkAdd(false); }}
+        />
+      )}
 
       {/* Bulk edit modal */}
       {showBulkEdit && (
