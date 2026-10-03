@@ -3,6 +3,7 @@ import { db } from "../firebase";
 import { collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot, serverTimestamp, updateDocs, deleteDocs } from "../firebase";
 import { useBranch } from "../context/BranchContext";
 import { matchesBranch } from "../utils/branchFilter";
+import { isLeftStudent } from "../utils/studentStatus";
 import Pagination from "../components/UI/Pagination";
 import SearchableSelect from "../components/UI/SearchableSelect";
 import { useBulkSelect } from "../hooks/useBulkSelect";
@@ -76,7 +77,7 @@ export default function Fees() {
     const u2 = onSnapshot(collection(db, "students"), snap => {
       const s = snap.docs.map(d => ({ id: d.id, ...d.data() }));
       setStudents(s);
-      setBulkStudents(s.map(st => ({ ...st, selected: false, amount: st.monthlyFee || "", paid: false })));
+      setBulkStudents(s.filter(st => !isLeftStudent(st)).map(st => ({ ...st, selected: false, amount: st.monthlyFee || "", paid: false })));
     });
     const u3 = onSnapshot(collection(db, "accounts"), snap =>
       setAccounts(snap.docs.map(d => ({ id: d.id, ...d.data() })))
@@ -196,7 +197,7 @@ export default function Fees() {
   };
 
   const handleGenerateRecurring = async () => {
-    const recurringStudents = students.filter(s => s.recurringFee);
+    const recurringStudents = students.filter(s => s.recurringFee && !isLeftStudent(s));
     if (recurringStudents.length === 0) return toast.error("No students have auto-recurring fees enabled");
     const existing = invoices.filter(i => i.month === recurringMonth && Number(i.year) === Number(recurringYear));
     const existingIds = new Set(existing.map(i => i.studentId));
@@ -914,7 +915,7 @@ export default function Fees() {
               <button onClick={() => setShowRecurring(false)} style={{ border: "none", background: "none", cursor: "pointer" }}><X size={20} /></button>
             </div>
             <div style={{ padding: 14, background: "#f8fafc", borderRadius: 10, marginBottom: 16, fontSize: 13, color: "var(--text-muted)" }}>
-              Will generate invoices for <strong style={{ color: "#10b981" }}>{students.filter(s => s.recurringFee).length} students</strong> with auto-recurring fees enabled. Existing invoices for this month are skipped.
+              Will generate invoices for <strong style={{ color: "#10b981" }}>{students.filter(s => s.recurringFee && !isLeftStudent(s)).length} students</strong> with auto-recurring fees enabled. Existing invoices for this month are skipped.
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 20 }}>
               <div>
