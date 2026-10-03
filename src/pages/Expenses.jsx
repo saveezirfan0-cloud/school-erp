@@ -9,12 +9,14 @@ import BulkBar, { RowCheckbox, HeaderCheckbox } from "../components/UI/BulkBar";
 import BulkEditModal from "../components/UI/BulkEditModal";
 import { runBulk, bulkResultMessage } from "../utils/bulk";
 import { logActivity } from "../utils/auditLog";
+import { matchesBranch } from "../utils/branchFilter";
 import { recordPayment, bankCashAccounts, reverseSourcePayments } from "../utils/accounting";
 import { exportToCSV, exportToPDF } from "../utils/exportUtils";
+import { EXTRA_EXPENSE_CATEGORIES } from "../config/statementHeads";
 import toast from "react-hot-toast";
 import { Plus, Trash2, X, Download, FileText, Pencil } from "lucide-react";
 
-const CATEGORIES = ["Rent", "Utilities", "Salaries", "Supplies", "Maintenance", "Transport", "Other"];
+const CATEGORIES = ["Rent", "Utilities", "Salaries", "Supplies", "Maintenance", "Transport", "Other", ...EXTRA_EXPENSE_CATEGORIES];
 const emptyLine = { description: "", amount: "", category: "" };
 
 function useIsMobile() {
@@ -47,6 +49,14 @@ export default function Expenses() {
   const [pageSize, setPageSize] = useState(25);
 
   React.useEffect(() => { setPage(1); }, [search, filterCategory, filterBranch, filterDateFrom, filterDateTo, pageSize, activeBranch]);
+
+  // When a specific branch is active in the navbar, the branch filter is
+  // scoped to it (even for admins); "All Branches" in the navbar unlocks it.
+  const branchLocked = activeBranch !== "all";
+  const activeBranchName = activeBranch === "main"
+    ? "Main Office"
+    : (branches.find(b => b.id === activeBranch)?.name || "");
+  useEffect(() => { if (branchLocked) setFilterBranch(""); }, [branchLocked, activeBranch]);
 
   useEffect(() => {
     const unsub = onSnapshot(collection(db, "expenses"), snap =>
@@ -234,10 +244,17 @@ export default function Expenses() {
           {CATEGORIES.map(c => <option key={c}>{c}</option>)}
         </select>
         {!isMobile && (
-          <select value={filterBranch} onChange={e => setFilterBranch(e.target.value)}
+          <select value={branchLocked ? "" : filterBranch} onChange={e => setFilterBranch(e.target.value)}
+            disabled={branchLocked}
             style={{ padding: "8px 10px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 13, background: "white" }}>
-            <option value="">All Branches</option>
-            {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+            {branchLocked ? (
+              <option value="">{activeBranchName}</option>
+            ) : (
+              <>
+                <option value="">All Branches</option>
+                {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+              </>
+            )}
           </select>
         )}
         <input type="date" value={filterDateFrom} onChange={e => setFilterDateFrom(e.target.value)}
