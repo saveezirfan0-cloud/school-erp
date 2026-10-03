@@ -1,7 +1,9 @@
 import React, { useEffect, useState } from "react";
 import { db } from "../firebase";
 import { collection, addDoc, deleteDoc, doc, onSnapshot, serverTimestamp, updateDocs, deleteDocs } from "../firebase";
+import Pagination from "../components/UI/Pagination";
 import { useBulkSelect } from "../hooks/useBulkSelect";
+import { isAutoJournal } from "../utils/autoJournals";
 import BulkBar, { RowCheckbox, HeaderCheckbox } from "../components/UI/BulkBar";
 import BulkEditModal from "../components/UI/BulkEditModal";
 import { bulkResultMessage } from "../utils/bulk";
@@ -26,8 +28,22 @@ export default function Journals() {
   }, []);
 
   // multi-select for bulk actions
-  const bulk = useBulkSelect(journals.map(j => j.id));
-  const visibleIds = journals.map(j => j.id);
+  // Entries auto-posted from Expenses are managed with their expense, so they
+  // can't be selected, edited or deleted here.
+  const isAuto = isAutoJournal;
+  const manualIds = journals.filter(j => !isAuto(j)).map(j => j.id);
+
+  const [show, setShow] = useState("manual"); // manual | auto | all
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
+  const shown = journals.filter(j => show === "all" || (show === "auto") === isAuto(j));
+  const pageCount = Math.max(1, Math.ceil(shown.length / pageSize));
+  const safePage = Math.min(Math.max(1, page), pageCount);
+  const paged = shown.slice((safePage - 1) * pageSize, safePage * pageSize);
+  useEffect(() => { setPage(1); }, [show, pageSize]);
+
+  const bulk = useBulkSelect(manualIds);
+  const visibleIds = paged.filter(j => !isAuto(j)).map(j => j.id);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -91,6 +107,15 @@ export default function Journals() {
         </button>
       </div>
 
+      <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
+        {[["manual", "Manual"], ["auto", "Auto-posted"], ["all", "All"]].map(([k, label]) => (
+          <button key={k} onClick={() => setShow(k)}
+            style={{ padding: "6px 16px", borderRadius: 20, border: "1px solid var(--border)", cursor: "pointer", fontSize: 13, fontWeight: 500, background: show === k ? "var(--primary)" : "white", color: show === k ? "white" : "#475569" }}>
+            {label}
+          </button>
+        ))}
+      </div>
+
       <div style={{ background: "white", borderRadius: 12, border: "1px solid var(--border)", overflow: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
@@ -105,13 +130,16 @@ export default function Journals() {
             </tr>
           </thead>
           <tbody>
-            {journals.map(j => (
+            {paged.map(j => (
               <tr key={j.id} style={{ borderTop: "1px solid var(--border)", background: bulk.isSelected(j.id) ? "var(--primary-light)" : undefined }}>
                 <td style={{ padding: "12px 6px 12px 16px" }}>
-                  <RowCheckbox checked={bulk.isSelected(j.id)} onChange={() => bulk.toggle(j.id)} label={`Select journal entry ${j.reference || j.description}`} />
+                  {!isAuto(j) && <RowCheckbox checked={bulk.isSelected(j.id)} onChange={() => bulk.toggle(j.id)} label={`Select journal entry ${j.reference || j.description}`} />}
                 </td>
                 <td style={{ padding: "12px 16px", fontSize: 13 }}>{j.date}</td>
-                <td style={{ padding: "12px 16px", fontSize: 12, fontFamily: "monospace", fontWeight: 600 }}>{j.reference}</td>
+                <td style={{ padding: "12px 16px", fontSize: 12, fontFamily: "monospace", fontWeight: 600 }}>
+                  {j.reference}
+                  {isAuto(j) && <span title="Posted automatically from an expense, fee or salary payment; change or delete that instead" style={{ marginLeft: 6, padding: "1px 6px", borderRadius: 4, fontSize: 10, fontFamily: "inherit", background: "#eef2ff", color: "#4f46e5" }}>Auto</span>}
+                </td>
                 <td style={{ padding: "12px 16px", fontSize: 13, fontWeight: 500 }}>{j.description}</td>
                 <td style={{ padding: "12px 16px" }}>
                   <span style={{ padding: "3px 10px", borderRadius: 6, fontSize: 12, background: "#ecfdf5", color: "#10b981", fontWeight: 600 }}>
@@ -126,22 +154,24 @@ export default function Journals() {
                 <td style={{ padding: "12px 16px", fontSize: 14, fontWeight: 700 }}>Rs. {Number(j.amount).toLocaleString()}</td>
                 <td style={{ padding: "12px 16px", fontSize: 13, color: "var(--text-muted)" }}>{j.notes}</td>
                 <td style={{ padding: "12px 16px", textAlign: "right" }}>
-                  <button onClick={() => handleDelete(j)} style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "7px 9px", borderRadius: 8, cursor: "pointer" }}><Trash2 size={14} /></button>
+                  {!isAuto(j) && <button onClick={() => handleDelete(j)} style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "7px 9px", borderRadius: 8, cursor: "pointer" }}><Trash2 size={14} /></button>}
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
-        {journals.length === 0 && <div style={{ padding: 40, textAlign: "center", color: "var(--text-muted)" }}>No journal entries yet</div>}
+        {shown.length === 0 && <div style={{ padding: 40, textAlign: "center", color: "var(--text-muted)" }}>{journals.length === 0 ? "No journal entries yet" : "No entries in this view"}</div>}
       </div>
+
+      <Pagination page={safePage} pageCount={pageCount} total={shown.length} pageSize={pageSize} onPage={setPage} onPageSize={setPageSize} />
 
       {/* Bulk actions bar */}
       <BulkBar
         count={bulk.count}
-        total={journals.length}
+        total={manualIds.length}
         noun="entries"
         busy={bulkBusy}
-        onSelectAll={() => bulk.selectAll(journals.map(j => j.id))}
+        onSelectAll={() => bulk.selectAll(manualIds)}
         onClear={bulk.clear}
         actions={[
           { label: "Edit", icon: Pencil, onClick: () => setShowBulkEdit(true) },

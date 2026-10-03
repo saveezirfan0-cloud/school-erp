@@ -40,6 +40,7 @@ const TABLE_MAP = {
   reminderLogs: "reminder_logs",
   auditLog: "audit_log",
   attendance: "attendance",
+  budgets: "budgets",
   // LMS / academics (supabase/lms.sql)
   subjects: "subjects",
   exams: "exams",
@@ -67,6 +68,7 @@ const COLUMNS = {
   audit_log: ["id", "user", "action", "module", "details", "timestamp", "created_at"],
   subjects: ["id", "name", "code", "grade", "teacher", "branch_id", "created_at", "updated_at"],
   attendance: ["id", "subject_type", "subject_id", "date", "status", "branch_id", "created_at", "updated_at"],
+  budgets: ["id", "kind", "category", "amount", "branch_id", "created_at", "updated_at"],
   exams: ["id", "name", "term", "exam_type", "grade", "date", "total_marks", "published", "branch_id", "created_at", "updated_at"],
   exam_results: ["id", "exam_id", "student_id", "subject_id", "marks_obtained", "max_marks", "absent", "remarks", "branch_id", "created_at", "updated_at"],
   assignments: ["id", "title", "description", "subject_id", "grade", "assigned_date", "due_date", "max_marks", "attachment_url", "branch_id", "created_at", "updated_at"],
@@ -543,11 +545,18 @@ export function onSnapshot(ref, onNext, onError) {
 
   const fullFetch = async () => {
     try {
-      let builder = supabase.from(ref.table).select("*");
-      builder = applyQuery(builder, ref);
-      const { data, error } = await builder;
-      if (error) throw error;
-      cache = data || [];
+      // PostgREST caps one response at 1000 rows, so page through the whole
+      // table (ordered by id so the pages don't overlap or skip rows).
+      const rows = [];
+      for (let from = 0; ; from += 1000) {
+        let builder = supabase.from(ref.table).select("*");
+        builder = applyQuery(builder, ref).order("id", { ascending: true }).range(from, from + 999);
+        const { data, error } = await builder;
+        if (error) throw error;
+        rows.push(...(data || []));
+        if (!data || data.length < 1000) break;
+      }
+      cache = rows;
       emit();
     } catch (e) {
       if (active && onError) onError(e);

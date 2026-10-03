@@ -18,7 +18,9 @@
 
 import { toDate } from "./dates";
 import { paymentInAccount } from "./paymentAccount";
+import { isAutoJournal } from "./autoJournals";
 import { invoiceCollected, invoicePaymentDate } from "./invoiceTotals";
+import { isLedgerIncome } from "./ledgerIncome";
 import {
   INCOME_GROUPS, EXPENSE_GROUPS, INCOME_SUBTYPE_GROUP, EXPENSE_SUBTYPE_GROUP,
   INCOME_RULES, EXPENSE_RULES,
@@ -46,9 +48,6 @@ function branchName(branchId, branches) {
   if (!branchId || branchId === "main") return "Main";
   return branches.find((b) => b.id === branchId)?.name || "Main";
 }
-
-// Payments that are transfers between our own accounts, not income.
-const TRANSFER_CATEGORIES = ["Bank Deposit", "Bank Withdrawal"];
 
 // Picks the section for a head: chart-of-accounts sub-type, then keywords.
 function makeClassifier(chart, subtypeMap, rules) {
@@ -162,10 +161,7 @@ export function buildMonthlyStatement({
 
   (use("payments") ? payments : []).filter(inScope).forEach((p) => {
     if (!accOk(p.account)) return;
-    if (p.type !== "cash_in" || p.reversed === true || p.reversalOf) return;
-    if (p.source === "invoice" || p.source === "expense" || p.source === "payslip") return;
-    if (TRANSFER_CATEGORIES.includes(p.category)) return;
-    if (!inMonth(p.date)) return;
+    if (!isLedgerIncome(p) || !inMonth(p.date)) return;
     incomeSection.add(clean(p.category, "Miscellaneous"), branchOf(p), num(p.amount), undefined,
       { date: ymd(p.date), text: clean(p.description || p.reference, clean(p.category, "Payment")), source: `Payment · ${clean(p.account, "")}` });
   });
@@ -186,6 +182,9 @@ export function buildMonthlyStatement({
   // ---- Journals: money booked straight to an Income / Expense account ----
   const typeByName = new Map(accounts.map((a) => [clean(a.name, "").toLowerCase(), a.type]));
   (use("journals") ? journals : []).filter(inScope).forEach((j) => {
+    // Auto-posted journals (paid expenses, fee collections, salaries) mirror
+    // rows already counted above; counting them again would double the figures.
+    if (isAutoJournal(j)) return;
     if (!inMonth(j.date)) return;
     if (account && clean(j.debitAccount, "") !== account && clean(j.creditAccount, "") !== account) return;
     const amount = num(j.amount);

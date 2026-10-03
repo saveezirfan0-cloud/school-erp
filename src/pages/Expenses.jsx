@@ -9,11 +9,11 @@ import BulkBar, { RowCheckbox, HeaderCheckbox } from "../components/UI/BulkBar";
 import BulkEditModal from "../components/UI/BulkEditModal";
 import { runBulk, bulkResultMessage } from "../utils/bulk";
 import { logActivity } from "../utils/auditLog";
-import { recordPayment, bankCashAccounts, reverseSourcePayments } from "../utils/accounting";
-import { exportToCSV, exportToPDF } from "../utils/exportUtils";
+import { recordPayment, bankCashAccounts, reverseSourcePayments, postExpenseJournal, deleteExpenseJournals, syncExpenseJournals } from "../utils/accounting";
+import ExportMenu from "../components/UI/ExportMenu";
 import { EXTRA_EXPENSE_CATEGORIES } from "../config/statementHeads";
 import toast from "react-hot-toast";
-import { Plus, Trash2, X, Download, FileText, Pencil } from "lucide-react";
+import { Plus, Trash2, X, Pencil } from "lucide-react";
 
 // Used only until the chart of accounts has at least one "Expenses" account.
 const LEGACY_CATEGORIES = ["Rent", "Utilities", "Salaries", "Supplies", "Maintenance", "Transport", "Other", ...EXTRA_EXPENSE_CATEGORIES];
@@ -128,6 +128,7 @@ export default function Expenses() {
     if (!window.confirm("Delete this expense? If it was paid from an account, the payment will be reversed. You can restore it from Trash.")) return;
     try {
       await reverseSourcePayments("expense", exp.id);
+      await deleteExpenseJournals(exp.id).catch(() => toast.error("Expense deleted, but its journal entry could not be removed"));
       await deleteDoc(doc(db, "expenses", exp.id));
       toast.success("Expense deleted");
       logActivity("deleted", "Expenses", `${exp.description} · Rs. ${Number(exp.amount || 0).toLocaleString()}`);
@@ -141,7 +142,7 @@ export default function Expenses() {
     setBulkBusy(true);
     const t = toast.loading(`Deleting ${ids.length} expenses…`);
     try {
-      const { ok, failed } = await runBulk(ids, (id) => reverseSourcePayments("expense", id), {
+      const { ok, failed } = await runBulk(ids, async (id) => { await reverseSourcePayments("expense", id); await deleteExpenseJournals(id); }, {
         onProgress: (d, tot) => toast.loading(`Reversing payments ${d}/${tot}…`, { id: t }),
       });
       if (ok.length) await deleteDocs("expenses", ok);
@@ -162,6 +163,11 @@ export default function Expenses() {
       // The category option is an account id; save the name + link alongside it.
       const patch = changes.category ? { ...changes, ...categoryFields(changes.category) } : changes;
       await updateDocs("expenses", [...bulk.selected], { ...patch, updatedAt: serverTimestamp() });
+      if (patch.accountId || patch.date) {
+        const acc = expenseAccounts.find(a => a.id === patch.accountId);
+        await syncExpenseJournals([...bulk.selected], { accountName: acc?.name, date: patch.date })
+          .catch(() => toast.error("Expenses updated, but some journal entries could not be updated"));
+      }
       toast.success(`${n} expense${n === 1 ? "" : "s"} updated`);
       logActivity("updated", "Expenses", `${n} expenses (bulk): ${Object.keys(changes).join(", ")}`);
       setShowBulkEdit(false);
@@ -203,6 +209,19 @@ export default function Expenses() {
       } catch (err) {
         toast.error("Expense saved, but payment not recorded: " + (err?.message || ""));
       }
+      // Double entry: debit the expense account, credit the account paid from.
+      const expAcc = expenseAccounts.find(a => a.id === cat.accountId);
+      if (expAcc) {
+        try {
+          await postExpenseJournal({
+            expenseId: docRef?.id, expenseAccount: expAcc, payAccount: payAcc,
+            amount: form.amount, date: form.date || undefined,
+            description: form.description, branchId: form.branchId || "",
+          });
+        } catch (err) {
+          toast.error("Expense saved, but its journal entry was not posted: " + (err?.message || ""));
+        }
+      }
     }
     toast.success("Expense added");
     logActivity("created", "Expenses", `${form.description} · Rs. ${Number(form.amount || 0).toLocaleString()}${payAcc ? ` paid from ${payAcc.name}` : ""}`);
@@ -230,15 +249,13 @@ export default function Expenses() {
 
   const bulkTotal = bulkLines.reduce((s, l) => s + Number(l.amount || 0), 0);
 
-  const handleCSV = () => exportToCSV("expenses",
-    ["Date", "Description", "Category", "Branch", "Amount"],
-    filtered.map(e => [e.date, e.description, expenseCatName(e), branches.find(b => b.id === e.branchId)?.name || "Main", e.amount])
-  );
-
-  const handlePDF = () => exportToPDF("Expenses Report",
-    ["Date", "Description", "Category", "Branch", "Amount"],
-    filtered.map(e => [e.date, e.description, expenseCatName(e), branches.find(b => b.id === e.branchId)?.name || "Main", `Rs. ${Number(e.amount).toLocaleString()}`])
-  );
+  const branchLabel = (e) => branches.find(b => b.id === e.branchId)?.name || "Main";
+  const getExportData = () => ({
+    headers: ["Date", "Description", "Category", "Branch", "Amount"],
+    rows: filtered.map(e => [e.date, e.description, expenseCatName(e), branchLabel(e), Number(e.amount || 0)]),
+    pdfHeaders: ["Date", "Description", "Category", "Branch", "Amount"],
+    pdfRows: filtered.map(e => [e.date, e.description, expenseCatName(e), branchLabel(e), `Rs. ${Number(e.amount || 0).toLocaleString()}`]),
+  });
 
   const clearFilters = () => { setSearch(""); setFilterCategory(""); setFilterBranch(""); setFilterDateFrom(""); setFilterDateTo(""); };
   const hasFilters = search || filterCategory || filterBranch || filterDateFrom || filterDateTo;
@@ -255,16 +272,7 @@ export default function Expenses() {
           </p>
         </div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          {!isMobile && (
-            <>
-              <button onClick={handleCSV} style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13 }}>
-                <Download size={14} /> CSV
-              </button>
-              <button onClick={handlePDF} style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13 }}>
-                <FileText size={14} /> PDF
-              </button>
-            </>
-          )}
+          <ExportMenu filename="expenses" title="Expenses Report" getData={getExportData} disabled={filtered.length === 0} />
           <button onClick={() => setShowModal(true)}
             style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 16px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600, fontSize: 13 }}>
             <Plus size={15} /> Add Expense

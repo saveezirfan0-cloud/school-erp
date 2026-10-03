@@ -15,20 +15,23 @@
 import { db, addDoc, collection, serverTimestamp } from "../firebase";
 import { supabase } from "../lib/supabaseClient";
 
+import {
+  SALARY_ACCOUNT_NAME, findAccountByName, feeIncomeAccount, splitPaymentByHead,
+} from "./autoJournals";
+
 export { paymentInAccount } from "./paymentAccount";
 
-// Look up a chart-of-accounts id by account name, so callers that only know
-// the name (fee collection, payslips...) still link payments by id. Cached
-// briefly because bulk flows record many payments against one account.
-const idCache = new Map(); // name -> { id, at }
+// Chart of accounts (id, name, type), cached briefly because bulk flows record
+// many payments in a row. Used to link payments by id and to pick journal accounts.
+let acctCache = { at: 0, rows: [] };
+async function loadAccounts() {
+  if (Date.now() - acctCache.at < 60000 && acctCache.rows.length) return acctCache.rows;
+  const { data } = await supabase.from("accounts").select("id,name,type").is("deleted_at", null);
+  acctCache = { at: Date.now(), rows: data || [] };
+  return acctCache.rows;
+}
 async function findAccountId(name) {
-  const hit = idCache.get(name);
-  if (hit && Date.now() - hit.at < 60000) return hit.id;
-  const { data } = await supabase
-    .from("accounts").select("id").eq("name", name).is("deleted_at", null).limit(1);
-  const id = data?.[0]?.id || "";
-  idCache.set(name, { id, at: Date.now() });
-  return id;
+  return findAccountByName(await loadAccounts(), name)?.id || "";
 }
 
 /**
@@ -55,7 +58,7 @@ export async function recordPayment({
   if (!amount || Number(amount) <= 0) throw new Error("Invalid amount");
   if (!accountId) accountId = await findAccountId(account);
 
-  return addDoc(collection(db, "payments"), {
+  const ref = await addDoc(collection(db, "payments"), {
     type,
     account,
     accountId,     // stored in `extra`; lets us link back to the chart of accounts
@@ -71,6 +74,19 @@ export async function recordPayment({
     reversalOf: null,
     createdAt: serverTimestamp(),
   });
+
+  // Fee collections and salaries are also booked as journal entries. A failure
+  // here (e.g. no accounting permission) must not undo the payment itself; the
+  // backfill script in supabase/ can post anything that was missed.
+  try {
+    await postPaymentJournals({
+      id: ref.id, type, account, amount: Number(amount), description, branchId,
+      date: date || new Date().toISOString().slice(0, 10), source, sourceId,
+    });
+  } catch (err) {
+    console.warn("Payment recorded, but its journal entry was not posted:", err);
+  }
+  return ref;
 }
 
 // Bank & Cash accounts are the ones you can pay into / out of.
@@ -126,6 +142,11 @@ export async function reversePayment(payment) {
     .eq("id", payment.id);
   if (e1) throw e1;
 
+  // Its fee/salary journal entries go with it (the reversing payment below is
+  // not journaled). Best-effort: the reversal itself must still happen.
+  await deleteJournalsBySource("payment", payment.id)
+    .catch((err) => console.warn("Could not remove journal entries for reversed payment:", err));
+
   // post the opposite entry
   return addDoc(collection(db, "payments"), {
     type: payment.type === "cash_in" ? "cash_out" : "cash_in",
@@ -153,4 +174,110 @@ export async function reverseSourcePayments(source, sourceId) {
     await reversePayment({ ...p, source, sourceId });
   }
   return toReverse.length;
+}
+
+// ---- Double-entry journals for expenses ----
+//
+// A paid expense is also booked as a journal entry: debit the expense account
+// from the chart, credit the bank/cash account it was paid from. The entry is
+// tagged source "expense" + sourceId (stored in the journal's `extra` jsonb) so
+// it can be traced, retargeted and removed with its expense. Reports that read
+// expenses directly (monthlyStatement) skip these entries to avoid counting an
+// expense twice. Unpaid expenses post nothing: the books are cash-basis, with
+// no accounts-payable account to credit.
+
+export async function postExpenseJournal({
+  expenseId, expenseAccount, payAccount, amount, date, description, branchId = "",
+}) {
+  if (!expenseId || !expenseAccount?.name || !payAccount?.name) return null;
+  if (!amount || Number(amount) <= 0) return null;
+  return addDoc(collection(db, "journals"), {
+    date: date || new Date().toISOString().slice(0, 10),
+    reference: "EXP-" + String(expenseId).slice(0, 8),
+    description: description || "Expense",
+    debitAccount: expenseAccount.name,
+    creditAccount: payAccount.name,
+    amount: Number(amount),
+    notes: "Auto-posted from Expenses",
+    branchId,
+    source: "expense",
+    sourceId: expenseId,
+    createdAt: serverTimestamp(),
+  });
+}
+
+// Move auto-posted journals to Trash. `source` is "expense" (ids are expense
+// ids) or "payment" (ids are payment ids).
+export async function deleteJournalsBySource(source, ids) {
+  ids = [].concat(ids).filter(Boolean);
+  if (!ids.length) return;
+  const { error } = await supabase
+    .from("journals")
+    .update({ deleted_at: new Date().toISOString() })
+    .eq("extra->>source", source)
+    .in("extra->>sourceId", ids)
+    .is("deleted_at", null);
+  if (error) throw error;
+}
+export const deleteExpenseJournals = (expenseIds) => deleteJournalsBySource("expense", expenseIds);
+
+// Keep existing expense journals in step with a bulk edit of their expenses:
+// `accountName` re-points the debit side, `date` moves the entry.
+export async function syncExpenseJournals(expenseIds, { accountName, date } = {}) {
+  const ids = [].concat(expenseIds).filter(Boolean);
+  const patch = {};
+  if (accountName) patch.debit_account = accountName;
+  if (date) patch.date = date;
+  if (!ids.length || !Object.keys(patch).length) return;
+  const { error } = await supabase
+    .from("journals")
+    .update(patch)
+    .eq("extra->>source", "expense")
+    .in("extra->>sourceId", ids)
+    .is("deleted_at", null);
+  if (error) throw error;
+}
+
+// ---- Journals for fee collections and salaries ----
+//
+//   fee collected   DR bank/cash account   CR fee income account (one entry per
+//                   invoice head, the payment split pro rata across them)
+//   salary paid     DR "Salaries" expense  CR bank/cash account
+//
+// Keyed by the payment (source "payment", sourceId = payment id), so reversing
+// or deleting the payment takes its journals with it. Nothing is posted when the
+// chart has no matching account; we never guess an account.
+export async function postPaymentJournals(p) {
+  if (!p?.id || !p.amount) return;
+  const accounts = await loadAccounts();
+  const base = {
+    date: p.date,
+    reference: (p.source === "payslip" ? "SAL-" : "FEE-") + String(p.id).slice(0, 8),
+    description: p.description || "",
+    notes: "Auto-posted from " + (p.source === "payslip" ? "Payslips" : "Fees"),
+    branchId: p.branchId || "",
+    source: "payment",
+    sourceId: p.id,
+    createdAt: serverTimestamp(),
+  };
+
+  if (p.source === "payslip" && p.type === "cash_out") {
+    const salary = findAccountByName(accounts, SALARY_ACCOUNT_NAME, "Expenses");
+    if (!salary) return;
+    await addDoc(collection(db, "journals"), {
+      ...base, debitAccount: salary.name, creditAccount: p.account, amount: p.amount,
+    });
+    return;
+  }
+
+  if (p.source === "invoice" && p.type === "cash_in") {
+    const { data: inv } = await supabase.from("invoices").select("extra").eq("id", p.sourceId).maybeSingle();
+    for (const part of splitPaymentByHead(p.amount, inv?.extra?.lineItems)) {
+      const income = feeIncomeAccount(part.head, accounts);
+      if (!income) continue;
+      await addDoc(collection(db, "journals"), {
+        ...base, debitAccount: p.account, creditAccount: income.name, amount: part.amount,
+      });
+    }
+  }
 }

@@ -33,6 +33,8 @@ Run in the SQL Editor, in order:
 2. `supabase/security.sql` — enables Row-Level Security policies
 3. `supabase/attendance.sql` — attendance table + RLS + realtime
    (needed for the Attendance tab on student / employee profiles)
+4. `supabase/budgets.sql` — budgets table + RLS
+   (needed for Reports → Budget vs Actual; the rest of Reports works without it)
 
 Optional (Reports → Haji Sahab Report): run `supabase/report_docs.sql`
 to enable **shared report presets** and **Close month** snapshots. The
@@ -44,6 +46,22 @@ Then:
   named `create-user`, and set its secrets `SERVICE_ROLE_KEY` and
   `PROJECT_URL`
 - Create a `receipts` storage bucket (public) for receipt uploads
+
+## Exports & printable documents
+- Every list page (Fees, Payments, Expenses, Students, Employees,
+  Payslips, Activity Log) has an **Export** menu: PDF, Excel (.xlsx) or
+  CSV of the rows currently filtered on screen. Reports and the bank/cash
+  account page export too.
+- Single documents open in a viewer with **Print** and **PDF** download:
+  invoices and fee receipts (Fees → View, or select rows → *Invoices PDF* /
+  *Receipts*), payslips (Payslips → View), payment receipts/vouchers
+  (Payments). A student's ledger exports to PDF/Excel/CSV from its Export menu.
+  Selecting several rows produces one combined PDF, one document per page.
+- PDFs are built in the browser (jsPDF, loaded on demand). Text outside
+  Latin characters (e.g. Urdu) can't be drawn by jsPDF's built-in fonts, so
+  those documents open in the print dialog instead — choose "Save as PDF".
+- Layouts live in `src/utils/documents.js`; table export helpers in
+  `src/utils/exportUtils.js`.
 
 ## Academics / LMS
 Staff-side learning features: attendance, exams and report cards,

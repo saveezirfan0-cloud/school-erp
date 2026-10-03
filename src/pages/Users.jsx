@@ -102,7 +102,7 @@ export default function Users() {
       setUsers(snap.docs.map(d => ({ id: d.id, ...d.data() })))
     );
     const u2 = onSnapshot(collection(db, "customRoles"), snap =>
-      setCustomRoles(snap.docs.map(d => ({ id: d.id, ...d.data() })))
+      setCustomRoles(snap.docs.filter(d => !d.id.startsWith("menu:")).map(d => ({ id: d.id, ...d.data() })))
     );
     return () => { u1(); u2(); };
   }, []);

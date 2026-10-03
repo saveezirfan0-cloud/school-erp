@@ -36,7 +36,7 @@ export function Delta({ delta, goodWhen = "up", compact = false }) {
   const Icon = flat ? Minus : up ? ArrowUpRight : ArrowDownRight;
   const text = flat ? (compact ? "—" : "no change") : unit === "pts" ? `${up ? "+" : "-"}${Math.abs(Math.round(amount))} pts` : pct === null ? `${up ? "+" : "-"}${formatRs(Math.abs(amount))}` : `${up ? "+" : "-"}${Math.abs(Math.round(pct * 100))}%`;
   return (
-    <span title={unit === "pts" ? "Percentage points vs previous period" : `${up ? "+" : "-"}${formatRs(Math.abs(amount))} vs previous period`}
+    <span title={unit === "pts" ? "Percentage points vs comparison period" : `${up ? "+" : "-"}${formatRs(Math.abs(amount))} vs comparison period`}
       style={{ display: "inline-flex", alignItems: "center", gap: 2, fontSize: compact ? 11 : 12, fontWeight: 600, color, whiteSpace: "nowrap" }}>
       <Icon size={compact ? 12 : 14} /> {text}
     </span>
@@ -111,7 +111,7 @@ export function BarList({ rows, color = "#7a2535", limit = 8, empty = "No data f
 }
 
 // columns: [{ key, label, align, render(row) }]
-export function DataTable({ columns, rows, empty = "Nothing to show.", footer, rowKey }) {
+export function DataTable({ columns, rows, empty = "Nothing to show.", footer, rowKey, onRowClick, activeKey }) {
   const th = { padding: "10px 14px", fontSize: 12, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: 0.5, whiteSpace: "nowrap", background: "#f8fafc", borderBottom: "1px solid var(--border)" };
   const td = { padding: "10px 14px", fontSize: 13, borderBottom: "1px solid var(--border)" };
   return (
@@ -123,7 +123,8 @@ export function DataTable({ columns, rows, empty = "Nothing to show.", footer, r
         <tbody>
           {rows.length === 0 && <tr><td colSpan={columns.length} style={{ ...td, textAlign: "center", color: "var(--text-muted)", padding: 24 }}>{empty}</td></tr>}
           {rows.map((r, i) => (
-            <tr key={rowKey ? rowKey(r) : i}>
+            <tr key={rowKey ? rowKey(r) : i} onClick={onRowClick ? () => onRowClick(r) : undefined}
+              style={onRowClick ? { cursor: "pointer", background: activeKey !== undefined && rowKey && rowKey(r) === activeKey ? "var(--primary-light)" : undefined } : undefined}>
               {columns.map(c => <td key={c.key} style={{ ...td, textAlign: c.align || "left", whiteSpace: c.nowrap === false ? "normal" : "nowrap" }}>{c.render ? c.render(r) : r[c.key]}</td>)}
             </tr>
           ))}

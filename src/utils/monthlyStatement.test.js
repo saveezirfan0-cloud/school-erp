@@ -117,6 +117,29 @@ test("journals to Income/Expense accounts are included", () => {
   expect(head(s.income, "donations", "Donation").amount).toBe(80);
 });
 
+test("journals auto-posted from expenses are not counted twice", () => {
+  const s = buildMonthlyStatement({
+    ...base, payslips: [], payments: [], invoices: [],
+    expenses: [{ branchId: "b1", category: "Repairs and maintenance", amount: 120, date: "2026-09-20" }],
+    journals: [
+      { date: "2026-09-20", debitAccount: "Repairs and maintenance", creditAccount: "Cash", amount: 120, source: "expense", sourceId: "e1" },
+    ],
+  });
+  expect(head(s.expense, "maintenance", "Repairs and maintenance").amount).toBe(120);
+});
+
+test("journals auto-posted from fee and salary payments are not counted twice", () => {
+  const s = buildMonthlyStatement({
+    ...base, expenses: [], payslips: [], payments: [], invoices: [],
+    journals: [
+      { date: "2026-09-20", debitAccount: "Repairs and maintenance", creditAccount: "Cash", amount: 50, source: "payment", sourceId: "p1" },
+      { date: "2026-09-21", debitAccount: "Cash", creditAccount: "Donation", amount: 70, source: "payment", sourceId: "p2" },
+    ],
+  });
+  expect(s.totalExpense).toBe(0);
+  expect(s.totalIncome).toBe(0);
+});
+
 test("opening balance carries prior movements; closing = opening + income - expense", () => {
   const s = buildMonthlyStatement(base);
   expect(s.openingBalance).toBe(1150);
