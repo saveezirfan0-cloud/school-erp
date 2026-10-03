@@ -10,10 +10,10 @@ import BulkEditModal from "../components/UI/BulkEditModal";
 import { runBulk, bulkResultMessage } from "../utils/bulk";
 import { logActivity } from "../utils/auditLog";
 import { recordPayment, bankCashAccounts, reverseSourcePayments, postExpenseJournal, deleteExpenseJournals, syncExpenseJournals } from "../utils/accounting";
-import { exportToCSV, exportToPDF } from "../utils/exportUtils";
+import ExportMenu from "../components/UI/ExportMenu";
 import { EXTRA_EXPENSE_CATEGORIES } from "../config/statementHeads";
 import toast from "react-hot-toast";
-import { Plus, Trash2, X, Download, FileText, Pencil } from "lucide-react";
+import { Plus, Trash2, X, Pencil } from "lucide-react";
 
 // Used only until the chart of accounts has at least one "Expenses" account.
 const LEGACY_CATEGORIES = ["Rent", "Utilities", "Salaries", "Supplies", "Maintenance", "Transport", "Other", ...EXTRA_EXPENSE_CATEGORIES];
@@ -249,15 +249,13 @@ export default function Expenses() {
 
   const bulkTotal = bulkLines.reduce((s, l) => s + Number(l.amount || 0), 0);
 
-  const handleCSV = () => exportToCSV("expenses",
-    ["Date", "Description", "Category", "Branch", "Amount"],
-    filtered.map(e => [e.date, e.description, expenseCatName(e), branches.find(b => b.id === e.branchId)?.name || "Main", e.amount])
-  );
-
-  const handlePDF = () => exportToPDF("Expenses Report",
-    ["Date", "Description", "Category", "Branch", "Amount"],
-    filtered.map(e => [e.date, e.description, expenseCatName(e), branches.find(b => b.id === e.branchId)?.name || "Main", `Rs. ${Number(e.amount).toLocaleString()}`])
-  );
+  const branchLabel = (e) => branches.find(b => b.id === e.branchId)?.name || "Main";
+  const getExportData = () => ({
+    headers: ["Date", "Description", "Category", "Branch", "Amount"],
+    rows: filtered.map(e => [e.date, e.description, expenseCatName(e), branchLabel(e), Number(e.amount || 0)]),
+    pdfHeaders: ["Date", "Description", "Category", "Branch", "Amount"],
+    pdfRows: filtered.map(e => [e.date, e.description, expenseCatName(e), branchLabel(e), `Rs. ${Number(e.amount || 0).toLocaleString()}`]),
+  });
 
   const clearFilters = () => { setSearch(""); setFilterCategory(""); setFilterBranch(""); setFilterDateFrom(""); setFilterDateTo(""); };
   const hasFilters = search || filterCategory || filterBranch || filterDateFrom || filterDateTo;
@@ -274,16 +272,7 @@ export default function Expenses() {
           </p>
         </div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          {!isMobile && (
-            <>
-              <button onClick={handleCSV} style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13 }}>
-                <Download size={14} /> CSV
-              </button>
-              <button onClick={handlePDF} style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13 }}>
-                <FileText size={14} /> PDF
-              </button>
-            </>
-          )}
+          <ExportMenu filename="expenses" title="Expenses Report" getData={getExportData} disabled={filtered.length === 0} />
           <button onClick={() => setShowModal(true)}
             style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 16px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600, fontSize: 13 }}>
             <Plus size={15} /> Add Expense

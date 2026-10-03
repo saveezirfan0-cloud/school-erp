@@ -13,8 +13,8 @@ import { collection, onSnapshot, query, orderBy, limit } from "../firebase";
 import { useUser } from "../context/UserContext";
 import Pagination from "../components/UI/Pagination";
 import ListToolbar from "../components/UI/ListToolbar";
-import { exportToCSV } from "../utils/exportUtils";
-import { History, ShieldAlert, Download } from "lucide-react";
+import ExportMenu from "../components/UI/ExportMenu";
+import { History, ShieldAlert } from "lucide-react";
 
 const MAX_ROWS = 500; // most recent entries kept live in the view
 
@@ -97,10 +97,10 @@ export default function ActivityLog() {
   const safePage = Math.min(Math.max(1, page), pageCount);
   const paged = filtered.slice((safePage - 1) * pageSize, safePage * pageSize);
 
-  const handleCSV = () => exportToCSV("activity-log",
-    ["Time", "User", "Action", "Module", "Details"],
-    filtered.map((r) => [formatTime(r), r.user, r.action, r.module, r.details])
-  );
+  const getExportData = () => ({
+    headers: ["Time", "User", "Action", "Module", "Details"],
+    rows: filtered.map((r) => [formatTime(r), r.user, r.action, r.module, r.details]),
+  });
 
   const hasFilters = !!(search || filterModule || filterAction);
 
@@ -126,11 +126,7 @@ export default function ActivityLog() {
             Who did what, across every module. Showing the latest {Math.min(rows.length, MAX_ROWS)} entries · admin-only · entries can't be edited or deleted.
           </p>
         </div>
-        {!isMobile && (
-          <button onClick={handleCSV} style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13 }}>
-            <Download size={14} /> CSV
-          </button>
-        )}
+        <ExportMenu filename="activity-log" title="Activity Log" getData={getExportData} disabled={filtered.length === 0} pdfOptions={{ orientation: "landscape" }} />
       </div>
 
       {/* Filters */}

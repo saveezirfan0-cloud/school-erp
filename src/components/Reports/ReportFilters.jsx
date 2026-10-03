@@ -4,7 +4,7 @@
 // plus a slot for tab-specific filters.
 
 import React from "react";
-import { RotateCcw, Download, Printer, RefreshCw, Mail } from "lucide-react";
+import { RotateCcw, Download, Printer, RefreshCw, FileSpreadsheet, Mail } from "lucide-react";
 import { DATE_PRESETS, GRANULARITIES, COMPARE_MODES } from "../../utils/reportData";
 
 const control = { padding: "8px 10px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 13, background: "white", minWidth: 0 };
@@ -35,7 +35,7 @@ export default function ReportFilters({
   dirty, onReset,
   summary,                        // e.g. "Main Office · 1 Jan 2026 – 31 Dec 2026"
   onRefresh, refreshing,
-  onCSV, onPDF, onEmail,
+  onCSV, onPDF, onExcel, onEmail,
 }) {
   return (
     <div style={{ background: "white", border: "1px solid var(--border)", borderRadius: 12, padding: 16, marginBottom: 24 }}>
@@ -55,6 +55,7 @@ export default function ReportFilters({
           {dirty && <button onClick={onReset} style={btn}><RotateCcw size={13} /> Reset</button>}
           {onRefresh && <button onClick={onRefresh} disabled={refreshing} style={btn} title="Reload the latest data"><RefreshCw size={13} /> {refreshing ? "Loading…" : "Refresh"}</button>}
           {onCSV && <button onClick={onCSV} style={btn}><Download size={13} /> CSV</button>}
+          {onExcel && <button onClick={onExcel} style={btn}><FileSpreadsheet size={13} /> Excel</button>}
           {onPDF && <button onClick={onPDF} style={btn}><Printer size={13} /> PDF</button>}
           {onEmail && <button onClick={onEmail} style={btn} title="Open an email with a text summary of this report"><Mail size={13} /> Email summary</button>}
         </div>

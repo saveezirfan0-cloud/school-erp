@@ -5,7 +5,7 @@ import { db } from "../firebase";
 import { collection, getAllDocs } from "../firebase";
 import { useBranch } from "../context/BranchContext";
 import { useUser } from "../context/UserContext";
-import { exportToCSV, exportToPDF } from "../utils/exportUtils";
+import { exportToCSV, exportToExcel, exportToPDF } from "../utils/exportUtils";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer, ComposedChart, Line, CartesianGrid,
 } from "recharts";
@@ -208,6 +208,7 @@ export default function Reports() {
   };
   const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
   const handleCSV = () => { const s = exportSpec(); exportToCSV(`report-${activeTab}-${slug(branchName(branch))}-${isoDay(today)}`, s.headers, s.rows); };
+  const handleExcel = () => { const s = exportSpec(); exportToExcel(`report-${activeTab}-${slug(branchName(branch))}-${isoDay(today)}`, s.headers, s.rows, TABS.find(t => t.id === activeTab).label); };
   const handlePDF = () => { const s = exportSpec(); exportToPDF(s.title, s.headers, s.rows.map(r => r.map(c => (typeof c === "number" ? c.toLocaleString() : c)))); };
 
   // Opens the user's mail app with a text summary (no automatic sending).
@@ -267,7 +268,7 @@ export default function Reports() {
         granularity={activeTab === "bs" || activeTab === "budget" ? undefined : granularity} onGranularity={setGranularity}
         showCompare={activeTab === "pl" || activeTab === "fees"} compareMode={compareMode} onCompareMode={setCompareMode}
         dirty={Boolean(dirty)} onReset={reset} summary={summary}
-        onRefresh={load} refreshing={loading} onCSV={raw ? handleCSV : undefined} onPDF={raw ? handlePDF : undefined} onEmail={raw ? handleEmail : undefined}
+        onRefresh={load} refreshing={loading} onCSV={raw ? handleCSV : undefined} onExcel={raw ? handleExcel : undefined} onPDF={raw ? handlePDF : undefined} onEmail={raw ? handleEmail : undefined}
       >
         {activeTab === "pl" && <Select label="Income basis" value={basis} onChange={setBasis} options={BASIS_OPTIONS} />}
         {activeTab === "cf" && <Select label="Account" value={account} onChange={setAccount} allLabel="All accounts" options={cash.accountOptions} />}
