@@ -10,6 +10,7 @@ import BulkBar, { RowCheckbox, HeaderCheckbox } from "../components/UI/BulkBar";
 import BulkEditModal from "../components/UI/BulkEditModal";
 import { bulkResultMessage } from "../utils/bulk";
 import { logActivity } from "../utils/auditLog";
+import { deleteJournalsBySource } from "../utils/accounting";
 import { exportToCSV, exportToPDF } from "../utils/exportUtils";
 import { EXTRA_PAYMENT_CATEGORIES } from "../config/statementHeads";
 import toast from "react-hot-toast";
@@ -111,6 +112,7 @@ export default function Payments() {
     if (!window.confirm("Delete this payment? Account balances will change. You can restore it from Trash.")) return;
     try {
       await deleteDoc(doc(db, "payments", p.id));
+      await deleteJournalsBySource("payment", p.id).catch(() => {});
       toast.success("Payment moved to Trash");
       logActivity("deleted", "Payments", `${p.type === "cash_in" ? "Cash in" : "Cash out"} Rs. ${Number(p.amount || 0).toLocaleString()} — ${p.account}${p.description ? ` (${p.description})` : ""}`);
     }
@@ -124,6 +126,7 @@ export default function Payments() {
     setBulkBusy(true);
     try {
       await deleteDocs("payments", ids);
+      await deleteJournalsBySource("payment", ids).catch(() => {});
       toast.success(bulkResultMessage(ids.length, 0, "moved to Trash", "payments"));
       logActivity("deleted", "Payments", `${ids.length} payments (bulk)`);
       bulk.clear();
