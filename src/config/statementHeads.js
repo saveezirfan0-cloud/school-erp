@@ -1,75 +1,71 @@
 // src/config/statementHeads.js
 //
-// The fixed heads of the Haji Sahab monthly statement, in the same order as
-// the manual sheet. Edit this file to rename, reorder, add or re-route a head;
-// nothing else needs to change. A head always prints (as 0 when empty).
+// How the Haji Sahab statement groups money. Heads themselves (e.g. "Utilities",
+// "Donation") come straight from your data: expense categories, payment
+// categories, fee line items and Income/Expense accounts in the Chart of
+// Accounts. This file only decides which GROUP (section) a head belongs to
+// and in which order the groups appear. Edit it to rename or re-route.
 //
-// Anything that matches no head is shown in an extra "Other ..." row, so the
-// totals always reconcile with the money that actually moved.
+// A head is placed by, in order:
+//   1. a Chart of Accounts Income/Expenses account with the same name -> its
+//      sub-type (SUBTYPE_GROUP below)
+//   2. the first keyword rule that matches its name
+//   3. the "other" group
+// so groups never need maintaining per head.
 
-// Branch groups are matched against the branch NAME (case-insensitive).
-// Records with no branch are the "Main" branch and count as Baneen.
-export const BRANCH_GROUPS = {
-  baneen: /baneen|^main$/i,
-  banaat: /banaat|banat/i,
-  umer: /umer/i,
-  school: /school/i,
+export const INCOME_GROUPS = [
+  { key: "fees", label: "Fee Income" },
+  { key: "donations", label: "Donations & Welfare" },
+  { key: "loans", label: "Loans & Advances" },
+  { key: "other", label: "Other Income" },
+];
+
+export const EXPENSE_GROUPS = [
+  { key: "salaries", label: "Salaries & Staff" },
+  { key: "rent", label: "Rent & Utilities" },
+  { key: "maintenance", label: "Maintenance & Equipment" },
+  { key: "supplies", label: "Supplies & Printing" },
+  { key: "hospitality", label: "Meals & Hospitality" },
+  { key: "transport", label: "Transport & Fuel" },
+  { key: "welfare", label: "Welfare & Charity" },
+  { key: "loans", label: "Loans & Advances" },
+  { key: "other", label: "Other Expenses" },
+];
+
+// Chart of Accounts sub-type -> group key. Sub-types not listed here (such as
+// "Other Expenses") fall through to the keyword rules.
+export const INCOME_SUBTYPE_GROUP = {
+  "Fee Income": "fees",
+  "Grants & Donations": "donations",
+};
+export const EXPENSE_SUBTYPE_GROUP = {
+  "Salaries & Wages": "salaries",
+  "Rent & Utilities": "rent",
+  "Maintenance": "maintenance",
+  "Supplies": "supplies",
+  "Transport": "transport",
 };
 
-// ---- Income ----
-// kind "fee" / "admission" / "tafseer" = invoice line items (by branch group).
-// kind "payment" = cash_in payments that aren't tied to an invoice, matched on
-// the payment category.
-export const INCOME_HEADS = [
-  { label: "Baneen Fees", kind: "fee", branch: "baneen" },
-  { label: "Welfare", kind: "payment", category: /welfare/i },
-  { label: "Donation", kind: "payment", category: /donat/i },
-  { label: "Admission Fees", kind: "admission", branch: "baneen" },
-  { label: "Banaat Fees", kind: "fee", branch: "banaat" },
-  { label: "School Fees", kind: "fee", branch: "school" },
-  { label: "Umer Colony Fees", kind: "fee", branch: "umer" },
-  { label: "Loan", kind: "payment", category: /^loan/i },
-  { label: "Tafseer Course Fees", kind: "tafseer" },
-  { label: "Banaat Admission Fees", kind: "admission", branch: "banaat" },
-  { label: "Umer Colony Admission Fees", kind: "admission", branch: "umer" },
-  { label: "Miscellaneous", kind: "payment", category: /misc|^other$/i },
-  { label: "Tution Fee", kind: "payment", category: /tuition|tution/i },
+// First match wins, so more specific rules come first (e.g. "Salary Advance"
+// is a loan/advance, not a salary).
+export const INCOME_RULES = [
+  { group: "loans", match: /loan|advance/i },
+  { group: "donations", match: /donat|welfare|zakat|sadaq|charity|grant/i },
+  { group: "fees", match: /fee|tuition|tution|admission|registration|course|exam|tafseer/i },
+];
+export const EXPENSE_RULES = [
+  { group: "loans", match: /loan|advance/i },
+  { group: "salaries", match: /salar|wage|staff|bonus|allowance|payroll/i },
+  { group: "welfare", match: /welfare|donat|gift|charity|zakat|sadaq/i },
+  { group: "rent", match: /rent|utilit|electric|gas|water bill|internet|phone|mobile/i },
+  { group: "maintenance", match: /maint|repair|fixture|furnit|equipment/i },
+  { group: "supplies", match: /suppl|station|print|design|clean|laundry|drinking|water/i },
+  { group: "hospitality", match: /entertain|refresh|guest|lunch|meal|food/i },
+  { group: "transport", match: /fuel|transport|travel|petrol/i },
 ];
 
-// ---- Expenses ----
-// Evaluated in this order, first match wins:
-//  1. heads with anyBranch: true (organisation-wide, whatever the branch)
-//  2. branch lumps — everything spent by Banaat / Umer Colony / School
-//  3. the remaining category heads (Baneen / Main branch)
-// A payslip counts as category "Salaries".
-export const EXPENSE_HEADS = [
-  { label: "Utility Baneen", category: /utilit|electric|gas|water bill/i },
-  { label: "Cleaning & Laundry", category: /clean|laundry/i },
-  { label: "Baneen Entertainment", category: /entertain|refresh|guest/i },
-  { label: "Baneen Staff Salary", category: /^(?!.*advance)(.*salar|.*staff)/i },
-  { label: "Lunch Exp", category: /lunch/i },
-  { label: "Maintenance and Repairing", category: /maint|repair/i },
-  { label: "Furniture + Fixture", category: /furnit|fixture|equipment/i },
-  { label: "Phone Package", category: /phone/i },
-  { label: "Drinking Water", category: /drinking|^water$/i },
-  { label: "Baneen Printing & Designing", category: /print|design/i },
-  { label: "Baneen Stanationery", category: /station|suppl/i },
-  { label: "Tution Fee", category: /tuition|tution/i, anyBranch: true },
-  { label: "Fuel Expense", category: /fuel|transport/i },
-  { label: "Salary Advance", category: /advance/i, anyBranch: true },
-  { label: "Loan Return", category: /loan/i, anyBranch: true },
-  { label: "Baneen Misc Exp", category: /misc|^other$/i },
-  { label: "Baneen Rent", category: /rent/i },
-  { label: "Welfare", category: /welfare/i, anyBranch: true },
-  { label: "School Expense", branch: "school" },
-  { label: "Umer Colony Expense", branch: "umer" },
-  { label: "Banaat Expense", branch: "banaat" },
-  { label: "Gifts", category: /gift/i, anyBranch: true },
-  { label: "Suspense", category: /suspense/i, anyBranch: true },
-];
-
-// Categories offered in the Expenses / Payments forms so every head above can
-// actually be recorded. Existing categories are kept first.
+// Extra categories offered in the Expenses / Payments forms so the common
+// heads can be recorded and reported consistently.
 export const EXTRA_EXPENSE_CATEGORIES = [
   "Cleaning & Laundry", "Entertainment", "Lunch", "Furniture & Fixture", "Phone Package",
   "Drinking Water", "Printing & Designing", "Stationery", "Tuition Fee", "Fuel",
