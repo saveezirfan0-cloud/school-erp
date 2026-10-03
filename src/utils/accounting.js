@@ -15,6 +15,8 @@
 import { db, addDoc, collection, serverTimestamp } from "../firebase";
 import { supabase } from "../lib/supabaseClient";
 
+export { paymentInAccount } from "./paymentAccount";
+
 // Look up a chart-of-accounts id by account name, so callers that only know
 // the name (fee collection, payslips...) still link payments by id. Cached
 // briefly because bulk flows record many payments against one account.
@@ -27,12 +29,6 @@ async function findAccountId(name) {
   const id = data?.[0]?.id || "";
   idCache.set(name, { id, at: Date.now() });
   return id;
-}
-
-// Does this payment belong to this chart-of-accounts account? Matches by id
-// when the payment has one (survives renames); older payments fall back to name.
-export function paymentInAccount(payment, account) {
-  return payment.accountId ? payment.accountId === account.id : payment.account === account.name;
 }
 
 /**

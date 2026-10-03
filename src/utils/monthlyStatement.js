@@ -17,7 +17,7 @@
 // which section each head sits in.
 
 import { toDate } from "./dates";
-import { paymentInAccount } from "./accounting";
+import { paymentInAccount } from "./paymentAccount";
 import { invoiceCollected, invoicePaymentDate } from "./invoiceTotals";
 import {
   INCOME_GROUPS, EXPENSE_GROUPS, INCOME_SUBTYPE_GROUP, EXPENSE_SUBTYPE_GROUP,
