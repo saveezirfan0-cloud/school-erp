@@ -36,23 +36,23 @@ The optional WhatsApp variables are listed in `.env.example` with a warning.
 1. `supabase/schema.sql` creates the tables (and turns RLS on with no policies, so it is closed until step 4)
 2. `supabase/accounting.sql` ledger columns (reversals, paid amounts)
 3. `supabase/trash.sql` the `deleted_at` columns the app filters on
-4. `supabase/security.sql` baseline role and branch policies
+4. `supabase/security.sql` baseline role and branch policies (includes the `teacher` role)
 5. `supabase/realtime.sql` live updates (never publishes `users` or `audit_log`)
-6. `supabase/migrations/0001` to `0012`, in number order (hardening: policies, keys,
-   audit triggers, money functions, storage). Then create your first admin (see the runbook).
-7. `supabase/attendance.sql` attendance table + RLS + realtime (needed for the Attendance tab on
-   student / employee profiles)
-8. `supabase/lms.sql` academic tables, the `teacher` role and the academic permissions (see
-   *Academics / LMS* below). It needs `attendance.sql` first. It redeclares `has_perm`, so on a
-   hardened database review it against `supabase/migrations/0002_rls_helpers.sql` before running
-   and keep the hardened function body.
+6. `supabase/attendance.sql` attendance table (profile pages and the Attendance page)
+7. `supabase/lms.sql` academic tables and teacher permissions (needs step 6; see *Academics / LMS* below)
+8. `supabase/migrations/0001` to `0013`, in number order (hardening: policies, keys, audit triggers,
+   money functions, storage, academic tables). Then create your first admin (see the runbook).
 
-**Existing database**: do **not** re-run steps 1 to 5. Take a backup first, then apply the files in
-`supabase/migrations/` in order, following `supabase/migrations/README.md`. It has the
+**Existing database** (steps 1 to 7 already applied): do **not** re-run them. Take a backup first, then
+apply the files in `supabase/migrations/` in order, following `supabase/migrations/README.md`. It has the
 pre-flight checklist, what each file changes, which ones must wait for an app change
-(`0011`, `0012`), legacy-data check queries, rollback notes and backup advice. The Academics / LMS
-files (steps 7 and 8) are separate from the migrations: run them if the app's attendance and
-academic pages are in use and the tables do not exist yet.
+(`0011`, `0012`), legacy-data check queries, rollback notes and backup advice. If `attendance.sql` /
+`lms.sql` have not been run yet, run them later and then re-run `0013`: the migrations skip a missing
+table and log it. After the migrations, `lms.sql` is safe to re-run (it no longer replaces the hardened
+`has_perm`), but run `0013` again afterwards to put the hardened academic policies back.
+The one-off data scripts (`fix_invoice_branch.sql`, `seed_chart_of_accounts.sql`,
+`rollback_workbook_import.sql`, `scripts/activate_historical_import.sql`) work unchanged next to the
+migrations; see the notes in the migrations README.
 
 Never paste an old copy of `schema.sql` over a live database: the old version re-created an
 allow-all policy. The current one cannot. `supabase/legacy/` holds old one-off scripts that must not be run.
@@ -82,7 +82,9 @@ itself lives in the shared table from `attendance.sql` (students and
 employees, one row per person per day), so the profile-page attendance
 and the Attendance page always agree. To get the teacher
 role in `has_perm`, either re-run the updated `security.sql` or run
-`lms.sql` once (it redeclares the same function).
+`lms.sql` once (it redeclares the same function). On a database where `supabase/migrations/`
+has been applied, `has_perm` already knows the teacher role (migration 0002) and `lms.sql`
+leaves it alone.
 
 **Teacher role:** create teachers from Users with the `teacher` role and
 a branch. Teachers can view students and use attendance, exams and

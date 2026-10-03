@@ -44,7 +44,9 @@ prints that run's log (`migration_log`): look for `failed` or `skipped`.
 ### Existing production database (the normal case)
 
 The baseline scripts (`schema.sql`, `accounting.sql`, `trash.sql`, `security.sql`,
-`realtime.sql`) are **already applied**. Do not re-run them. Apply, in this order, one file at
+`realtime.sql`) and main's module scripts (`attendance.sql`, `lms.sql`) are **already applied**.
+Do not re-run them. (If `attendance.sql` / `lms.sql` were never run on this database, nothing breaks:
+`0013` logs the missing tables as `skipped`; run those two files later, then run `0013` again.) Apply, in this order, one file at
 a time, reading the result grid after each:
 
 | # | File | Kind | What it does |
@@ -61,7 +63,8 @@ a time, reading the result grid after each:
 | 10 | `0010_realtime_scope.sql` | behaviour (minor) | Stops publishing `users` and `audit_log`; default replica identity. |
 | 11 | `0011_ledger_guards.sql` | **ENFORCING** | Posted money cannot be edited/relabelled outside the RPCs. **Only after the app uses the 0009 RPCs.** |
 | 12 | `0012_storage_receipts.sql` | **ENFORCING** | Storage policies for `receipts`. **Only together with the `storage.js` path change.** |
-| 13 | `0020_validate_constraints.sql` | later | `VALIDATE` the NOT VALID checks once the data is clean. Re-runnable. |
+| 13 | `0013_academic_tables.sql` | safe, can run any time after `0008` | Same permissions for attendance / subjects / exams / marks / assignments / submissions / materials, in the fast form; references, value checks, audit of exams and marks. Skips tables that do not exist yet. Re-run it after `lms.sql` or `attendance.sql`. |
+| 14 | `0020_validate_constraints.sql` | later | `VALIDATE` the NOT VALID checks once the data is clean. Re-runnable. |
 | - | `optional/9000_drop_users_pin.sql` | optional, irreversible | Drops `users.pin`. Not in the default order. |
 
 `0011` and `0012` are last on purpose: they can wait, and nothing else depends on them.
@@ -73,7 +76,8 @@ the ones that can break today's screens if applied early.
 
 ```
 1 schema.sql   2 accounting.sql   3 trash.sql   4 security.sql   5 realtime.sql
-then migrations/0001 ... 0012 in order, then 0020 (optional on an empty database)
+6 attendance.sql   7 lms.sql          (academic module; lms.sql needs attendance.sql first)
+then migrations/0001 ... 0013 in order, then 0020 (optional on an empty database)
 ```
 `schema.sql` enables RLS and creates **no** policies, so a half-finished setup is closed, not
 open. Then bootstrap the first admin (section 8).
@@ -102,6 +106,23 @@ where schemaname='public' and (policyname='auth all' or qual='true' or with_chec
 | `0005` | normalise Import values (ISO dates `YYYY-MM-DD`, positive amounts, status `pending/partial/paid`, payment type `cash_in/cash_out`) | Those import rows are rejected, row by row |
 | `0006` | nothing | "Delete forever" of a referenced student/branch/account/invoice fails with 23503 |
 | `0010` | nothing (live role changes now need a reload) | - |
+| `0013` | nothing | Marks, assignments or attendance that point at a missing exam/subject/student/branch, negative marks, or an attendance status other than present/absent/late/leave are rejected |
+
+`0011` and the browser code in `src/utils/accounting.js` / `Fees.jsx` / `InvoiceEditModal.jsx`: the browser currently
+posts payments itself (claims `reversed` before writing the reversal, re-posts after a restore, updates
+`status`/`paid_amount` directly, moves payment branches directly). All of that is refused by `0011` until
+each call is replaced by its RPC:
+
+| Browser code today | RPC |
+|---|---|
+| `collectInvoicePayment`, `createInvoiceAndCollect` (Receive now, QuickPayment, bulk receive, paid rows of the Excel import) | `post_invoice` / `record_invoice_payment` |
+| `postUnpostedInvoice` (`ledgerPosted:false`) | `post_unposted_invoice` |
+| `payPayslip`, `createExpenseAndPost` | `pay_payslip`, `pay_expense` |
+| `reversePayment` (Payments page) | `reverse_payment` |
+| `reverseSourcePayments` + `deleteDoc` on invoices / expenses / payslips | `trash_document` |
+| `restoreWithLedger` / `repostReversedPayments` | `restore_document` (re-posts exactly what the trash step reversed) |
+| `InvoiceEditModal` save (including moving its payments to the new branch) | `edit_invoice` |
+| `AccountDetail` transfer | `transfer_funds` |
 
 ## 4. What changes for each role (after 0002 + 0005 + 0006 + 0007)
 
@@ -149,14 +170,20 @@ overpayment), `23503` unknown account/student.
 | `invoice_balance(p_invoice_id)` | `getSourcePaidTotal` | amount, concession, paid, remaining, status |
 | `post_invoice(p_student_id, p_amount, p_month, p_year, p_due_date, p_line_items, p_notes, p_pay_account, p_pay_date, p_idempotency_key)` | create invoice + "Receive payment now", QuickPayment | set `p_pay_account` to take the money in the same transaction; returns the invoice |
 | `record_invoice_payment(p_invoice_id, p_amount, p_account, p_date, p_concession, p_concession_note, p_idempotency_key)` | `Fees.confirmPay`, bulk receive | amount 0 + concession closes the balance; overpay refused; assigns a receipt number |
-| `pay_payslip(p_payslip_id, p_account, p_date, p_idempotency_key)` | `Payslips.confirmPay` / bulk pay | already paid returns unchanged (double click safe); net pay from `amount` or `extra.netPay` |
+| `pay_payslip(p_payslip_id, p_account, p_date, p_idempotency_key)` | `payPayslip` / bulk pay | already paid returns unchanged (double click safe); net pay from `extra.netPay`, else the `amount` column (imports) |
 | `pay_expense(p_expense_id, p_account, p_date, p_idempotency_key)` | `Expenses` recordPayment | already paid is a no-op |
 | `transfer_funds(p_from_account, p_to_account, p_amount, p_date, p_description, p_idempotency_key)` | `AccountDetail.handleTransfer` | both legs or neither; needs `canEditAccounting`; returns the transfer id |
 | `reverse_source_payments(p_source, p_source_id)` | `utils/accounting.js` reversal loop | source is `invoice`, `payslip`, `expense` or `transfer`; also resets the source document |
-| `trash_invoice(p_id)` / `restore_invoice(p_id)` | `deleteDoc` / `restoreDoc` on invoices | need `canDeleteFees`; restore recomputes paid/status from the ledger |
+| `trash_document(p_table, p_id)` / `restore_document(p_table, p_id)` (`invoices`, `expenses`, `payslips`) | `reverseSourcePayments` + `deleteDoc` / `restoreWithLedger` | need `canDeleteFees` / `canDeleteExpenses` / `canDeletePayslips`; trash reverses the money (tagged), restore re-posts exactly that money (tagged `extra.repostOf`) and recomputes paid/status; returns `{"reposted": n}`. `trash_invoice` / `restore_invoice` are wrappers |
+| `reverse_payment(p_payment_id, p_date)` | `reversePayment` | reverses one payment, returns the reversal id (NULL if already reversed), updates the source document; transfers use `reverse_source_payments` |
+| `edit_invoice(p_id, p_branch_id, p_month, p_year, p_due_date, p_notes, p_line_items, p_amount)` | `InvoiceEditModal` | total cannot drop below received + conceded; re-derives status like the browser; payments follow the new branch; `main` means the main office |
+| `post_unposted_invoice(p_invoice_id, p_account, p_date, p_idempotency_key)` | `postUnpostedInvoice` | posts the cash of a `ledgerPosted:false` receipt; `record_invoice_payment` refuses such invoices until then |
 | `generate_recurring_invoices(p_year, p_month)` | `Fees.handleGenerateRecurring` | month is the English name; a second run creates nothing |
 | `patch_extra(p_table, p_id, p_patch)` | whole-object `extra` overwrite | merges keys; invoker rights, so RLS applies; not for users/custom_roles |
 | view `account_balances` | balance sums in `BankCash.jsx` | opening balance + live payments; honours the caller's RLS |
+
+Manager.io / workbook history (`extra.historical = true`) gets **no** invoice or receipt number, so the gapless
+sequence stays for real documents.
 
 New invoices and fee receipts get `invoice_no` (`INV-2026-000001`) and `receipt_no`
 (`RCP-2026-000001`) automatically, gapless, by trigger, even from today's client.
@@ -292,6 +319,17 @@ Receipts bucket and Trash have no retention job: decide a policy; never auto-pur
 **Break-glass.** To correct a posted payment by hand, use the SQL editor (guards skip it, `row_history` records it).
 To suspend a trigger temporarily: `alter table public.payments disable trigger trg_payments_immutable;` ... then enable it again.
 
+**Historical import (Manager.io) next to the migrations.** The scripts in `scripts/` insert as the SQL editor (no
+`auth.uid()`), so they are not blocked by the guards or the reference checks, and imported rows are not numbered.
+Two things to know: (1) a row that breaks a NOT VALID check (negative or zero amount, non-ISO date, unknown
+status) makes `activate_historical_import.sql` fail as a whole, because its UPDATE touches the row; run the section 6
+checks on the staged rows (`where extra->>'staged' = 'true'`) first, and fix them in a single UPDATE per row;
+(2) to undo an import with `delete ... where extra->>'source' = 'manager.io'`, delete in dependency order,
+because hard deletes of referenced rows are refused: `payments`, `expenses`, `payslips`, `invoices`, `students`, `employees`.
+Imported students are outside the admission-number unique key (`extra.historical = true`), current ones are not.
+`fix_invoice_branch.sql`, `seed_chart_of_accounts.sql` and `rollback_workbook_import.sql` run unchanged.
+(`seed_chart_of_accounts.sql` fails on a duplicate account code like `C-01` if a different live account already uses it.)
+
 **Making the receipts bucket private** (optional, later): see the bottom of `0012_storage_receipts.sql`; needs signed URLs in the app.
 
 ## 9. Backups and restore (audit DB-23, DEP-16)
@@ -312,6 +350,11 @@ To suspend a trigger temporarily: `alter table public.payments disable trigger t
 
 ## 11. Tests
 
-`supabase/tests/run_tests.sh [dbname]` rebuilds a **local** scratch PostgreSQL from the baseline scripts, a Supabase stub,
-and legacy-looking seed data, applies every migration and runs ~200 assertions (policy matrix per role, branch isolation,
-no self-promotion, delete rules, audit stamping, RPC results, idempotency, storage rules). It never touches Supabase.
+`supabase/tests/run_tests.sh [dbname]` rebuilds a **local** scratch PostgreSQL from the baseline scripts (including
+`attendance.sql` and `lms.sql`), a Supabase stub and legacy-looking seed data (duplicates, orphans, a teacher in two
+branches, LMS rows, a student with status `left`, a staged Manager.io history import), applies every migration and runs
+about 325 assertions: policy matrix per role, branch isolation, no self-promotion, delete rules, audit stamping, RPC
+results, idempotency, storage rules, teacher / attendance / marks scope, fee collector locked out of the LMS tables.
+It then runs main's own scripts (`activate_historical_import.sql`, `rollback_workbook_import.sql`,
+`fix_invoice_branch.sql`, `seed_chart_of_accounts.sql`, `lms.sql` again), cleans the legacy data and re-runs
+`0005`, `0013`, `0020`. `BASELINE_DIR=<dir>` runs it with older copies of the baseline files. It never touches Supabase.
