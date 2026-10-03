@@ -3,6 +3,7 @@ import {
   Building2, Settings, BookOpen, CreditCard, FileText,
   BarChart2, Landmark, BookMarked, ShieldCheck, MessageCircle,
   Upload, Trash2, History, KeyRound,
+  CalendarCheck, ClipboardList, GraduationCap, BookOpenCheck, FolderOpen, Library,
 } from "lucide-react";
 
 // Every navigable page, keyed by a stable id. `perm` is the permission
@@ -13,6 +14,12 @@ export const MENU_ITEMS = {
   students:        { to: "/students",          label: "Students",          icon: Users,           perm: "canViewStudents" },
   employees:       { to: "/employees",         label: "Employees",         icon: UserCheck,       perm: "canViewEmployees" },
   fees:            { to: "/fees",              label: "Fees & Invoices",   icon: Receipt,         perm: "canViewFees" },
+  attendance:      { to: "/attendance",         label: "Attendance",        icon: CalendarCheck,   perm: "canViewAttendance" },
+  exams:           { to: "/exams",              label: "Exams & Results",   icon: ClipboardList,   perm: "canViewExams" },
+  reportCards:     { to: "/report-cards",       label: "Report Cards",      icon: GraduationCap,   perm: "canViewExams" },
+  subjects:        { to: "/subjects",           label: "Subjects",          icon: Library,         perm: "canViewLearning" },
+  homework:        { to: "/homework",           label: "Homework",          icon: BookOpenCheck,     perm: "canViewLearning" },
+  materials:       { to: "/materials",          label: "Learning Materials",icon: FolderOpen,      perm: "canViewLearning" },
   payments:        { to: "/payments",          label: "Payments",          icon: CreditCard,      perm: "canViewPayments" },
   expenses:        { to: "/expenses",          label: "Expenses",          icon: TrendingDown,    perm: "canViewExpenses" },
   payslips:        { to: "/payslips",          label: "Payslips",          icon: FileText,        perm: "canViewPayslips" },
@@ -34,6 +41,7 @@ export const MENU_ITEMS = {
 export const DEFAULT_SECTIONS = [
   { id: "main",       label: "",                items: ["dashboard"] },
   { id: "people",     label: "People",          items: ["students", "employees"] },
+  { id: "academics",  label: "Academics",       items: ["attendance", "exams", "reportCards", "subjects", "homework", "materials"] },
   { id: "billing",    label: "Fees & Payments", items: ["fees", "payments", "expenses", "payslips"] },
   { id: "accounting", label: "Accounting",      items: ["chartOfAccounts", "bankCash", "journals"] },
   { id: "insights",   label: "Reports & Logs",  items: ["reports", "reminderLogs", "activityLog"] },

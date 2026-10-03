@@ -66,6 +66,8 @@ export const PERIOD_MODES = [
   { value: "today", label: "Today" },
   { value: "month", label: "This month" },
   { value: "lastMonth", label: "Last month" },
+  { value: "last30", label: "Last 30 days" },
+  { value: "quarter", label: "This quarter" },
   { value: "calendar", label: "Calendar year" },
   { value: "fiscal", label: "Fiscal year" },
   { value: "custom", label: "Custom range" },
@@ -87,6 +89,14 @@ export function resolveRange(period, now = new Date()) {
       const py = m === 1 ? y - 1 : y;
       const pm = m === 1 ? 12 : m - 1;
       return { from: ymd(py, pm, 1), to: ymd(py, pm, lastDay(py, pm)) };
+    }
+    case "last30": {
+      const start = new Date(y, now.getMonth(), now.getDate() - 29);
+      return { from: ymd(start.getFullYear(), start.getMonth() + 1, start.getDate()), to: todayYMD(now) };
+    }
+    case "quarter": {
+      const qs = Math.floor((m - 1) / 3) * 3 + 1;
+      return { from: ymd(y, qs, 1), to: ymd(y, qs + 2, lastDay(y, qs + 2)) };
     }
     case "calendar": return calendarYearRange(Number(year) || y);
     case "fiscal": return fiscalYearRange(Number(year) || fiscalYearOf(now));

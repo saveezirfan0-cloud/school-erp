@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { supabase, updateDocs, serverTimestamp } from "../../firebase";
 import { logActivity } from "../../utils/auditLog";
+import { deriveInvoiceStatus } from "../../utils/invoiceStatus";
 import toast from "react-hot-toast";
 import { Plus, Trash2, X } from "lucide-react";
 
@@ -58,7 +59,7 @@ export default function InvoiceEditModal({ invoice, branches, isMobile, onClose 
       };
       if (Math.abs(total - oldAmount) > 0.001) {
         // Re-derive status from what's been received against the new total.
-        changes.status = received + conceded + 0.001 >= total ? "paid" : received > 0 ? "partial" : "pending";
+        changes.status = deriveInvoiceStatus(total, received, conceded);
         if (received > 0 && !paidAmount) changes.paidAmount = received;
       }
       await updateDocs("invoices", [invoice.id], changes);
