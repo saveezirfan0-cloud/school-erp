@@ -16,6 +16,7 @@ import { exportToCSV, exportToPDF } from "../utils/exportUtils";
 import toast from "react-hot-toast";
 import { Plus, Users, Edit2, Trash2, X, Download, FileText, Receipt, CalendarCheck, GraduationCap } from "lucide-react";
 import { useNavigate } from "react-router-dom";
+import { isLeftStudent, leftStatusFields } from "../utils/studentStatus";
 import { useUser } from "../context/UserContext";
 import RollCallModal from "../components/Profile/RollCallModal";
 
@@ -259,7 +260,7 @@ export default function Students() {
                       <RowCheckbox checked={bulk.isSelected(s.id)} onChange={() => bulk.toggle(s.id)} label={`Select ${studentName(s)}`} />
                     </td>
                     <td style={{ padding: "11px 14px", fontSize: 12, fontFamily: "monospace" }}>{s.studentId}</td>
-                    <td style={{ padding: "11px 14px", fontSize: 14, fontWeight: 500, whiteSpace: "nowrap", color: "var(--primary)" }}>{studentName(s)}</td>
+                    <td style={{ padding: "11px 14px", fontSize: 14, fontWeight: 500, whiteSpace: "nowrap", color: "var(--primary)" }}>{studentName(s)}{isLeftStudent(s) && <span style={{ marginLeft: 8, padding: "2px 8px", borderRadius: 20, fontSize: 11, background: "#fef2f2", color: "#ef4444", fontWeight: 600 }}>Left</span>}</td>
                     <td style={{ padding: "11px 14px", fontSize: 13 }}>{s.grade}</td>
                     <td style={{ padding: "11px 14px", fontSize: 13, whiteSpace: "nowrap" }}>{s.parentName}</td>
                     <td style={{ padding: "11px 14px", fontSize: 13 }}>{s.parentPhone}</td>
@@ -374,6 +375,13 @@ export default function Students() {
                     <option value="">Main Office</option>
                     {branches.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
                   </select>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, padding: 12, border: "1px solid var(--border)", borderRadius: 8, background: isLeftStudent(form) ? "#fef2f2" : "#f8fafc" }}>
+                  <input type="checkbox" id="studentLeft" checked={isLeftStudent(form)} onChange={(e) => setForm((p) => ({ ...p, ...leftStatusFields(e.target.checked) }))} style={{ width: 18, height: 18 }} />
+                  <div>
+                    <label htmlFor="studentLeft" style={{ fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Student has left</label>
+                    <div style={{ fontSize: 11, color: "var(--text-muted)" }}>Keeps their records, stops new fee invoices</div>
+                  </div>
                 </div>
                 <div style={{ display: "flex", alignItems: "center", gap: 10, padding: 12, border: "1px solid var(--border)", borderRadius: 8, background: form.recurringFee ? "#f0fdf4" : "#f8fafc" }}>
                   <input type="checkbox" id="recurringFee" checked={form.recurringFee || false} onChange={(e) => setForm((p) => ({ ...p, recurringFee: e.target.checked }))} style={{ width: 18, height: 18 }} />
