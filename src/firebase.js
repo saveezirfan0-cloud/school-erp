@@ -543,11 +543,18 @@ export function onSnapshot(ref, onNext, onError) {
 
   const fullFetch = async () => {
     try {
-      let builder = supabase.from(ref.table).select("*");
-      builder = applyQuery(builder, ref);
-      const { data, error } = await builder;
-      if (error) throw error;
-      cache = data || [];
+      // PostgREST caps one response at 1000 rows, so page through the whole
+      // table (ordered by id so the pages don't overlap or skip rows).
+      const rows = [];
+      for (let from = 0; ; from += 1000) {
+        let builder = supabase.from(ref.table).select("*");
+        builder = applyQuery(builder, ref).order("id", { ascending: true }).range(from, from + 999);
+        const { data, error } = await builder;
+        if (error) throw error;
+        rows.push(...(data || []));
+        if (!data || data.length < 1000) break;
+      }
+      cache = rows;
       emit();
     } catch (e) {
       if (active && onError) onError(e);

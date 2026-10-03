@@ -18,6 +18,7 @@
 
 import { toDate } from "./dates";
 import { paymentInAccount } from "./paymentAccount";
+import { isAutoJournal } from "./autoJournals";
 import { invoiceCollected, invoicePaymentDate } from "./invoiceTotals";
 import {
   INCOME_GROUPS, EXPENSE_GROUPS, INCOME_SUBTYPE_GROUP, EXPENSE_SUBTYPE_GROUP,
@@ -167,9 +168,9 @@ export function buildMonthlyStatement({
   // ---- Journals: money booked straight to an Income / Expense account ----
   const typeByName = new Map(accounts.map((a) => [clean(a.name, "").toLowerCase(), a.type]));
   journals.filter(inScope).forEach((j) => {
-    // Expense journals are auto-posted from the expenses table, which is
-    // already counted above; counting them again would double the expense.
-    if (j.source === "expense") return;
+    // Auto-posted journals (paid expenses, fee collections, salaries) mirror
+    // rows already counted above; counting them again would double the figures.
+    if (isAutoJournal(j)) return;
     if (!inMonth(j.date)) return;
     const amount = num(j.amount);
     const debit = clean(j.debitAccount, "");
