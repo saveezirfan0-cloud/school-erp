@@ -1,8 +1,7 @@
 -- ============================================================
 -- Soft-delete / Trash support for ZMI School ERP
--- Run once in the SQL Editor, AFTER schema.sql (order with
--- security.sql does not matter, but running this before
--- security.sql is fine too). Safe to re-run.
+-- Baseline script: run AFTER schema.sql and accounting.sql, BEFORE
+-- security.sql and before migrations/. Safe to re-run.
 --
 -- Adds a `deleted_at timestamptz` column to every data table.
 --   deleted_at IS NULL  -> live record
@@ -23,8 +22,9 @@ begin
     'payslips','accounts','journals','branches','reminder_logs'
   ] loop
     execute format('alter table public.%I add column if not exists deleted_at timestamptz;', t);
-    -- index so filtering live vs trashed rows stays fast
-    execute format('create index if not exists idx_%1$s_deleted_at on public.%1$s (deleted_at);', t);
+    -- Small partial index for the Trash view (rows are NULL almost always, so a
+    -- plain btree on deleted_at is useless; DB-20).
+    execute format('create index if not exists %1$s_trashed_idx on public.%1$I (deleted_at desc) where deleted_at is not null;', t);
   end loop;
 end $$;
 

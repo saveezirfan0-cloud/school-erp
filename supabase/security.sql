@@ -1,6 +1,7 @@
 -- ============================================================
--- ZMI School ERP — Backend security (RLS) v2
--- Run this AFTER schema.sql.
+-- ZMI School ERP — Backend security (RLS) v2   [BASELINE]
+-- Run this AFTER schema.sql, accounting.sql and trash.sql, and
+-- BEFORE the numbered files in supabase/migrations/.
 --
 -- Goal: enforce the SAME permission model the app uses
 -- (UserContext PERMISSIONS) at the DATABASE level, so a blocked
@@ -9,7 +10,25 @@
 --
 -- Model (per the answered design question): a user's role and
 -- branch are read from public.users, keyed by auth.uid().
+--
+-- IMPORTANT: this file is the original, weaker baseline. The
+-- migrations in supabase/migrations/ (0002 helpers, 0007 policies,
+-- ...) replace its functions and policies with hardened versions.
+-- Re-running this file AFTER the migrations would silently put the
+-- weaker policies back, so it refuses to run once the migrations
+-- have been applied (migration_log exists). To force it anyway:
+--     set app.allow_baseline_rerun = 'on';
+-- and then re-run every migration in order straight afterwards.
 -- ============================================================
+begin;
+
+do $$
+begin
+  if to_regclass('public.migration_log') is not null
+     and coalesce(current_setting('app.allow_baseline_rerun', true), '') <> 'on' then
+    raise exception 'security.sql is the legacy baseline and has been superseded by supabase/migrations/. Re-running it would weaken live policies. Aborting (nothing was changed).';
+  end if;
+end $$;
 
 -- ------------------------------------------------------------
 -- Helper functions (SECURITY DEFINER so they can read users
@@ -351,3 +370,5 @@ create policy audit_select_admin on public.audit_log for select to authenticated
 -- The app's client-side checks become a UX convenience; the
 -- database is the real boundary.
 -- ============================================================
+
+commit;
