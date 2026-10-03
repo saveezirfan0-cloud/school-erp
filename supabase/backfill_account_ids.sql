@@ -23,18 +23,20 @@ where p.deleted_at is null
   and p.account = a.name
   and coalesce(p.extra->>'accountId', '') = '';
 
--- expenses: category name -> "Expenses" account id
+-- expenses: category name -> "Expenses" account id (case/spacing-insensitive;
+-- only accounts of type Expenses, so e.g. an Income account called "Welfare"
+-- is never linked as an expense category)
 update public.expenses e
 set extra = coalesce(e.extra, '{}'::jsonb) || jsonb_build_object('accountId', a.id::text)
 from (
-  select name, min(id::text) as id
+  select lower(trim(name)) as name, min(id::text) as id
   from public.accounts
   where deleted_at is null and type = 'Expenses'
-  group by name
+  group by lower(trim(name))
   having count(*) = 1
 ) a
 where e.deleted_at is null
-  and e.category = a.name
+  and lower(trim(e.category)) = a.name
   and coalesce(e.extra->>'accountId', '') = '';
 
 -- expenses: paid-from account name -> account id

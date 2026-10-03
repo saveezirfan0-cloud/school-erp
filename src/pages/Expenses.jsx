@@ -9,7 +9,7 @@ import BulkBar, { RowCheckbox, HeaderCheckbox } from "../components/UI/BulkBar";
 import BulkEditModal from "../components/UI/BulkEditModal";
 import { runBulk, bulkResultMessage } from "../utils/bulk";
 import { logActivity } from "../utils/auditLog";
-import { recordPayment, bankCashAccounts, reverseSourcePayments } from "../utils/accounting";
+import { recordPayment, bankCashAccounts, reverseSourcePayments, postExpenseJournal, deleteExpenseJournals, syncExpenseJournals } from "../utils/accounting";
 import { exportToCSV, exportToPDF } from "../utils/exportUtils";
 import { EXTRA_EXPENSE_CATEGORIES } from "../config/statementHeads";
 import toast from "react-hot-toast";
@@ -128,6 +128,7 @@ export default function Expenses() {
     if (!window.confirm("Delete this expense? If it was paid from an account, the payment will be reversed. You can restore it from Trash.")) return;
     try {
       await reverseSourcePayments("expense", exp.id);
+      await deleteExpenseJournals(exp.id).catch(() => toast.error("Expense deleted, but its journal entry could not be removed"));
       await deleteDoc(doc(db, "expenses", exp.id));
       toast.success("Expense deleted");
       logActivity("deleted", "Expenses", `${exp.description} · Rs. ${Number(exp.amount || 0).toLocaleString()}`);
@@ -141,7 +142,7 @@ export default function Expenses() {
     setBulkBusy(true);
     const t = toast.loading(`Deleting ${ids.length} expenses…`);
     try {
-      const { ok, failed } = await runBulk(ids, (id) => reverseSourcePayments("expense", id), {
+      const { ok, failed } = await runBulk(ids, async (id) => { await reverseSourcePayments("expense", id); await deleteExpenseJournals(id); }, {
         onProgress: (d, tot) => toast.loading(`Reversing payments ${d}/${tot}…`, { id: t }),
       });
       if (ok.length) await deleteDocs("expenses", ok);
@@ -162,6 +163,11 @@ export default function Expenses() {
       // The category option is an account id; save the name + link alongside it.
       const patch = changes.category ? { ...changes, ...categoryFields(changes.category) } : changes;
       await updateDocs("expenses", [...bulk.selected], { ...patch, updatedAt: serverTimestamp() });
+      if (patch.accountId || patch.date) {
+        const acc = expenseAccounts.find(a => a.id === patch.accountId);
+        await syncExpenseJournals([...bulk.selected], { accountName: acc?.name, date: patch.date })
+          .catch(() => toast.error("Expenses updated, but some journal entries could not be updated"));
+      }
       toast.success(`${n} expense${n === 1 ? "" : "s"} updated`);
       logActivity("updated", "Expenses", `${n} expenses (bulk): ${Object.keys(changes).join(", ")}`);
       setShowBulkEdit(false);
@@ -202,6 +208,19 @@ export default function Expenses() {
         });
       } catch (err) {
         toast.error("Expense saved, but payment not recorded: " + (err?.message || ""));
+      }
+      // Double entry: debit the expense account, credit the account paid from.
+      const expAcc = expenseAccounts.find(a => a.id === cat.accountId);
+      if (expAcc) {
+        try {
+          await postExpenseJournal({
+            expenseId: docRef?.id, expenseAccount: expAcc, payAccount: payAcc,
+            amount: form.amount, date: form.date || undefined,
+            description: form.description, branchId: form.branchId || "",
+          });
+        } catch (err) {
+          toast.error("Expense saved, but its journal entry was not posted: " + (err?.message || ""));
+        }
       }
     }
     toast.success("Expense added");
