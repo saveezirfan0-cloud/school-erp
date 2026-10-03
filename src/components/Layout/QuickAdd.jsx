@@ -14,7 +14,6 @@ export default function QuickAdd() {
 
   const canStudent = can("canEditStudents");
   const canEmployee = can("canEditEmployees");
-  if (!canStudent && !canEmployee) return null; // nothing to add
 
   const [open, setOpen] = useState(false);
   const [kind, setKind] = useState(canStudent ? "student" : "employee");
@@ -33,6 +32,10 @@ export default function QuickAdd() {
 
   const save = async (e) => {
     e.preventDefault();
+    if ((kind === "student" && !canStudent) || (kind === "employee" && !canEmployee)) {
+      toast.error("You don't have permission to do that");
+      return;
+    }
     setSaving(true);
     try {
       if (kind === "student") {
@@ -54,6 +57,9 @@ export default function QuickAdd() {
 
   const field = { width: "100%", padding: "10px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14, boxSizing: "border-box" };
   const label = { display: "block", fontSize: 13, fontWeight: 500, marginBottom: 5 };
+
+  // Nothing to add for this user. (Checked after all hooks have run.)
+  if (!canStudent && !canEmployee) return null;
 
   return (
     <>

@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useMemo, useCallback } from "react";
+import React, { createContext, useContext, useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { db } from "../firebase";
 import { collection, onSnapshot } from "../firebase";
 import { useAuth } from "./AuthContext";
@@ -13,13 +13,22 @@ export function BranchProvider({ children }) {
   );
   const [loading, setLoading] = useState(true);
   const { user } = useAuth();
+  const hadUser = useRef(false);
 
   useEffect(() => {
     if (!user) {
       setBranches([]);
       setLoading(false);
+      // Don't leak one person's branch choice to the next sign-in on a
+      // shared machine (only on a real sign-out, not the initial load).
+      if (hadUser.current) {
+        hadUser.current = false;
+        setActiveBranchState("all");
+        try { localStorage.removeItem("activeBranch"); } catch { /* ignore */ }
+      }
       return;
     }
+    hadUser.current = true;
     setLoading(true);
     const unsub = onSnapshot(
       collection(db, "branches"),

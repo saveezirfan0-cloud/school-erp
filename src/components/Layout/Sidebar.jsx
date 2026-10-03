@@ -10,7 +10,7 @@ import { useUser } from "../../context/UserContext";
 
 export default function Sidebar({ onClose }) {
   const [openGroup, setOpenGroup] = useState("Accounting");
-  const { can, isAdmin } = useUser();
+  const { can, isAdmin, canDeleteAny } = useUser();
 
   const nav = [
     {
@@ -131,7 +131,7 @@ export default function Sidebar({ onClose }) {
       to: "/trash",
       icon: Trash2,
       label: "Trash",
-      show: true,
+      show: canDeleteAny,
     },
     {
       to: "/settings",

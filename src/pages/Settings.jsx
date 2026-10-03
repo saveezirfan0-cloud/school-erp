@@ -1,5 +1,7 @@
 import React, { useState } from "react";
 import { sendWhatsAppHelloTest, sendWhatsAppMessage } from "../utils/whatsapp";
+import { supabase } from "../lib/supabaseClient";
+import { useUser } from "../context/UserContext";
 import toast from "react-hot-toast";
 import { MessageCircle, CheckCircle, AlertCircle, Link2, Send } from "lucide-react";
 
@@ -16,6 +18,25 @@ export default function Settings() {
 
   const [testPhone, setTestPhone] = useState("");
   const [sending, setSending] = useState(false);
+  const { can } = useUser();
+  const [newPass, setNewPass] = useState("");
+  const [savingPass, setSavingPass] = useState(false);
+
+  const changePassword = async (e) => {
+    e.preventDefault();
+    if (newPass.length < 10) return toast.error("Use at least 10 characters");
+    setSavingPass(true);
+    try {
+      const { error } = await supabase.auth.updateUser({ password: newPass });
+      if (error) throw error;
+      toast.success("Password updated");
+      setNewPass("");
+    } catch (err) {
+      toast.error(err?.message || "Could not update password");
+    } finally {
+      setSavingPass(false);
+    }
+  };
 
   const sendTest = async () => {
     if (!testPhone.trim()) return toast.error("Enter a phone number with country code");
@@ -70,19 +91,34 @@ export default function Settings() {
         )}
       </div>
 
-      {/* Quick pay link */}
+      {/* Change password */}
+      <div style={card}>
+        <h3 style={{ fontWeight: 600, marginBottom: 8 }}>Change Password</h3>
+        <form onSubmit={changePassword} style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <input type="password" autoComplete="new-password" value={newPass} onChange={(e) => setNewPass(e.target.value)}
+            placeholder="New password (10+ characters)" style={{ ...input, flex: 1, minWidth: 200 }} />
+          <button type="submit" disabled={savingPass}
+            style={{ padding: "9px 16px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: savingPass ? "not-allowed" : "pointer", fontWeight: 600 }}>
+            {savingPass ? "Saving..." : "Update"}
+          </button>
+        </form>
+      </div>
+
+      {/* Quick pay link (only for people who can enter fees) */}
+      {can("canEditFees") && (
       <div style={card}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
           <Link2 size={18} style={{ color: "var(--primary)" }} />
           <h3 style={{ fontWeight: 600 }}>Quick Payment Link</h3>
         </div>
-        <p style={{ color: "var(--text-muted)", fontSize: 14, marginBottom: 12 }}>Share this link with staff to log fee payments without logging in.</p>
+        <p style={{ color: "var(--text-muted)", fontSize: 14, marginBottom: 12 }}>Staff with fee-entry permission can use this page to log fee payments. They must be signed in; the link does not bypass login.</p>
         <div style={{ display: "flex", gap: 8 }}>
           <input readOnly value={quickPayLink} style={{ ...input, flex: 1, background: "#f8fafc" }} />
           <button onClick={() => { navigator.clipboard.writeText(quickPayLink); toast.success("Copied"); }}
             style={{ padding: "9px 16px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600 }}>Copy</button>
         </div>
       </div>
+      )}
     </div>
   );
 }
