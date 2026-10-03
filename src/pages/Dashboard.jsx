@@ -29,7 +29,7 @@ const sum = (rows, key) => rows.reduce((s, r) => s + Number(r[key] || 0), 0);
 export default function Dashboard() {
   const { activeBranch, setActiveBranch, branches } = useBranch();
   const navigate = useNavigate();
-  const [raw, setRaw] = useState({ students: [], employees: [], invoices: [], expenses: [], payslips: [] });
+  const [raw, setRaw] = useState({ students: [], employees: [], invoices: [], expenses: [], payslips: [], payments: [] });
   const [loading, setLoading] = useState(true);
   const [period, setPeriod] = useState(loadPeriod);
   const [detail, setDetail] = useState(null); // key of the open popup
@@ -42,15 +42,16 @@ export default function Dashboard() {
     const fetchAll = async () => {
       setLoading(true);
       try {
-        const [studentsSnap, employeesSnap, invSnap, expSnap, payslipsSnap] = await Promise.all([
+        const [studentsSnap, employeesSnap, invSnap, expSnap, payslipsSnap, paySnap] = await Promise.all([
           getDocs(collection(db, "students")),
           getDocs(collection(db, "employees")),
           getDocs(collection(db, "invoices")),
           getDocs(collection(db, "expenses")),
           getDocs(collection(db, "payslips")),
+          getDocs(collection(db, "payments")),
         ]);
         const read = (snap) => snap.docs.map(d => ({ id: d.id, ...d.data() }));
-        setRaw({ students: read(studentsSnap), employees: read(employeesSnap), invoices: read(invSnap), expenses: read(expSnap), payslips: read(payslipsSnap) });
+        setRaw({ students: read(studentsSnap), employees: read(employeesSnap), invoices: read(invSnap), expenses: read(expSnap), payslips: read(payslipsSnap), payments: read(paySnap) });
       } catch (err) { console.error("Dashboard error:", err); }
       setLoading(false);
     };
@@ -77,6 +78,15 @@ export default function Dashboard() {
       _raisedOn: toYMD(i.createdAt),
     }));
     const branchKey = (r) => (!r.branchId || r.branchId === "main" ? "" : r.branchId);
+    // Fee income imported from the Accounts workbook (Jan-Sep 2026) has no
+    // invoices behind it, only cash-in payments. Only import-batch rows are
+    // counted: payments the app records for invoices are already in `invoices`.
+    const importedFees = raw.payments
+      .filter(p => p.importBatch && p.type === "cash_in" && !p.reversed && /fees\s*$/i.test(p.category || ""))
+      .map(p => ({
+        id: `pay-${p.id}`, studentName: p.category, month: "", year: "",
+        _branch: branchKey(p), _received: Number(p.amount || 0), _paidOn: toYMD(p.date || p.createdAt),
+      }));
     // Total expenses = operating expenses + payroll (matches the P&L report).
     const expenses = [
       ...raw.expenses.map(e => ({ ...e, _branch: branchKey(e), _on: toYMD(e.date || e.createdAt) })),
@@ -92,7 +102,7 @@ export default function Dashboard() {
     return {
       students,
       employees,
-      collected: invoices.filter(i => i._received > 0 && inRange(i._paidOn, range)),
+      collected: [...invoices, ...importedFees].filter(i => i._received > 0 && inRange(i._paidOn, range)),
       pending: invoices.filter(i => i._outstanding > 0 && inRange(i._raisedOn, range)),
       invoicesInRange: invoices.filter(i => inRange(i._raisedOn, range)),
       expenses: expenses.filter(e => inRange(e._on, range)),
