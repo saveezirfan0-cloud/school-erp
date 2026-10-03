@@ -1,69 +1,64 @@
 // src/utils/auditLog.js
 //
-// Activity log writer. Every notable action in the app calls
-// logActivity(action, module, details); rows land in the audit_log
-// table, which (per supabase/security.sql) anyone signed-in may
-// INSERT into but only admins may SELECT — and nobody may UPDATE or
-// DELETE, so the trail is immutable. The Activity Log page renders it.
+// Client-side activity log writer: logActivity(action, module, details).
+// Rows land in the audit_log table (anyone signed in may INSERT, only
+// admins may SELECT).
 //
-// Logging is fire-and-forget: it never throws and callers don't need
-// to await it, so a logging hiccup can never break the real action.
+// This is a BEST-EFFORT convenience trail, not evidence. The browser can be
+// bypassed, so the authoritative trail is meant to come from database
+// triggers (audit finding SEC-04). What this file guarantees:
+//   - identity always comes from the live auth session (the real user id and
+//     email), never from the caller. There is no way to log "as" someone else.
+//   - it never throws and never blocks the real action: callers do not need
+//     to await it, and a logging failure is only a console warning.
+//
+// The user id is stored in the row's `extra` jsonb as `userId` so this works
+// with the current schema; once the audit_log table gains a user_id column
+// (set by a trigger from auth.uid()), that column becomes the source of truth.
 
-import { db, supabase } from "../firebase";
-import { collection, addDoc, serverTimestamp } from "../firebase";
+import { supabase } from "../lib/supabaseClient";
+import { db, collection, addDoc, serverTimestamp } from "../firebase";
 
-// Keep the signed-in user's email cached so logging doesn't need an
-// auth round-trip per event.
-let cachedEmail = null;
-try {
-  supabase.auth.onAuthStateChange((_event, session) => {
-    cachedEmail = session?.user?.email || null;
-  });
-} catch (e) {
-  console.error("Activity log auth listener error", e);
-}
-
-async function resolveEmail() {
-  if (cachedEmail) return cachedEmail;
+// Real identity of the signed-in user, read from the local session (no
+// network round trip). Returns null when nobody is signed in.
+async function currentIdentity() {
   try {
-    const { data } = await supabase.auth.getUser();
-    cachedEmail = data?.user?.email || null;
-  } catch { /* stay null */ }
-  return cachedEmail;
+    const { data } = await supabase.auth.getSession();
+    const user = data?.session?.user;
+    return user ? { id: user.id, email: user.email || null } : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
- * Record one activity-log entry.
- * @param {string} action   short verb: "created" | "updated" | "deleted" | "collected" | "paid" | "restored" | ...
- * @param {string} module   e.g. "Invoices", "Expenses", "Students", "Users", "Trash"
- * @param {string} details  human-readable summary, e.g. "Invoice Ali Khan — March 2026 · Rs. 5,000"
+ * Record one activity-log entry (fire and forget).
+ * @param {string} action   short verb: "created" | "updated" | "deleted" | ...
+ * @param {string} module   e.g. "Invoices", "Expenses", "Students"
+ * @param {string} details  human-readable summary
+ * @returns {Promise<boolean>} true if the row was written; never rejects
  */
 export async function logActivity(action, module, details = "") {
   try {
-    const email = await resolveEmail();
+    const who = await currentIdentity();
+    if (!who) return false;   // not signed in: RLS would refuse anyway
     await addDoc(collection(db, "auditLog"), {
-      user: email || "unknown",
-      action,
-      module,
-      details,
+      user: who.email || who.id,
+      userId: who.id,
+      action: String(action ?? ""),
+      module: String(module ?? ""),
+      details: String(details ?? ""),
       timestamp: serverTimestamp(),
     });
+    return true;
   } catch (e) {
-    console.error("Activity log error", e);
+    console.warn("Activity log not written:", e?.message || e);
+    return false;
   }
 }
 
-// Back-compat with the original signature (explicit user object).
-export async function logAction(user, action, module, details = "") {
-  try {
-    await addDoc(collection(db, "auditLog"), {
-      user: user?.email || "unknown",
-      action,
-      module,
-      details,
-      timestamp: serverTimestamp(),
-    });
-  } catch (e) {
-    console.error("Audit log error", e);
-  }
+// Back-compat with the original signature. The explicit `user` argument is
+// IGNORED on purpose: identity is always taken from the auth session.
+export async function logAction(_user, action, module, details = "") {
+  return logActivity(action, module, details);
 }

@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  web:
+    name: lint, test, build, audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Lint
+        run: npm run lint
+      - name: Test
+        run: npm run test:ci
+        env:
+          CI: "true"
+      - name: Test date utils in two timezones
+        run: npm run test:tz
+        env:
+          CI: "true"
+      - name: Build
+        run: CI=true npx react-scripts build
+        env:
+          INLINE_RUNTIME_CHUNK: "false"
+          GENERATE_SOURCEMAP: "false"
+          REACT_APP_SUPABASE_URL: https://example.supabase.co
+          REACT_APP_SUPABASE_ANON_KEY: ci-placeholder
+      - name: npm audit (production dependencies; not blocking yet)
+        run: npm audit --omit=dev --audit-level=high
+        continue-on-error: true   # the CRA dependency tree is red until the move off react-scripts
+
+  secrets:
+    name: gitleaks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
