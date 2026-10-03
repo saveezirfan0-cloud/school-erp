@@ -55,7 +55,7 @@ export default function Payments() {
   }, []);
 
   // payments via the shared hook: realtime + search + filters + sort + paging
-  const { filtered, paged, total, pageCount, page: safePage } = useCollection("payments", {
+  const { rows, filtered, paged, total, pageCount, page: safePage } = useCollection("payments", {
     activeBranch,
     search,
     searchFields: ["description", "account", "reference", "category"],
@@ -73,7 +73,7 @@ export default function Payments() {
   useEffect(() => { setPage(1); }, [search, filterType, filterCategory, filterDateFrom, filterDateTo, pageSize, activeBranch]);
 
   // multi-select for bulk actions
-  const bulk = useBulkSelect(filtered.map(p => p.id));
+  const bulk = useBulkSelect(rows.map(p => p.id), activeBranch);
   const pagedIds = paged.map(p => p.id);
   const [showBulkEdit, setShowBulkEdit] = useState(false);
   const [bulkBusy, setBulkBusy] = useState(false);
