@@ -1,5 +1,5 @@
-// Printable business documents: invoices, fee receipts, payslips, payment
-// vouchers and student statements.
+// Printable business documents: invoices, fee receipts, payslips and payment
+// vouchers. (The parent-facing student statement lives in studentStatement.js.)
 //
 // Every document is described by one plain "spec" object, which is rendered
 // two ways so the on-screen view, the print output and the PDF file always
@@ -203,59 +203,6 @@ export function buildPaymentDoc(p, { branchName } = {}) {
     notes: "",
     signatures: isIn ? ["Paid By", "Received By"] : ["Recipient Signature", "Authorized By"],
     footer: "This is a computer-generated document.",
-  };
-}
-
-// rows: [{ date, label, detail, billed, received, reversed }] in date order.
-// `concession` is the total amount waived; it is listed as a final row and
-// reduces the balance (same rule as utils/fees.js summarizeInvoices).
-export function buildStatementDoc(student, rows, { branchName, concession = 0 } = {}) {
-  let billed = 0;
-  let received = 0;
-  let waived = 0;
-  const body = rows.map(r => {
-    if (!r.reversed) { billed += r.billed || 0; received += r.received || 0; }
-    return [
-      fmtDate(r.date) || "—",
-      `${r.label}${r.reversed ? " (reversed)" : ""}${r.detail ? ` - ${r.detail}` : ""}`,
-      r.billed && !r.reversed ? money(r.billed) : "",
-      r.received && !r.reversed ? (r.received < 0 ? `- ${money(-r.received)}` : money(r.received)) : "",
-      money(billed - received - waived),
-    ];
-  });
-  if (concession > 0) {
-    waived = concession;
-    body.push(["", "Concession (waived)", "", money(concession), money(billed - received - waived)]);
-  }
-  const balance = Math.max(0, billed - received - waived);
-  return {
-    kind: "statement",
-    title: "FEE STATEMENT",
-    number: student?.studentId ? `ID ${student.studentId}` : "",
-    date: `As of ${today()}`,
-    branch: branchName || "",
-    filename: safeFilename(`statement-${student?.name || "student"}`),
-    status: balance > 0 ? { label: "BALANCE DUE", tone: "danger" } : { label: "NO BALANCE DUE", tone: "success" },
-    details: [
-      ["Student", student?.name || "—"],
-      ["Student ID", student?.studentId || "—"],
-      ["Class / Grade", student?.grade || "—"],
-      ["Parent / Guardian", student?.parentName || "—"],
-    ],
-    table: {
-      head: ["Date", "Description", "Billed", "Received", "Balance"],
-      rows: body.length ? body : [["", "No invoices or payments yet", "", "", ""]],
-      align: ["left", "left", "right", "right", "right"],
-    },
-    totals: [
-      ["Total Billed", money(billed)],
-      ["Total Received", money(received)],
-      ...(waived > 0 ? [["Concession (waived)", money(waived)]] : []),
-      ["Balance Due", money(balance), true],
-    ],
-    notes: "",
-    signatures: [],
-    footer: "Reversed payments are shown for reference and are not counted in the totals.",
   };
 }
 

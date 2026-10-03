@@ -33,6 +33,8 @@ Run in the SQL Editor, in order:
 2. `supabase/security.sql` — enables Row-Level Security policies
 3. `supabase/attendance.sql` — attendance table + RLS + realtime
    (needed for the Attendance tab on student / employee profiles)
+4. `supabase/budgets.sql` — budgets table + RLS
+   (needed for Reports → Budget vs Actual; the rest of Reports works without it)
 
 Then:
 - Disable signups: Authentication → Sign In/Providers → Email → off
@@ -49,7 +51,7 @@ Then:
 - Single documents open in a viewer with **Print** and **PDF** download:
   invoices and fee receipts (Fees → View, or select rows → *Invoices PDF* /
   *Receipts*), payslips (Payslips → View), payment receipts/vouchers
-  (Payments), and a student fee statement (Students → Ledger → Statement).
+  (Payments). A student's ledger exports to PDF/Excel/CSV from its Export menu.
   Selecting several rows produces one combined PDF, one document per page.
 - PDFs are built in the browser (jsPDF, loaded on demand). Text outside
   Latin characters (e.g. Urdu) can't be drawn by jsPDF's built-in fonts, so

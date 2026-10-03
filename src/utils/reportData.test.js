@@ -2,6 +2,7 @@ import {
   parseDay, presetRange, customRange, previousRange, inRange, resolveGranularity, resolveRange,
   prepareData, computeFinancials, buildSeries, branchBreakdown, change, effectiveStatus,
   allocateByHead, computeCashFlow, computeBalanceSheet, filterFeeRows, summarizeFees, buildHighlights,
+  yearAgoRange, comparisonRange, classDetail, teachersForGrade, buildSummaryText,
 } from "./reportData";
 
 const TODAY = new Date(2026, 2, 15); // 15 Mar 2026
@@ -215,7 +216,7 @@ describe("computeCashFlow", () => {
   });
 
   test("account filter, and account opening balances are skipped for one branch", () => {
-    expect(computeCashFlow(data, { range: JAN_FEB, account: "Bank" }).inflow).toBe(400);
+    expect(computeCashFlow(data, { range: JAN_FEB, account: "a2" }).inflow).toBe(400);
     const b1 = computeCashFlow(data, { range: JAN_FEB, branch: "b1" });
     expect(b1.opening).toBe(0);
     expect(b1.openingExcluded).toBe(true);
@@ -282,4 +283,115 @@ test("highlights mention growth, top expense and overdue fees", () => {
   expect(text).toMatch(/Income is down 60%/);
   expect(text).toMatch(/Biggest operating expense: Utilities/);
   expect(text).toMatch(/overdue/);
+});
+
+describe("account matching by id (survives renames)", () => {
+  const renamed = prepareData({
+    accounts: [{ id: "a1", code: "1000", name: "Petty cash (renamed)", type: "Assets", subType: "Bank & Cash", balance: 100 }],
+    payments: [
+      { id: "n1", type: "cash_in", account: "Cash", accountId: "a1", amount: 50, date: "2026-01-05" },   // posted under the old name
+      { id: "n2", type: "cash_in", account: "Petty cash (renamed)", amount: 25, date: "2026-01-06" },     // legacy row, name only
+      { id: "n3", type: "cash_in", account: "Gone", accountId: "zzz", amount: 10, date: "2026-01-07" },   // account no longer exists
+    ],
+  });
+  test("cash flow groups by account id and keeps unlinked postings visible", () => {
+    const cf = computeCashFlow(renamed, { range: JAN_FEB });
+    const main = cf.perAccount.find(a => a.key === "a1");
+    expect(main.name).toBe("Petty cash (renamed)");
+    expect(main.inflow).toBe(75);
+    expect(main.closing).toBe(175);
+    expect(cf.perAccount.find(a => a.name === "Gone").inflow).toBe(10);
+    expect(cf.accountOptions.map(o => o.label)).toEqual(["Gone", "Petty cash (renamed)"]);
+    expect(computeCashFlow(renamed, { range: JAN_FEB, account: "a1" }).inflow).toBe(75);
+  });
+  test("balance sheet uses the same matching", () => {
+    expect(computeBalanceSheet(renamed, { asAt: null }).assets.rows[0].balance).toBe(175);
+  });
+});
+
+describe("accrual basis", () => {
+  test("income is billed less concessions by invoice month, regardless of payment", () => {
+    const f = computeFinancials(data, { range: ALL, branch: "all", basis: "accrual" });
+    expect(f.income).toBe(2500 - 100);
+    expect(f.concessions).toBe(100);
+    expect(f.collected).toBe(1400); // cash still reported for reference
+    expect(f.net).toBe(2400 - 600 - 1200);
+  });
+  test("period limits follow the billing month, not the paid date", () => {
+    const f = computeFinancials(data, { range: FEB, branch: "all", basis: "accrual" });
+    expect(f.income).toBe(1000 - 100);
+    expect(f.byHead.reduce((s, h) => s + h.amount, 0)).toBe(900);
+  });
+  test("series income and branch rows follow the basis", () => {
+    const { buckets } = buildSeries(data, { range: { from: d(2026, 1, 1), to: d(2026, 3, 31) }, branch: "all", granularity: "month", basis: "accrual" });
+    expect(buckets.map(b => b.income)).toEqual([1000, 900, 500]);
+    const rows = branchBreakdown(data, [{ id: "b1", name: "North" }], { range: ALL, basis: "accrual" });
+    expect(rows[1].income).toBe(1900);
+    expect(rows[1].collectionRate).toBeCloseTo(1400 / 1900);
+  });
+});
+
+describe("comparison ranges", () => {
+  test("same period last year, aligned to month ends", () => {
+    const y = yearAgoRange({ from: d(2025, 2, 1), to: new Date(2025, 1, 28, 23, 59, 59, 999) });
+    expect(y.from).toEqual(d(2024, 2, 1));
+    expect(y.to.getDate()).toBe(29); // Feb 2024 has 29 days
+    const mid = yearAgoRange({ from: d(2026, 3, 10), to: new Date(2026, 3, 20, 23, 59, 59, 999) });
+    expect([mid.from.getFullYear(), mid.from.getMonth(), mid.from.getDate()]).toEqual([2025, 2, 10]);
+    expect(yearAgoRange(ALL)).toBeNull();
+  });
+  test("comparisonRange picks by mode", () => {
+    const r = presetRange("thisYear", TODAY);
+    expect(comparisonRange(r, "none")).toBeNull();
+    expect(comparisonRange(r, "yoy").from).toEqual(d(2025, 1, 1));
+    expect(comparisonRange(r, "prev").from).toEqual(d(2025, 1, 1)); // whole year steps back a year
+    const q = presetRange("thisQuarter", TODAY);
+    expect(comparisonRange(q, "prev").from).toEqual(d(2025, 10, 1));
+    expect(comparisonRange(q, "yoy").from).toEqual(d(2025, 1, 1));
+  });
+  test("highlights name the comparison", () => {
+    const cur = computeFinancials(data, { range: FEB, branch: "all" });
+    const prev = computeFinancials(data, { range: { from: d(2026, 1, 1), to: new Date(2026, 0, 31, 23, 59) }, branch: "all" });
+    const text = buildHighlights({ cur, prev, fees: null, branches: [], vs: "the same period last year" }).map(h => h.text).join("\n");
+    expect(text).toMatch(/on the same period last year/);
+  });
+});
+
+describe("class view", () => {
+  const rows = filterFeeRows(data.invoices, { branch: "all", today: TODAY });
+  test("classDetail lists every student in the class, worst balance first", () => {
+    const g5 = classDetail(rows, "Grade 5", { range: ALL, today: TODAY });
+    expect(g5).toHaveLength(1);
+    expect(g5[0]).toMatchObject({ student: "Ali", studentId: "s1", billed: 2000, collected: 1400, outstanding: 500, status: "overdue" });
+    const g6 = classDetail(rows, "Grade 6", { range: ALL, today: TODAY });
+    expect(g6[0]).toMatchObject({ student: "Sara", status: "pending", unpaid: 1 });
+    expect(classDetail(rows, "Grade 9", { range: ALL, today: TODAY })).toEqual([]);
+  });
+  test("classDetail respects the billing period", () => {
+    expect(classDetail(rows, "Grade 5", { range: FEB, today: TODAY })[0].billed).toBe(1000);
+  });
+  test("a settled class is marked paid", () => {
+    const paid = filterFeeRows(data.invoices, { grade: "Grade 5", status: "paid", today: TODAY });
+    expect(classDetail(paid, "Grade 5", { range: ALL, today: TODAY })[0].status).toBe("paid");
+  });
+  test("teachersForGrade reads Subjects, grouping subjects per teacher", () => {
+    const subjects = [
+      { name: "Maths", grade: "Grade 5", teacher: "Mr Khan", branchId: "b1" },
+      { name: "Science", grade: "Grade 5", teacher: "Mr Khan", branchId: "b1" },
+      { name: "Urdu", grade: "Grade 5", teacher: " Ms  Noor ", branchId: "" },
+      { name: "Art", grade: "", teacher: "Everyone" },
+      { name: "Maths", grade: "Grade 6", teacher: "Ms Ali" },
+      { name: "PT", grade: "Grade 5", teacher: "" },
+    ];
+    expect(teachersForGrade(subjects, "Grade 5")).toEqual([
+      { teacher: "Mr Khan", subjects: ["Maths", "Science"] },
+      { teacher: "Ms Noor", subjects: ["Urdu"] },
+    ]);
+    expect(teachersForGrade(subjects, "Grade 5", "b1").map(t => t.teacher)).toEqual(["Mr Khan"]);
+  });
+});
+
+test("buildSummaryText lays out title, scope, lines and highlights", () => {
+  const t = buildSummaryText({ title: "P&L report", scope: "All · 2026", lines: [["Income", "Rs. 5"]], highlights: [{ text: "Up 5%." }] });
+  expect(t).toBe("P&L report\nAll · 2026\n\nIncome: Rs. 5\n\nHighlights:\n- Up 5%.\n\nGenerated from ZMI School ERP");
 });

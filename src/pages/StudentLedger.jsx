@@ -4,10 +4,9 @@ import { db, doc, getDoc } from "../firebase";
 import { useRelated } from "../hooks/useProfileData";
 import { toMillis, formatDate, localISODate } from "../utils/dates";
 import { summarizeInvoices, isLivePayment, netAmount } from "../utils/fees";
-import { useBranch } from "../context/BranchContext";
+import { buildStatement, printStatements } from "../utils/studentStatement";
 import ExportMenu from "../components/UI/ExportMenu";
-import DocumentViewer from "../components/UI/DocumentViewer";
-import { buildStatementDoc } from "../utils/documents";
+import toast from "react-hot-toast";
 import { ArrowLeft, FileText, TrendingUp, Wallet, Printer } from "lucide-react";
 
 // Per-student financial history: every invoice raised, every payment
@@ -16,8 +15,6 @@ import { ArrowLeft, FileText, TrendingUp, Wallet, Printer } from "lucide-react";
 export default function StudentLedger() {
   const { id } = useParams();
   const navigate = useNavigate();
-  const { branches } = useBranch();
-  const [showStatement, setShowStatement] = useState(false);
   const [student, setStudent] = useState(null);
 
   useEffect(() => {
@@ -62,7 +59,6 @@ export default function StudentLedger() {
     received: e.kind === "invoice" ? 0 : e.signed,
     reversed: e.kind !== "invoice" && !e.live,
   }));
-  const branchName = branches?.find((b) => b.id === student?.branchId)?.name || "";
 
   const getExportData = () => {
     let billed = 0, received = 0;
@@ -90,15 +86,19 @@ export default function StudentLedger() {
         <ArrowLeft size={16} /> Back
       </button>
 
-      <div style={{ marginBottom: 16, display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, flexWrap: "wrap" }}>
+      <div style={{ marginBottom: 16, display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
         <div>
           <h2 style={{ fontSize: 22, fontWeight: 700 }}>{student?.name || "Student"} <span style={{ fontSize: 14, fontWeight: 400, color: "var(--text-muted)", fontFamily: "monospace" }}>{student?.studentId}</span></h2>
           <div style={{ fontSize: 13, color: "var(--text-muted)" }}>{student?.grade} {student?.parentName ? `• Parent: ${student.parentName}` : ""}</div>
         </div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          <button onClick={() => setShowStatement(true)} disabled={!student}
-            style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 14px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600, fontSize: 13 }}>
-            <Printer size={14} /> Statement
+          <button disabled={!student || loading}
+            onClick={() => {
+              const statement = buildStatement({ student, invoices, payments: studentPayments, today: localISODate() });
+              if (!printStatements([statement])) toast.error("Allow pop-ups to print the statement");
+            }}
+            style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 14px", border: "1px solid var(--border)", borderRadius: 8, background: "white", cursor: "pointer", fontSize: 13 }}>
+            <Printer size={14} /> Print statement
           </button>
           <ExportMenu filename={`ledger-${student?.studentId || id}`} title={`Fee Ledger - ${student?.name || "Student"}`} getData={getExportData} disabled={!student || events.length === 0} />
         </div>
@@ -136,13 +136,6 @@ export default function StudentLedger() {
         Invoices add to what's billed; payments reduce the balance. Reversed payments (and their reversal entries) are shown for the record but don't count. Concessions forgive part of an invoice's balance.
       </p>
 
-      {showStatement && student && (
-        <DocumentViewer
-          docs={buildStatementDoc(student, statementRows, { branchName, concession: totalConcession })}
-          title="Fee Statement"
-          onClose={() => setShowStatement(false)}
-        />
-      )}
     </div>
   );
 }
