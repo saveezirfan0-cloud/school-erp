@@ -50,11 +50,15 @@ returns trigger language plpgsql security definer set search_path = public, pg_t
 begin
   if auth.uid() is null then return new; end if;               -- service role / SQL editor
 
-  if (new.amount, new.type, new.account, new.source, new.source_id, new.reversal_of, new.date, new.branch_id)
+  if (new.amount, new.type, new.account, new.source, new.source_id, new.reversal_of, new.date)
      is distinct from
-     (old.amount, old.type, old.account, old.source, old.source_id, old.reversal_of, old.date, old.branch_id) then
+     (old.amount, old.type, old.account, old.source, old.source_id, old.reversal_of, old.date) then
     raise exception 'Posted payments are immutable: post a reversal and a new entry instead'
       using errcode = '55000';
+  end if;
+  -- the branch follows its invoice when the invoice is edited (edit_invoice())
+  if coalesce(new.branch_id, '') is distinct from coalesce(old.branch_id, '') and not public._in_money_rpc() then
+    raise exception 'A payment''s branch changes only with its invoice (edit_invoice())' using errcode = '55000';
   end if;
   if old.receipt_no is not null and new.receipt_no is distinct from old.receipt_no then
     raise exception 'receipt_no cannot be changed' using errcode = '55000';

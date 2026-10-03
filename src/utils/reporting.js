@@ -29,15 +29,19 @@
 //                            chased (this is the ACC-01 gap).
 // Collected    sum of paid, dated by paid date (paidDate, falling back to
 //              the invoice date, then createdAt). Never the face value.
-// Billed       sum of amount, dated by invoice date (date, then createdAt).
+// Billed       sum of amount, dated by the billing period (month + year of
+//              the invoice) when it has one, else invoice date, else
+//              createdAt. Reports' fee cohorts and the Dashboard's
+//              collection rate therefore cut the same invoices.
 // Outstanding  a point-in-time balance "as of today"; it is not cut by
 //              the date range, only by branch.
 // Collection   collected / (billed - concessions) over the invoices that
 //   rate       were billed inside the range.
 // Expenses     sum of expense amount by expense date.
 // Salaries     sum of netPay (falls back to amount) of PAID payslips only,
-//              dated by paid date (paidDate, falling back to date). Unpaid
-//              payslips are not cash and are not counted.
+//              dated by paid date (paidDate, then date, then the payslip's
+//              month + year). Unpaid payslips are not cash and are not
+//              counted (Reports shows them as a separate memo line).
 // Net          collected - expenses - salaries (cash basis).
 // Dates        All dates are handled as local "YYYY-MM-DD" strings and
 //              compared as strings, never through new Date("YYYY-MM-DD")
@@ -168,7 +172,24 @@ export function inRange(ymd, range) {
 // ------------------------------------------------------------------
 // Invoices
 // ------------------------------------------------------------------
-export const invoiceDate = (inv) => toYmd(inv.date) || toYmd(inv.createdAt);
+// "January" / "Jan" / 1 -> 1..12, or 0 when unusable.
+export function monthNumber(m) {
+  if (m === null || m === undefined || m === "") return 0;
+  if (typeof m === "number" || /^\d+$/.test(String(m).trim())) {
+    const n = Number(m);
+    return n >= 1 && n <= 12 ? n : 0;
+  }
+  const i = MONTH_NAMES.findIndex((x) => x.toLowerCase() === String(m).trim().slice(0, 3).toLowerCase());
+  return i + 1;
+}
+// First day of a record's month + year, as YMD, or "".
+export function periodYmd(rec) {
+  const mo = monthNumber(rec?.month);
+  const y = Number(rec?.year);
+  return mo && y >= 1900 && y <= 2200 ? ymdFromParts(y, mo, 1) : "";
+}
+
+export const invoiceDate = (inv) => periodYmd(inv) || toYmd(inv.date) || toYmd(inv.createdAt);
 export const invoicePaidDate = (inv) => toYmd(inv.paidDate) || toYmd(inv.date) || toYmd(inv.createdAt);
 
 export function invoiceFacts(inv) {
@@ -243,8 +264,10 @@ export function summarizeInvoices(invoices, { branch = "all", range, today = tod
 // ------------------------------------------------------------------
 // Expenses, payroll, profit & loss
 // ------------------------------------------------------------------
-export const expenseDate = (e) => toYmd(e.date);
-export const payslipPaidDate = (p) => toYmd(p.paidDate) || toYmd(p.date);
+export const expenseDate = (e) => toYmd(e.date) || toYmd(e.createdAt);
+export const payslipPaidDate = (p) => toYmd(p.paidDate) || toYmd(p.date) || periodYmd(p);
+// Where an UNPAID payslip sits (its pay period); used for memo lines only.
+export const payslipPeriodDate = (p) => periodYmd(p) || toYmd(p.date) || toYmd(p.createdAt);
 export const payslipAmount = (p) => num(p.netPay ?? p.amount);
 
 export function sumExpenses(expenses, { branch = "all", range } = {}) {

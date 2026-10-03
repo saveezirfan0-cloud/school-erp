@@ -40,11 +40,19 @@ The optional WhatsApp variables are listed in `.env.example` with a warning.
 5. `supabase/realtime.sql` live updates (never publishes `users` or `audit_log`)
 6. `supabase/migrations/0001` to `0012`, in number order (hardening: policies, keys,
    audit triggers, money functions, storage). Then create your first admin (see the runbook).
+7. `supabase/attendance.sql` attendance table + RLS + realtime (needed for the Attendance tab on
+   student / employee profiles)
+8. `supabase/lms.sql` academic tables, the `teacher` role and the academic permissions (see
+   *Academics / LMS* below). It needs `attendance.sql` first. It redeclares `has_perm`, so on a
+   hardened database review it against `supabase/migrations/0002_rls_helpers.sql` before running
+   and keep the hardened function body.
 
 **Existing database**: do **not** re-run steps 1 to 5. Take a backup first, then apply the files in
 `supabase/migrations/` in order, following `supabase/migrations/README.md`. It has the
 pre-flight checklist, what each file changes, which ones must wait for an app change
-(`0011`, `0012`), legacy-data check queries, rollback notes and backup advice.
+(`0011`, `0012`), legacy-data check queries, rollback notes and backup advice. The Academics / LMS
+files (steps 7 and 8) are separate from the migrations: run them if the app's attendance and
+academic pages are in use and the tables do not exist yet.
 
 Never paste an old copy of `schema.sql` over a live database: the old version re-created an
 allow-all policy. The current one cannot. `supabase/legacy/` holds old one-off scripts that must not be run.
@@ -58,6 +66,50 @@ allow-all policy. The current one cannot. `supabase/legacy/` holds old one-off s
 - Create a `receipts` storage bucket for receipt uploads (the app limits uploads to JPG, PNG, WebP or PDF up to 5 MB; public for now;
   `supabase/migrations/0012_storage_receipts.sql` creates it if missing and adds size,
   type and branch-folder rules; making it private with signed URLs is an optional later step)
+
+## Academics / LMS
+Staff-side learning features: attendance, exams and report cards,
+subjects, homework and learning materials, plus a per-student academic
+profile. There is no student or parent login yet.
+
+**Setup:** after `schema.sql`, `security.sql`, `attendance.sql`,
+`trash.sql` and `realtime.sql`, run `supabase/lms.sql` once in the SQL
+Editor (safe to re-run; it stops with a clear error if `attendance.sql`
+hasn't been run). It creates the academic tables with RLS and realtime,
+adds the `teacher` role and the academic permissions, and widens the
+`attendance` policies so teachers can mark student attendance. Attendance
+itself lives in the shared table from `attendance.sql` (students and
+employees, one row per person per day), so the profile-page attendance
+and the Attendance page always agree. To get the teacher
+role in `has_perm`, either re-run the updated `security.sql` or run
+`lms.sql` once (it redeclares the same function).
+
+**Teacher role:** create teachers from Users with the `teacher` role and
+a branch. Teachers can view students and use attendance, exams and
+learning (view and edit); they get no finance access. Admins and branch
+managers get the same academic permissions; accountants and fee
+collectors get none. Permissions are `canViewAttendance` /
+`canEditAttendance`, `canViewExams` / `canEditExams` and
+`canViewLearning` / `canEditLearning`.
+
+**Features**
+- Attendance: daily marking by class, late/leave, history, monthly
+  summary and %, low-attendance list, CSV/PDF export
+- Exams: marks grid, grading scale, class ranking, publish toggle,
+  printable report cards (single or whole class)
+- Subjects, homework with per-student submission tracking and grading,
+  learning materials library
+- Student academic profile (`/students/:id/academics`, linked from
+  Students): attendance %, exam history and trend, homework status
+- Dashboard "Academics today" card: present/absent/late, classes
+  marked, homework due this week
+
+Attendance % is (present + late) / (present + late + absent); approved
+leave is left out.
+
+**Known limitation:** homework attachments and material file uploads
+reuse the `receipts` storage bucket (via `src/lib/storage.js`), so that
+bucket must exist and be public. Pasting a link works without it.
 
 ## Scripts
 ```

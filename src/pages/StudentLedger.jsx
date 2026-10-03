@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { db, supabase, doc, getDoc } from "../firebase";
+import { db, supabase, doc, getDoc, isHistoryVisible } from "../firebase";
 import { toMillis, formatDate } from "../utils/dates";
+import { studentName } from "../utils/studentLabel";
 import { decodeRow, studentStatement, invoiceFacts, isEffectiveInvoiceReceipt } from "../utils/reporting";
 import { DataWarnings } from "../components/ReportControls";
 import { ArrowLeft, FileText, TrendingUp, Wallet, Percent, AlertTriangle, RefreshCw } from "lucide-react";
@@ -25,6 +26,10 @@ export default function StudentLedger() {
 
   const load = useCallback(async () => {
     setLoading(true);
+    // Direct queries bypass the firebase.js shim, so apply its History scope
+    // here: imported (historical) rows stay hidden unless the toggle is on.
+    const showHistory = isHistoryVisible();
+    const inScope = (r) => showHistory || r.historical !== true; // applied to invoices; payments follow their invoice
     const errs = {};
     try {
       const snap = await getDoc(doc(db, "students", id));
@@ -35,7 +40,7 @@ export default function StudentLedger() {
     try {
       const { data, error } = await supabase.from("invoices").select("*").eq("student_id", id).is("deleted_at", null);
       if (error) throw error;
-      inv = (data || []).map(decodeRow);
+      inv = (data || []).map(decodeRow).filter(inScope);
     } catch (e) { console.error("StudentLedger invoices error:", e); errs.invoices = e?.message || "Could not load"; }
     setInvoices(inv);
 
@@ -47,7 +52,7 @@ export default function StudentLedger() {
         const { data, error } = await supabase.from("payments").select("*")
           .eq("source", "invoice").in("source_id", ids.slice(i, i + 50)).is("deleted_at", null);
         if (error) throw error;
-        pays.push(...(data || []).map(decodeRow));
+        pays.push(...(data || []).map(decodeRow)); // scoped by the invoices already kept above
       }
     } catch (e) { console.error("StudentLedger payments error:", e); errs.payments = e?.message || "Could not load"; }
     setPayments(pays);
@@ -58,7 +63,7 @@ export default function StudentLedger() {
   useEffect(() => { load(); }, [load]);
 
   const st = useMemo(() => studentStatement(invoices, payments), [invoices, payments]);
-  const name = student?.name || invoices.find((i) => i.studentName)?.studentName || "Student";
+  const name = student ? studentName(student) : (invoices.find((i) => i.studentName)?.studentName || "Student");
 
   // Build a combined, dated timeline of invoices and payments.
   const events = [
@@ -120,6 +125,11 @@ export default function StudentLedger() {
           <span>Invoices record Rs. {st.received.toLocaleString()} received, but only Rs. {st.postedToLedger.toLocaleString()} is in Bank &amp; Cash. The difference has no ledger entry.</span>
         </div>
       )}
+      {student?.historical === true && !isHistoryVisible() && (
+        <div style={{ padding: "10px 14px", marginBottom: 16, borderRadius: 10, background: "#f8fafc", border: "1px solid var(--border)", color: "var(--text-muted)", fontSize: 13 }}>
+          This is an imported historical record. Its invoices and payments are hidden while History is off, so the figures below show as empty. Turn on History in the top bar to see them.
+        </div>
+      )}
       <DataWarnings errors={errors} />
 
       <div style={{ background: "white", border: "1px solid var(--border)", borderRadius: 12, overflow: "hidden" }}>
@@ -149,7 +159,7 @@ export default function StudentLedger() {
         )}
       </div>
       <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 10 }}>
-        Invoices add to what's billed; payments reduce the balance. Reversed payments and their reversing entries are shown faded and cancel out. Balance due counts only invoices that are not marked paid.
+        Invoices add to what's billed; payments reduce the balance. Reversed payments and their reversing entries are shown faded and cancel out. Concessions forgive part of an invoice's balance. Balance due counts only invoices that are not marked paid.
       </p>
     </div>
   );

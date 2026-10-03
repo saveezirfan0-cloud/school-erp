@@ -81,7 +81,10 @@ begin
       "canViewDashboard":true,"canViewStudents":true,"canEditStudents":true,
       "canViewEmployees":true,"canViewFees":true,"canEditFees":true,
       "canViewExpenses":true,"canEditExpenses":true,"canViewPayments":true,
-      "canEditPayments":true,"canViewPayslips":true
+      "canEditPayments":true,"canViewPayslips":true,
+      "canViewAttendance":true,"canEditAttendance":true,
+      "canViewExams":true,"canEditExams":true,
+      "canViewLearning":true,"canEditLearning":true
     }'::jsonb
     when 'accountant' then '{
       "canViewDashboard":true,"canViewFees":true,"canEditFees":true,
@@ -92,6 +95,12 @@ begin
     }'::jsonb
     when 'fee_collector' then '{
       "canViewStudents":true,"canViewFees":true,"canEditFees":true
+    }'::jsonb
+    when 'teacher' then '{
+      "canViewStudents":true,
+      "canViewAttendance":true,"canEditAttendance":true,
+      "canViewExams":true,"canEditExams":true,
+      "canViewLearning":true,"canEditLearning":true
     }'::jsonb
     else '{}'::jsonb
   end;

@@ -17,10 +17,11 @@ import { useAccounts } from "../utils/useAccounts";
 import { useSubmitLock } from "../utils/useSubmitLock";
 import { receiptFromPayment, buildReceiptHtml, openPrintWindow } from "../utils/invoiceGenerator";
 import { exportToCSV, exportToPDF } from "../utils/exportUtils";
+import { EXTRA_PAYMENT_CATEGORIES } from "../config/statementHeads";
 import toast from "react-hot-toast";
 import { Plus, X, ArrowUpCircle, ArrowDownCircle, Undo2, Download, FileText, Pencil, Printer, Trash2 } from "lucide-react";
 
-const CATEGORIES = ["Fee Collection", "Salary Payment", "Rent", "Utilities", "Supplies", "Maintenance", "Bank Deposit", "Bank Withdrawal", "Other"];
+const CATEGORIES = ["Fee Collection", "Salary Payment", "Rent", "Utilities", "Supplies", "Maintenance", "Bank Deposit", "Bank Withdrawal", "Other", ...EXTRA_PAYMENT_CATEGORIES];
 const emptyLine = { accountId: "", description: "", category: "", amount: "", type: "cash_out" };
 const emptyForm = () => ({ type: "cash_in", accountId: "", description: "", amount: "", date: todayLocal(), reference: "", branchId: "", category: "" });
 

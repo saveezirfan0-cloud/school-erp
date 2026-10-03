@@ -1,147 +1,72 @@
-import React, { useState } from "react";
-import { NavLink } from "react-router-dom";
-import {
-  LayoutDashboard, Users, UserCheck, Receipt, TrendingDown,
-  Building2, Settings, BookOpen, CreditCard, FileText,
-  BarChart2, ChevronDown, ChevronRight, Landmark, BookMarked,
-  X, ShieldCheck, MessageCircle, Upload, Trash2, History
-} from "lucide-react";
+import React, { useMemo, useState } from "react";
+import { NavLink, useLocation } from "react-router-dom";
+import { ChevronDown, ChevronRight, X, SlidersHorizontal } from "lucide-react";
 import { useUser } from "../../context/UserContext";
+import { MENU_ITEMS, normalizeLayout, resolveMenu } from "../../config/menu";
+import MenuEditor from "./MenuEditor";
+
+const COLLAPSED_KEY = "zmi.menu.collapsed";
+
+const readCollapsed = () => {
+  try {
+    const raw = JSON.parse(localStorage.getItem(COLLAPSED_KEY) || "[]");
+    return Array.isArray(raw) ? raw : [];
+  } catch {
+    return [];
+  }
+};
+
+const isOnPage = (pathname, to) =>
+  to === "/" ? pathname === "/" : pathname === to || pathname.startsWith(to + "/");
 
 export default function Sidebar({ onClose }) {
-  const [openGroup, setOpenGroup] = useState("Accounting");
-  const { can, isAdmin, canDeleteAny } = useUser();
+  const { can, isAdmin, menuLayout } = useUser();
+  const { pathname } = useLocation();
+  const [collapsed, setCollapsed] = useState(readCollapsed);
+  const [editing, setEditing] = useState(false);
 
-  const nav = [
-    {
-      to: "/",
-      icon: LayoutDashboard,
-      label: "Dashboard",
-      show: can("canViewDashboard"),
-    },
-    {
-      to: "/students",
-      icon: Users,
-      label: "Students",
-      show: can("canViewStudents"),
-    },
-    {
-      to: "/employees",
-      icon: UserCheck,
-      label: "Employees",
-      show: can("canViewEmployees"),
-    },
-    {
-      label: "Accounting",
-      icon: BookOpen,
-      show:
-        can("canViewAccounting") ||
-        can("canViewFees") ||
-        can("canViewExpenses") ||
-        can("canViewPayments") ||
-        can("canViewPayslips"),
-      children: [
-        {
-          to: "/chart-of-accounts",
-          icon: BookOpen,
-          label: "Chart of Accounts",
-          show: can("canViewAccounting"),
-        },
-        {
-          to: "/bank-cash",
-          icon: Landmark,
-          label: "Bank & Cash",
-          show: can("canViewAccounting"),
-        },
-        {
-          to: "/journals",
-          icon: BookMarked,
-          label: "Journals",
-          show: can("canViewAccounting"),
-        },
-        {
-          to: "/fees",
-          icon: Receipt,
-          label: "Fees & Invoices",
-          show: can("canViewFees"),
-        },
-        {
-          to: "/expenses",
-          icon: TrendingDown,
-          label: "Expenses",
-          show: can("canViewExpenses"),
-        },
-        {
-          to: "/payments",
-          icon: CreditCard,
-          label: "Payments",
-          show: can("canViewPayments"),
-        },
-        {
-          to: "/payslips",
-          icon: FileText,
-          label: "Payslips",
-          show: can("canViewPayslips"),
-        },
-        {
-          to: "/reminder-logs",
-          icon: MessageCircle,
-          label: "Reminder Logs",
-          show: can("canViewReports"),
-        },
-      ].filter((item) => item.show),
-    },
-    {
-      to: "/reports",
-      icon: BarChart2,
-      label: "Reports",
-      show: can("canViewReports"),
-    },
-    { to: "/fee-aging", icon: FileText, label: "Fee Aging", show: can("canViewReports") },
-    { to: "/collections", icon: Landmark, label: "Collections", show: can("canViewReports") },
-    {
-      to: "/branches",
-      icon: Building2,
-      label: "Branches",
-      show: can("canManageBranches"),
-    },
-    {
-      to: "/users",
-      icon: ShieldCheck,
-      label: "Users",
-      show: can("canManageUsers"),
-    },
-    {
-      to: "/import",
-      icon: Upload,
-      label: "Import Data",
-      show: can("canManageUsers"),
-    },
-    {
-      to: "/access",
-      icon: ShieldCheck,
-      label: "Access Control",
-      show: can("canManageUsers"),
-    },
-    {
-      to: "/activity-log",
-      icon: History,
-      label: "Activity Log",
-      show: isAdmin,
-    },
-    {
-      to: "/trash",
-      icon: Trash2,
-      label: "Trash",
-      show: canDeleteAny,
-    },
-    {
-      to: "/settings",
-      icon: Settings,
-      label: "Settings",
-      show: true,
-    },
-  ].filter((item) => item.show);
+  const sections = useMemo(
+    () => resolveMenu(normalizeLayout(menuLayout), { can, isAdmin }),
+    [menuLayout, can, isAdmin]
+  );
+
+  const toggleSection = (id) => {
+    setCollapsed((prev) => {
+      const next = prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id];
+      try { localStorage.setItem(COLLAPSED_KEY, JSON.stringify(next)); } catch { /* storage unavailable */ }
+      return next;
+    });
+  };
+
+  const renderLink = (key, nested) => {
+    const { to, icon: Icon, label } = MENU_ITEMS[key];
+    return (
+      <NavLink
+        key={key}
+        to={to}
+        end={to === "/"}
+        onClick={onClose}
+        style={({ isActive }) => ({
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          padding: "9px 12px",
+          borderRadius: 8,
+          marginBottom: 2,
+          color: isActive ? "white" : "rgba(255,255,255,0.6)",
+          background: isActive ? "rgba(255,255,255,0.1)" : "transparent",
+          textDecoration: "none",
+          fontSize: nested ? 13.5 : 14,
+          fontWeight: isActive ? 600 : 400,
+          borderLeft: isActive ? "3px solid #2a8c7a" : "3px solid transparent",
+          transition: "all 0.15s",
+        })}
+      >
+        <Icon size={16} />
+        {label}
+      </NavLink>
+    );
+  };
 
   return (
     <aside style={{
@@ -196,115 +121,75 @@ export default function Sidebar({ onClose }) {
 
       {/* Nav */}
       <nav style={{ flex: 1, padding: "10px 8px", overflowY: "auto" }}>
-        {nav.map((item) => {
-
-          // Group with children (Accounting dropdown)
-          if (item.children) {
-            const isOpen = openGroup === item.label;
-            if (item.children.length === 0) return null;
-            const GroupIcon = item.icon;
-            return (
-              <div key={item.label}>
-                <button
-                  onClick={() => setOpenGroup(isOpen ? null : item.label)}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    width: "100%",
-                    padding: "10px 12px",
-                    borderRadius: 8,
-                    marginBottom: 2,
-                    color: "rgba(255,255,255,0.7)",
-                    background: "transparent",
-                    border: "none",
-                    cursor: "pointer",
-                    fontSize: 14,
-                    fontWeight: 500,
-                  }}
-                >
-                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <GroupIcon size={16} />
-                    {item.label}
-                  </div>
-                  {isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                </button>
-
-                {isOpen && (
-                  <div style={{ paddingLeft: 10, marginBottom: 4 }}>
-                    {item.children.map(({ to, icon: Icon, label }) => (
-                      <NavLink
-                        key={to}
-                        to={to}
-                        onClick={onClose}
-                        style={({ isActive }) => ({
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 10,
-                          padding: "8px 12px",
-                          borderRadius: 8,
-                          marginBottom: 2,
-                          color: isActive ? "white" : "rgba(255,255,255,0.5)",
-                          background: isActive ? "rgba(255,255,255,0.1)" : "transparent",
-                          textDecoration: "none",
-                          fontSize: 13,
-                          fontWeight: isActive ? 600 : 400,
-                          borderLeft: isActive ? "3px solid #2a8c7a" : "3px solid transparent",
-                          transition: "all 0.15s",
-                        })}
-                      >
-                        <Icon size={14} />
-                        {label}
-                      </NavLink>
-                    ))}
-                  </div>
-                )}
-              </div>
-            );
+        {sections.map((section) => {
+          // Unlabelled section: plain top-level links.
+          if (!section.label.trim()) {
+            return <div key={section.id} style={{ marginBottom: 6 }}>{section.items.map((k) => renderLink(k, false))}</div>;
           }
 
-          // Regular nav item
-          const Icon = item.icon;
+          // Stay open while one of its pages is the current page.
+          const hasActive = section.items.some((k) => isOnPage(pathname, MENU_ITEMS[k].to));
+          const isOpen = hasActive || !collapsed.includes(section.id);
           return (
-            <NavLink
-              key={item.to}
-              to={item.to}
-              end={item.to === "/"}
-              onClick={onClose}
-              style={({ isActive }) => ({
-                display: "flex",
-                alignItems: "center",
-                gap: 10,
-                padding: "10px 12px",
-                borderRadius: 8,
-                marginBottom: 2,
-                color: isActive ? "white" : "rgba(255,255,255,0.55)",
-                background: isActive ? "rgba(255,255,255,0.1)" : "transparent",
-                textDecoration: "none",
-                fontSize: 14,
-                fontWeight: isActive ? 600 : 400,
-                borderLeft: isActive ? "3px solid #2a8c7a" : "3px solid transparent",
-                transition: "all 0.15s",
-              })}
-            >
-              <Icon size={16} />
-              {item.label}
-            </NavLink>
+            <div key={section.id} style={{ marginBottom: 6 }}>
+              <button
+                onClick={() => toggleSection(section.id)}
+                aria-expanded={isOpen}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  width: "100%",
+                  padding: "8px 12px 6px",
+                  background: "transparent",
+                  border: "none",
+                  cursor: "pointer",
+                  color: "rgba(255,255,255,0.4)",
+                  fontSize: 11,
+                  fontWeight: 600,
+                  letterSpacing: "0.06em",
+                  textTransform: "uppercase",
+                }}
+              >
+                {section.label}
+                {isOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+              </button>
+              {isOpen && section.items.map((k) => renderLink(k, true))}
+            </div>
           );
         })}
       </nav>
 
       {/* Footer */}
       <div style={{
-        padding: "12px 16px",
+        padding: "8px 8px 12px",
         borderTop: "1px solid rgba(255,255,255,0.08)",
-        fontSize: 10,
-        color: "rgba(255,255,255,0.25)",
-        textAlign: "center",
         flexShrink: 0,
       }}>
-        ZMI School Management © 2026
+        <button
+          onClick={() => setEditing(true)}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            width: "100%",
+            padding: "8px 12px",
+            borderRadius: 8,
+            border: "none",
+            background: "transparent",
+            color: "rgba(255,255,255,0.55)",
+            fontSize: 13,
+            cursor: "pointer",
+          }}
+        >
+          <SlidersHorizontal size={15} /> Customize menu
+        </button>
+        <div style={{ marginTop: 6, fontSize: 10, color: "rgba(255,255,255,0.25)", textAlign: "center" }}>
+          ZMI School Management © 2026
+        </div>
       </div>
+
+      {editing && <MenuEditor onClose={() => setEditing(false)} />}
     </aside>
   );
 }

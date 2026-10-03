@@ -23,6 +23,10 @@ const TRASH_SOURCES = [
   { key: "accounts",     label: "Accounts",   primary: "name",        secondary: (r) => r.code || "" },
   { key: "branches",     label: "Branches",   primary: "name",        secondary: (r) => r.address || "" },
   { key: "reminderLogs", label: "Reminders",  primary: "message",     secondary: (r) => r.status || "" },
+  { key: "subjects",     label: "Subjects",   primary: "name",        secondary: (r) => r.grade || "" },
+  { key: "exams",        label: "Exams",      primary: "name",        secondary: (r) => `${r.grade || ""} • ${r.date || ""}` },
+  { key: "assignments",  label: "Homework",   primary: "title",       secondary: (r) => `${r.grade || ""} • due ${r.dueDate || "—"}` },
+  { key: "materials",    label: "Materials",  primary: "title",       secondary: (r) => r.grade || "" },
 ];
 
 // The payments ledger is append-only: posted money is corrected with

@@ -270,7 +270,7 @@ returns trigger language plpgsql security definer set search_path = public, pg_t
 begin
   if tg_op = 'UPDATE' and new.role is not distinct from old.role then return new; end if;
   if new.role is null then new.role := 'none'; end if;
-  if new.role not in ('none','admin','branch_manager','accountant','fee_collector')
+  if new.role not in ('none','admin','branch_manager','accountant','fee_collector','teacher')
      and not exists (select 1 from public.custom_roles c where c.id = new.role) then
     raise exception 'Unknown role "%"', new.role using errcode = '23514';
   end if;

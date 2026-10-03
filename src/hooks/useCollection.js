@@ -40,7 +40,8 @@ export function useCollection(name, {
   activeBranch = "all",
   search = "",
   searchFields = [],          // e.g. ["name", "studentId"]
-  filters = {},               // e.g. { grade: "5", status: "paid" } ("" = ignore)
+  filters = {},               // e.g. { grade: "5", status: "paid" } ("" = ignore);
+                              // an array matches any of its values ([] = ignore)
   filterFns = {},             // custom predicates: { dateFrom: (row,val)=>bool }
   sortBy = null,              // field name
   sortDir = "asc",            // "asc" | "desc"
@@ -104,6 +105,11 @@ export function useCollection(name, {
 
       for (const [key, val] of Object.entries(flt)) {
         if (isBlank(val)) continue;
+        if (Array.isArray(val)) {
+          if (val.length === 0) continue;
+          if (!val.some((v) => String(v) === String(row[key] ?? ""))) return false;
+          continue;
+        }
         if (String(row[key] ?? "") !== String(val)) return false;
       }
 

@@ -17,6 +17,7 @@
 // ============================================================
 
 import { supabase } from "./lib/supabaseClient";
+import { coerceColumn } from "./utils/columns";
 
 export { supabase };
 // `auth` / `storage` kept for import compatibility (see firebaseAuthShim usage).
@@ -38,6 +39,14 @@ const TABLE_MAP = {
   customRoles: "custom_roles",
   reminderLogs: "reminder_logs",
   auditLog: "audit_log",
+  attendance: "attendance",
+  // LMS / academics (supabase/lms.sql)
+  subjects: "subjects",
+  exams: "exams",
+  examResults: "exam_results",
+  assignments: "assignments",
+  submissions: "submissions",
+  materials: "materials",
 };
 
 // Real (non-jsonb) columns per table. Anything not in this list
@@ -56,6 +65,13 @@ const COLUMNS = {
   custom_roles: ["id", "permissions", "created_at", "updated_at"],
   reminder_logs: ["id", "student_id", "phone", "message", "status", "date", "timestamp", "created_at", "updated_at"],
   audit_log: ["id", "user", "action", "module", "details", "timestamp", "created_at"],
+  subjects: ["id", "name", "code", "grade", "teacher", "branch_id", "created_at", "updated_at"],
+  attendance: ["id", "subject_type", "subject_id", "date", "status", "branch_id", "created_at", "updated_at"],
+  exams: ["id", "name", "term", "exam_type", "grade", "date", "total_marks", "published", "branch_id", "created_at", "updated_at"],
+  exam_results: ["id", "exam_id", "student_id", "subject_id", "marks_obtained", "max_marks", "absent", "remarks", "branch_id", "created_at", "updated_at"],
+  assignments: ["id", "title", "description", "subject_id", "grade", "assigned_date", "due_date", "max_marks", "attachment_url", "branch_id", "created_at", "updated_at"],
+  submissions: ["id", "assignment_id", "student_id", "status", "submitted_date", "marks", "feedback", "attachment_url", "branch_id", "created_at", "updated_at"],
+  materials: ["id", "title", "description", "kind", "url", "subject_id", "grade", "branch_id", "created_at", "updated_at"],
 };
 
 const SERVER_TS = "__SERVER_TIMESTAMP__";
@@ -80,7 +96,7 @@ export function encode(table, data, { forInsert = false } = {}) {
     const snake = toSnake(k);
     if (forInsert && v === SERVER_TS && snake === "created_at") continue;
     const val = v === SERVER_TS ? new Date().toISOString() : v;
-    if (cols.includes(snake)) row[snake] = val;
+    if (cols.includes(snake)) row[snake] = coerceColumn(table, snake, val);
     else extra[k] = val;
   }
   if (Object.keys(extra).length) row.extra = extra;
@@ -105,6 +121,7 @@ export function decode(row) {
 const SOFT_DELETE_TABLES = new Set([
   "students", "employees", "invoices", "expenses", "payments",
   "payslips", "accounts", "journals", "branches", "reminder_logs",
+  "subjects", "exams", "assignments", "materials",
 ]);
 
 // ---- tuning knobs (exported so tests and callers can read them) ----
@@ -116,6 +133,31 @@ export const PAGE_SIZE = 1000;
 export const MAX_FETCH_ROWS = 50000;
 // Ids per PATCH/DELETE `?id=in.(...)` request, to keep URLs short.
 export const ID_CHUNK = 100;
+
+// ---- Historical data scope ----
+//
+// Records imported from the old Manager.io books are tagged
+// `extra.historical = true`. They are hidden from every list read by default
+// so current-year screens and totals (Dashboard, Reports, Bank & Cash balances,
+// pending fees...) are unaffected. Turning the "History" toggle on in the
+// navbar includes them everywhere.
+const HISTORY_TABLES = new Set([
+  "students", "employees", "invoices", "expenses", "payments", "payslips", "journals",
+]);
+const HISTORY_KEY = "showHistorical";
+
+export function isHistoryVisible() {
+  try { return localStorage.getItem(HISTORY_KEY) === "1"; } catch { return false; }
+}
+
+// Persist the choice and reload so every open listener re-fetches with the new scope.
+export function setHistoryVisible(on) {
+  try { localStorage.setItem(HISTORY_KEY, on ? "1" : "0"); } catch { /* storage blocked */ }
+  window.location.reload();
+}
+
+const hiddenByHistory = (table, row) =>
+  HISTORY_TABLES.has(table) && !isHistoryVisible() && row?.extra?.historical === true;
 
 // ---- Reference objects (mirror Firestore's CollectionReference / DocumentReference) ----
 class CollectionRef {
@@ -311,6 +353,10 @@ export function applyQuery(builder, ref) {
     else builder = builder.is("deleted_at", null);
   }
   for (const w of ref._where) builder = applyWhere(builder, ref.table, w);
+  // Hide imported historical rows unless the History toggle is on.
+  if (HISTORY_TABLES.has(ref.table) && !isHistoryVisible()) {
+    builder = builder.or("extra->>historical.is.null,extra->>historical.neq.true");
+  }
   for (const o of effectiveOrders(ref)) {
     builder = builder.order(o.col, { ascending: o.ascending });
   }
@@ -444,6 +490,23 @@ export async function updateDoc(ref, data) {
   if (!updated || updated.length === 0) throw noRowsError("updateDoc");
 }
 
+// Insert-or-update many rows in one request. `onConflict` lists the columns
+// of a unique index (e.g. "subject_type,subject_id,date"); rows that hit it
+// are updated instead of rejected.
+//
+// `onConflict` is either that snake_case comma-separated string, or an array
+// of camelCase field names (e.g. ["examId","studentId","subjectId"]) which is
+// converted for you. On conflict the whole row is replaced, including `extra`,
+// so pass complete rows rather than partial patches.
+export async function upsertDocs(name, rows, onConflict) {
+  const table = TABLE_MAP[name] || name;
+  if (!rows || rows.length === 0) return 0;
+  const conflict = Array.isArray(onConflict) ? onConflict.map(toSnake).join(",") : onConflict;
+  const { error } = await supabase.from(table).upsert(rows.map((r) => encode(table, r, { forInsert: true })), { onConflict: conflict });
+  if (error) throw error;
+  return rows.length;
+}
+
 export async function deleteDoc(ref) {
   // Soft-delete tables: move to Trash by stamping deleted_at.
   // Other tables (users, etc.): hard delete as before.
@@ -553,7 +616,7 @@ export async function updateDocs(name, ids, data) {
     if (k === "id") continue;
     const val = v === SERVER_TS ? new Date().toISOString() : v;
     const snake = toSnake(k);
-    if (cols.includes(snake)) direct[snake] = val;
+    if (cols.includes(snake)) direct[snake] = coerceColumn(table, snake, val);
     else extraPatch[k] = val;
   }
 
@@ -638,6 +701,13 @@ export async function getDocs(ref) {
   return querySnap(rows, { truncated });
 }
 
+// Kept for callers written against the older API (reports). getDocs() now
+// pages through the whole table itself (and reports `truncated`), so this is
+// the same read; rows come back in the stable (orderBy..., id) order.
+export async function getAllDocs(ref) {
+  return getDocs(ref);
+}
+
 export async function getDoc(ref) {
   const { data, error } = await supabase
     .from(ref.table)
@@ -662,6 +732,7 @@ export function applyEvent(cache, payload, ref) {
       const isTrashed = row && row.deleted_at != null;
       if (ref._trashed ? !isTrashed : isTrashed) return false;
     }
+    if (hiddenByHistory(ref.table, row)) return false;
     return ref._where.every((w) => matchesWhere(row, ref.table, w));
   };
   const limited = ref._limit != null;
@@ -737,6 +808,20 @@ export function onSnapshot(ref, onNext, onError) {
   }
 
   // Collection subscription: cache + incremental apply.
+  // Realtime takes a single filter (and `in` is capped at 100 values); the
+  // rest is enforced client-side by applyEvent(). Note: Supabase does not
+  // deliver DELETE events for a filtered subscription, so a hard delete on a
+  // filtered view is picked up on the next refetch/reconnect, not instantly.
+  const rtFilter = (() => {
+    try {
+      const w = ref._where.find((x) => (x.op === "==" && x.value !== null) || (x.op === "in" && x.value.length > 0 && x.value.length <= 100));
+      if (!w) return undefined;
+      const col = columnFor(ref.table, w.field);
+      return w.op === "in" ? `${col}=in.(${w.value.join(",")})` : `${col}=eq.${w.value}`;
+    } catch {
+      return undefined; // bad field: fullFetch() reports it through onError
+    }
+  })();
   let cache = [];            // raw DB rows (snake_case), as returned by Supabase
   let truncated = false;
   let seq = 0;               // newest fetch id
@@ -790,7 +875,10 @@ export function onSnapshot(ref, onNext, onError) {
     .channel(`rt_${ref.table}_${Math.random().toString(36).slice(2)}`)
     .on(
       "postgres_changes",
-      { event: "*", schema: "public", table: ref.table },
+      {
+        event: "*", schema: "public", table: ref.table,
+        ...(rtFilter ? { filter: rtFilter } : {}),
+      },
       (payload) => {
         if (!active) return;
         if (inFlight > 0) queued.push(payload);

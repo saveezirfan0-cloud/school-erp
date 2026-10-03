@@ -1,7 +1,11 @@
 node_modules/
 build/
+/node_modules
+/build
 .env
 .env.*
 !.env.example
+.env.local
 .DS_Store
 .claude/worktrees/
+scripts/__pycache__/

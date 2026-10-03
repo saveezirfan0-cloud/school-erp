@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useState, useMemo, useCallback } from "react";
 import { db } from "../firebase";
-import { doc, onSnapshot, collection } from "../firebase";
+import { doc, onSnapshot, collection, updateDocs } from "../firebase";
 import { useAuth } from "./AuthContext";
 import { firstPermittedRoute, DELETE_PERMISSIONS } from "./routeAccess";
 
@@ -12,6 +12,7 @@ export const ROLES = {
   BRANCH_MANAGER: "branch_manager",
   ACCOUNTANT: "accountant",
   FEE_COLLECTOR: "fee_collector",
+  TEACHER: "teacher",
 };
 
 export const PERMISSIONS = {
@@ -40,6 +41,12 @@ export const PERMISSIONS = {
     canEditAccounting: true,
     canViewReports: true,
     canExport: true,
+    canViewAttendance: true,
+    canEditAttendance: true,
+    canViewExams: true,
+    canEditExams: true,
+    canViewLearning: true,
+    canEditLearning: true,
     canManageBranches: true,
     canManageUsers: true,
     canViewAllBranches: true,
@@ -69,6 +76,12 @@ export const PERMISSIONS = {
     canEditAccounting: false,
     canViewReports: false,
     canExport: false,
+    canViewAttendance: true,
+    canEditAttendance: true,
+    canViewExams: true,
+    canEditExams: true,
+    canViewLearning: true,
+    canEditLearning: true,
     canManageBranches: false,
     canManageUsers: false,
     canViewAllBranches: false,
@@ -98,6 +111,12 @@ export const PERMISSIONS = {
     canEditAccounting: true,
     canViewReports: true,
     canExport: false,
+    canViewAttendance: false,
+    canEditAttendance: false,
+    canViewExams: false,
+    canEditExams: false,
+    canViewLearning: false,
+    canEditLearning: false,
     canManageBranches: false,
     canManageUsers: false,
     canViewAllBranches: true,
@@ -127,6 +146,47 @@ export const PERMISSIONS = {
     canEditAccounting: false,
     canViewReports: false,
     canExport: false,
+    canViewAttendance: false,
+    canEditAttendance: false,
+    canViewExams: false,
+    canEditExams: false,
+    canViewLearning: false,
+    canEditLearning: false,
+    canManageBranches: false,
+    canManageUsers: false,
+    canViewAllBranches: false,
+  },
+  teacher: {
+    canViewDashboard: false,
+    canViewStudents: true,
+    canEditStudents: false,
+    canDeleteStudents: false,
+    canViewEmployees: false,
+    canEditEmployees: false,
+    canDeleteEmployees: false,
+    canViewFees: false,
+    canEditFees: false,
+    canViewExpenses: false,
+    canEditExpenses: false,
+    canDeleteExpenses: false,
+    canDeleteFees: false,
+    canDeletePayslips: false,
+    canDeletePayments: false,
+    canDeleteJournals: false,
+    canViewPayments: false,
+    canEditPayments: false,
+    canViewPayslips: false,
+    canEditPayslips: false,
+    canViewAccounting: false,
+    canEditAccounting: false,
+    canViewReports: false,
+    canExport: true,
+    canViewAttendance: true,
+    canEditAttendance: true,
+    canViewExams: true,
+    canEditExams: true,
+    canViewLearning: true,
+    canEditLearning: true,
     canManageBranches: false,
     canManageUsers: false,
     canViewAllBranches: false,
@@ -261,6 +321,29 @@ export function UserProvider({ children }) {
   const assignedBranchId =
     roleKnown && !permissions.canViewAllBranches && userProfile?.branchId ? userProfile.branchId : null;
 
+  // Personal sidebar layout (null = use the default). Saved per user on
+  // their own profile row. updateDocs merges into `extra` so this never
+  // overwrites pagePermissions (a plain updateDoc would replace it).
+  // The profile is only ever set from the snapshot listener, so the saved
+  // layout is also applied to the local state straight away (the `users`
+  // table is not in the realtime publication, so no snapshot follows).
+  const menuLayout = userProfile?.menuLayout || null;
+  const userDocId = userProfile?.id || null;
+  const uid = user?.uid || null;
+  const saveMenuLayout = useCallback(async (layout) => {
+    if (!userDocId || !uid) return;
+    const setLayout = (value) =>
+      setProfileState((s) => (s.uid === uid && s.profile ? { ...s, profile: { ...s.profile, menuLayout: value } } : s));
+    const previous = userProfile?.menuLayout ?? null;
+    setLayout(layout);
+    try {
+      await updateDocs("users", [userDocId], { menuLayout: layout });
+    } catch (e) {
+      setLayout(previous);
+      throw e;
+    }
+  }, [userDocId, uid, userProfile?.menuLayout]);
+
   const value = useMemo(() => ({
     userProfile,
     loadingProfile,
@@ -276,8 +359,10 @@ export function UserProvider({ children }) {
     canDeleteAny,
     isAdmin,
     assignedBranchId,
+    menuLayout,
+    saveMenuLayout,
   }), [userProfile, loadingProfile, profileError, accessProblem, user, homeRoute, role, permissions,
-    customRolePerms, can, canAny, canDeleteAny, isAdmin, assignedBranchId]);
+    customRolePerms, can, canAny, canDeleteAny, isAdmin, assignedBranchId, menuLayout, saveMenuLayout]);
 
   return (
     <UserContext.Provider value={value}>

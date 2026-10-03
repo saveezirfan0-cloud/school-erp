@@ -31,7 +31,13 @@
 --   pay_expense(...)                 post the cash-out of an expense
 --   transfer_funds(...)              move money between two accounts (2 legs, atomic)
 --   reverse_source_payments(...)     reverse every live payment of a document, atomically
---   trash_invoice / restore_invoice  Trash + reversal in one step; restore recomputes status
+--   trash_document / restore_document  (invoices, expenses, payslips) Trash + reversal in one
+--                                    step; restore RE-POSTS the reversed money (extra.repostOf), like
+--                                    utils/accounting.js; trash_invoice / restore_invoice are wrappers
+--   reverse_payment(id, date)        reverse ONE payment and update its source document
+--   edit_invoice(...)                the Fees 'Edit Invoice' save: branch, period, due date, notes,
+--                                    line items, total; payments follow the invoice's branch
+--   post_unposted_invoice(...)       post the cash of a 'paid but unposted' receipt (extra.ledgerPosted=false)
 --   generate_recurring_invoices(...) month's tuition invoices, race-free, no duplicates
 --   patch_extra(...)                 merge keys into extra jsonb without clobbering (SECURITY INVOKER)
 --   view account_balances            opening balance + live payments per account
@@ -72,7 +78,7 @@ end $$;
 create or replace function public.assign_invoice_no()
 returns trigger language plpgsql security definer set search_path = public, pg_temp as $$
 begin
-  if new.invoice_no is null then
+  if new.invoice_no is null and coalesce(new.extra->>'historical', '') <> 'true' then
     new.invoice_no := public.next_document_number('invoice', extract(year from now())::int);
   end if;
   return new;
@@ -82,7 +88,8 @@ create or replace function public.assign_receipt_no()
 returns trigger language plpgsql security definer set search_path = public, pg_temp as $$
 begin
   -- a receipt is a fee collection: money in against an invoice
-  if new.receipt_no is null and new.type = 'cash_in' and new.source = 'invoice' and new.reversal_of is null then
+  if new.receipt_no is null and new.type = 'cash_in' and new.source = 'invoice' and new.reversal_of is null
+     and coalesce(new.extra->>'historical', '') <> 'true' then   -- imported history is not numbered
     new.receipt_no := public.next_document_number('receipt', extract(year from now())::int);
   end if;
   return new;
@@ -179,7 +186,7 @@ end $$;
 -- Reverse every live payment of one source document (no permission check:
 -- callers check). Also resets the source document so it never claims money
 -- that is no longer in the books (ACC-02, ACC-03).
-create or replace function public._reverse_source(p_source text, p_source_id text)
+create or replace function public._reverse_source(p_source text, p_source_id text, p_reason text default null)
 returns int language plpgsql security definer set search_path = public, pg_temp as $$
 declare p public.payments; n int := 0;
 begin
@@ -191,10 +198,11 @@ begin
      for update
   loop
     insert into public.payments (type, account, amount, category, description, reference, branch_id,
-                                 date, source, source_id, reversed, reversal_of)
+                                 date, source, source_id, reversed, reversal_of, extra)
     values (case p.type when 'cash_in' then 'cash_out' else 'cash_in' end, p.account, p.amount,
             coalesce(p.category, '') || ' (reversal)', 'Reversal: ' || coalesce(p.description, ''),
-            p.id::text, p.branch_id, to_char(current_date, 'YYYY-MM-DD'), p.source, p.source_id, false, p.id::text);
+            p.id::text, p.branch_id, to_char(current_date, 'YYYY-MM-DD'), p.source, p.source_id, false, p.id::text,
+            case when p_reason is null then '{}'::jsonb else jsonb_build_object('reason', p_reason) end);
     update public.payments set reversed = true where id = p.id;
     n := n + 1;
   end loop;
@@ -320,6 +328,9 @@ begin
   if not found then raise exception 'invoice not found' using errcode = 'P0002'; end if;
   if not public.branch_visible(inv.branch_id) then raise exception 'permission denied' using errcode = '42501'; end if;
   if inv.status = 'void' then raise exception 'invoice is void' using errcode = '23514'; end if;
+  if coalesce(inv.extra->>'ledgerPosted', '') = 'false' then
+    raise exception 'this invoice has a receipt that was never posted to the books; use post_unposted_invoice() first' using errcode = '23514';
+  end if;
 
   if p_idempotency_key is not null then
     select source_id into v_src from public.payments where idempotency_key = p_idempotency_key;
@@ -351,9 +362,10 @@ begin
   if not public.branch_visible(ps.branch_id) then raise exception 'permission denied' using errcode = '42501'; end if;
   if ps.status = 'paid' then return ps; end if;               -- double click / retry: already paid
 
-  -- net pay lives in the amount column when set, otherwise in extra->netPay (jsonb, string or number)
-  v_amount := coalesce(ps.amount,
-                case when ps.extra->>'netPay' ~ '^-?[0-9]+(\.[0-9]+)?$' then (ps.extra->>'netPay')::numeric end);
+  -- net pay: extra->netPay (what the app shows; string or number), else the amount column (imports)
+  v_amount := coalesce(
+                case when ps.extra->>'netPay' ~ '^-?[0-9]+(\.[0-9]+)?$' then (ps.extra->>'netPay')::numeric end,
+                ps.amount);
   if v_amount is null or v_amount <= 0 then
     raise exception 'payslip has no positive net pay' using errcode = '23514';
   end if;
@@ -461,39 +473,240 @@ begin
     if not public.branch_visible(v_branch) then raise exception 'permission denied' using errcode = '42501'; end if;
   end loop;
 
-  v_n := public._reverse_source(p_source, p_source_id);
+  v_n := public._reverse_source(p_source, p_source_id, 'manual');   -- an explicit reversal: never re-posted by a restore
   return v_n;
 end $$;
 
-create or replace function public.trash_invoice(p_id uuid)
+-- Move a document to Trash. Money posted for it is reversed first (one
+-- transaction); the document's paid state is reset to match the ledger.
+create or replace function public.trash_document(p_table text, p_id uuid)
 returns void language plpgsql security definer set search_path = public, pg_temp as $$
-declare inv public.invoices;
+declare perm text; src text; v_branch text; n bigint;
 begin
   perform public._assert_authenticated();
-  if not public.has_perm('canDeleteFees') then raise exception 'permission denied' using errcode = '42501'; end if;
+  select x.perm, x.src into perm, src from (values
+    ('invoices','canDeleteFees','invoice'), ('expenses','canDeleteExpenses','expense'),
+    ('payslips','canDeletePayslips','payslip')) as x(t, perm, src) where x.t = p_table;
+  if perm is null then raise exception 'table "%" not supported', p_table using errcode = '22023'; end if;
+  if not public.has_perm(perm) then raise exception 'permission denied' using errcode = '42501'; end if;
   perform set_config('app.money_rpc', 'on', true);
-  select * into inv from public.invoices where id = p_id and deleted_at is null for update;
-  if not found then return; end if;                           -- already trashed: nothing to do
-  if not public.branch_visible(inv.branch_id) then raise exception 'permission denied' using errcode = '42501'; end if;
-  perform public._reverse_source('invoice', p_id::text);      -- also zeroes paid_amount / status
-  update public.invoices set deleted_at = now() where id = p_id;
+
+  execute format('select branch_id from public.%I where id = $1 and deleted_at is null for update', p_table)
+    into v_branch using p_id;
+  get diagnostics n = row_count;
+  if n = 0 then return; end if;                                   -- already trashed: nothing to do
+  if not public.branch_visible(v_branch) then raise exception 'permission denied' using errcode = '42501'; end if;
+
+  perform public._reverse_source(src, p_id::text, 'trash');     -- tagged: restore_document re-posts exactly these
+  execute format('update public.%I set deleted_at = now() where id = $1', p_table) using p_id;
 end $$;
+
+-- Restore from Trash. Payments that the trash step reversed are RE-POSTED
+-- (a new entry tagged extra.repostOf, like utils/accounting.js does), so the
+-- restored document and the ledger agree again. Only payments reversed by the trash step
+-- are re-posted. Idempotent.
+create or replace function public.restore_document(p_table text, p_id uuid)
+returns jsonb language plpgsql security definer set search_path = public, pg_temp as $$
+declare perm text; src text; v_branch text; v_del timestamptz; n bigint; v_re int := 0; r public.payments; last_re public.payments;
+begin
+  perform public._assert_authenticated();
+  select x.perm, x.src into perm, src from (values
+    ('invoices','canDeleteFees','invoice'), ('expenses','canDeleteExpenses','expense'),
+    ('payslips','canDeletePayslips','payslip')) as x(t, perm, src) where x.t = p_table;
+  if perm is null then raise exception 'table "%" not supported', p_table using errcode = '22023'; end if;
+  if not public.has_perm(perm) then raise exception 'permission denied' using errcode = '42501'; end if;
+  perform set_config('app.money_rpc', 'on', true);
+
+  execute format('select branch_id, deleted_at from public.%I where id = $1 and deleted_at is not null for update', p_table)
+    into v_branch, v_del using p_id;
+  get diagnostics n = row_count;
+  if n = 0 then raise exception 'record is not in Trash' using errcode = 'P0002'; end if;
+  if not public.branch_visible(v_branch) then raise exception 'permission denied' using errcode = '42501'; end if;
+
+  for r in
+    select * from public.payments o
+     where o.source = src and o.source_id = p_id::text
+       and o.deleted_at is null and coalesce(o.reversed, false) and o.reversal_of is null
+       -- reversed BY THE TRASH STEP: tagged by trash_document, or (payments reversed by the old
+       -- browser code, which carries no tag) reversed in the minutes just before the document was trashed.
+       -- A payment the user reversed on purpose earlier is NOT brought back.
+       and exists (select 1 from public.payments x
+                    where x.reversal_of = o.id::text and x.deleted_at is null
+                      and (x.extra->>'reason' = 'trash'
+                           or (x.extra->>'reason' is null     -- untagged = reversed by the old browser code
+                               and x.created_at between v_del - interval '2 minutes' and v_del + interval '10 seconds')))
+       and not exists (select 1 from public.payments y where y.extra->>'repostOf' = o.id::text and y.deleted_at is null)
+     order by o.created_at, o.id
+     for update
+  loop
+    insert into public.payments (type, account, amount, category, description, reference, branch_id,
+                                 date, source, source_id, reversed, extra)
+    values (r.type, r.account, r.amount, r.category, 'Re-posted after restore: ' || coalesce(r.description, ''),
+            r.id::text, r.branch_id, to_char(current_date, 'YYYY-MM-DD'), r.source, r.source_id, false,
+            jsonb_build_object('repostOf', r.id::text))
+    returning * into last_re;
+    v_re := v_re + 1;
+  end loop;
+
+  if p_table = 'invoices' then
+    update public.invoices i set deleted_at = null,
+           paid_amount  = case when v_re > 0 then public._invoice_paid(i.id) else i.paid_amount end,
+           paid_account = case when v_re > 0 then last_re.account else i.paid_account end,
+           paid_date    = case when v_re > 0 then last_re.date else i.paid_date end,
+           status       = case when v_re > 0
+                               then public._invoice_status(i.amount, public._invoice_paid(i.id), i.concession_amount)
+                               else i.status end
+     where i.id = p_id;
+  elsif p_table = 'payslips' then
+    update public.payslips s set deleted_at = null,
+           status       = case when v_re > 0 then 'paid' else s.status end,
+           paid_account = case when v_re > 0 then last_re.account else s.paid_account end,
+           paid_date    = case when v_re > 0 then last_re.date else s.paid_date end
+     where s.id = p_id;
+  else
+    update public.expenses e set deleted_at = null,
+           paid_account = case when v_re > 0 then last_re.account else e.paid_account end
+     where e.id = p_id;
+  end if;
+  return jsonb_build_object('reposted', v_re);
+end $$;
+
+create or replace function public.trash_invoice(p_id uuid)
+returns void language sql security definer set search_path = public, pg_temp as $$
+  select public.trash_document('invoices', p_id)
+$$;
 
 create or replace function public.restore_invoice(p_id uuid)
 returns public.invoices language plpgsql security definer set search_path = public, pg_temp as $$
-declare inv public.invoices; v_paid numeric;
+declare inv public.invoices;
+begin
+  perform public.restore_document('invoices', p_id);
+  select * into inv from public.invoices where id = p_id;
+  return inv;
+end $$;
+
+-- Reverse ONE payment (Payments page "Reverse"). Returns the reversal row id,
+-- or NULL when it was already reversed. Updates the source document too.
+create or replace function public.reverse_payment(p_payment_id uuid, p_date date default current_date)
+returns uuid language plpgsql security definer set search_path = public, pg_temp as $$
+declare p public.payments; perm text; rid uuid;
 begin
   perform public._assert_authenticated();
-  if not public.has_perm('canDeleteFees') then raise exception 'permission denied' using errcode = '42501'; end if;
+  select * into p from public.payments where id = p_payment_id and deleted_at is null for update;
+  if not found then raise exception 'payment not found' using errcode = 'P0002'; end if;
+  if p.reversal_of is not null then raise exception 'a reversal entry cannot itself be reversed' using errcode = '22023'; end if;
+  if p.source = 'transfer' then raise exception 'reverse both legs with reverse_source_payments(''transfer'', id)' using errcode = '22023'; end if;
+  perm := case coalesce(p.source, '') when 'invoice' then 'canEditFees' when 'payslip' then 'canEditPayslips'
+                                       when 'expense' then 'canEditExpenses' else 'canEditPayments' end;
+  if not public.has_perm(perm) then raise exception 'permission denied' using errcode = '42501'; end if;
+  if not public.branch_visible(p.branch_id) then raise exception 'permission denied' using errcode = '42501'; end if;
+  if coalesce(p.reversed, false) then return null; end if;
   perform set_config('app.money_rpc', 'on', true);
-  select * into inv from public.invoices where id = p_id and deleted_at is not null for update;
-  if not found then raise exception 'invoice not in Trash' using errcode = 'P0002'; end if;
+
+  insert into public.payments (type, account, amount, category, description, reference, branch_id,
+                               date, source, source_id, reversed, reversal_of, extra)
+  values (case p.type when 'cash_in' then 'cash_out' else 'cash_in' end, p.account, p.amount,
+          coalesce(p.category, '') || ' (reversal)', 'Reversal: ' || coalesce(p.description, ''),
+          p.id::text, p.branch_id, to_char(coalesce(p_date, current_date), 'YYYY-MM-DD'), p.source, p.source_id, false, p.id::text,
+          '{"reason":"manual"}'::jsonb)
+  returning id into rid;
+  update public.payments set reversed = true where id = p.id;
+
+  if p.source = 'invoice' then
+    update public.invoices i set paid_amount = public._invoice_paid(i.id),
+           status = public._invoice_status(i.amount, public._invoice_paid(i.id), i.concession_amount)
+     where i.id::text = p.source_id;
+  elsif p.source = 'payslip' then
+    update public.payslips set status = 'pending', paid_date = null, paid_account = null where id::text = p.source_id;
+  elsif p.source = 'expense' then
+    update public.expenses set paid_account = null where id::text = p.source_id;
+  end if;
+  return rid;
+end $$;
+
+-- Invoice edit (Fees "Edit Invoice"): branch, period, due date, notes, line items, total.
+-- Money already received is never changed here. The total cannot drop below
+-- received + conceded. Payments of the invoice follow it to the new branch.
+create or replace function public.edit_invoice(
+  p_id uuid, p_branch_id text, p_month text, p_year int, p_due_date date,
+  p_notes text, p_line_items jsonb, p_amount numeric)
+returns public.invoices language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  inv public.invoices; v_new_branch text; v_received numeric; v_conc numeric; v_status text; v_paid numeric;
+begin
+  perform public._assert_authenticated();
+  if not public.has_perm('canEditFees') then raise exception 'permission denied' using errcode = '42501'; end if;
+  if p_amount is null or p_amount <= 0 then raise exception 'invoice total must be greater than 0' using errcode = '22023'; end if;
+  perform set_config('app.money_rpc', 'on', true);
+
+  select * into inv from public.invoices where id = p_id and deleted_at is null for update;
+  if not found then raise exception 'invoice not found' using errcode = 'P0002'; end if;
   if not public.branch_visible(inv.branch_id) then raise exception 'permission denied' using errcode = '42501'; end if;
-  v_paid := public._invoice_paid(inv.id);           -- payments were reversed on trash: the invoice comes back unpaid
+
+  v_new_branch := case when coalesce(p_branch_id, '') in ('', 'main') then '' else p_branch_id end;
+  if not public.branch_visible(v_new_branch) then raise exception 'permission denied' using errcode = '42501'; end if;
+  if v_new_branch <> '' and not exists (select 1 from public.branches b where b.id::text = v_new_branch and b.deleted_at is null) then
+    raise exception 'branch "%" does not exist', v_new_branch using errcode = '23503';
+  end if;
+
+  v_conc := coalesce(inv.concession_amount, 0);
+  v_paid := coalesce(inv.paid_amount, 0);
+  v_received := case when v_paid > 0 then v_paid when inv.status = 'paid' then coalesce(inv.amount, 0) else 0 end;
+  if p_amount + 0.001 < v_received + v_conc then
+    raise exception 'total cannot be below what is already received/conceded (%)', v_received + v_conc using errcode = '23514';
+  end if;
+
+  v_status := inv.status;
+  if abs(p_amount - coalesce(inv.amount, 0)) > 0.001 and inv.status <> 'void' then
+    v_status := public._invoice_status(p_amount, v_received, v_conc);
+  end if;
+
+  update public.invoices set
+    branch_id   = v_new_branch,
+    due_date    = coalesce(to_char(p_due_date, 'YYYY-MM-DD'), due_date),
+    amount      = p_amount,
+    status      = v_status,
+    paid_amount = case when v_received > 0 and v_paid = 0 then v_received else paid_amount end,
+    extra       = coalesce(extra, '{}'::jsonb)
+                  || jsonb_strip_nulls(jsonb_build_object('month', p_month, 'year', p_year, 'notes', p_notes,
+                                                          'lineItems', p_line_items))
+  where id = p_id
+  returning * into inv;
+
+  update public.payments set branch_id = v_new_branch
+   where source = 'invoice' and source_id = p_id::text and coalesce(branch_id, '') <> v_new_branch;
+  return inv;
+end $$;
+
+-- Receipts saved earlier as "paid but unposted" (extra.ledgerPosted = false):
+-- post the missing cash into a chosen account. Idempotent via the key.
+create or replace function public.post_unposted_invoice(
+  p_invoice_id uuid, p_account text, p_date date default current_date, p_idempotency_key uuid default null)
+returns public.invoices language plpgsql security definer set search_path = public, pg_temp as $$
+declare inv public.invoices; v_ledger numeric; v_cash numeric;
+begin
+  perform public._assert_authenticated();
+  if not public.has_perm('canEditFees') then raise exception 'permission denied' using errcode = '42501'; end if;
+  perform set_config('app.money_rpc', 'on', true);
+  select * into inv from public.invoices where id = p_invoice_id and deleted_at is null for update;
+  if not found then raise exception 'invoice not found' using errcode = 'P0002'; end if;
+  if not public.branch_visible(inv.branch_id) then raise exception 'permission denied' using errcode = '42501'; end if;
+  if coalesce(inv.extra->>'ledgerPosted', '') <> 'false' then return inv; end if;      -- already posted
+
+  v_ledger := public._invoice_paid(inv.id);
+  v_cash := coalesce(inv.paid_amount, 0) - v_ledger;
+  if v_cash > 0 then
+    perform public._assert_pay_account(p_account);
+    insert into public.payments (type, account, amount, category, description, reference, branch_id,
+                                 date, source, source_id, reversed, idempotency_key)
+    values ('cash_in', p_account, v_cash, 'Fee Collection',
+            format('Fee — %s (%s)', coalesce(inv.extra->>'studentName', 'student'), coalesce(inv.extra->>'month', '')),
+            inv.id::text, coalesce(inv.branch_id, ''), to_char(p_date, 'YYYY-MM-DD'), 'invoice', inv.id::text, false, p_idempotency_key);
+  end if;
   update public.invoices
-     set deleted_at = null, paid_amount = v_paid,
-         status = public._invoice_status(amount, v_paid, concession_amount)
-   where id = p_id returning * into inv;
+     set paid_account = case when v_cash > 0 then p_account else paid_account end,
+         extra = coalesce(extra, '{}'::jsonb) || '{"ledgerPosted":true,"unpostedReason":""}'::jsonb
+   where id = inv.id returning * into inv;
   return inv;
 end $$;
 
@@ -575,6 +788,11 @@ begin
     'public.reverse_source_payments(text,text)',
     'public.trash_invoice(uuid)',
     'public.restore_invoice(uuid)',
+    'public.trash_document(text,uuid)',
+    'public.restore_document(text,uuid)',
+    'public.reverse_payment(uuid,date)',
+    'public.edit_invoice(uuid,text,text,int,date,text,jsonb,numeric)',
+    'public.post_unposted_invoice(uuid,text,date,uuid)',
     'public.generate_recurring_invoices(int,text)',
     'public.patch_extra(text,text,jsonb)'
   ] loop
@@ -587,7 +805,7 @@ begin
     'public._invoice_status(numeric,numeric,numeric)', 'public._assert_authenticated()',
     'public._assert_pay_account(text)', 'public._invoice_paid(uuid)',
     'public._apply_invoice_payment(public.invoices,numeric,text,date,boolean,text,uuid)',
-    'public._reverse_source(text,text)'
+    'public._reverse_source(text,text,text)'
   ] loop
     execute format('revoke all on function %s from public, anon, authenticated', f);
   end loop;

@@ -8,6 +8,9 @@
 --              is checked only when it is INSERTed or when the referencing
 --              column itself CHANGES. Orphans that already exist stay as they
 --              are (find them with the queries in migrations/README.md).
+-- Trusted callers: writes with no auth.uid() (SQL editor, service role, the
+--              Manager.io / workbook import SQL) are NOT reference-checked, so
+--              scripted imports are never blocked; hard-delete restrictions apply to everyone.
 -- App impact : writing a row that points at a student / employee / branch /
 --              account that does not exist now fails with SQLSTATE 23503
 --              ("foreign_key_violation"). Permanently deleting ("Delete
@@ -36,6 +39,8 @@ declare
   v  text := to_jsonb(new) ->> tg_argv[0];
   ok boolean;
 begin
+  if tg_argv[1] = 'accounts' and coalesce(current_setting('app.money_rpc', true), '') = 'on' then return new; end if;  -- RPCs validate the account themselves; reversals copy an existing name
+  if auth.uid() is null then return new; end if;    -- SQL editor / service role / bulk imports: trusted, like the other guards
   if v is null or v = '' then return new; end if;
   if tg_argv[3] = 'branch' and v = 'main' then return new; end if;
   if tg_op = 'UPDATE' and v is not distinct from (to_jsonb(old) ->> tg_argv[0]) then

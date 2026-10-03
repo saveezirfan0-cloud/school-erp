@@ -85,7 +85,7 @@ select public._mig_try('0005','students_fee_nonneg',     $q$alter table public.s
 select public._mig_try('0005','journals_amount_pos',     $q$alter table public.journals add constraint journals_amount_pos check (amount > 0) not valid$q$);
 select public._mig_try('0005','journals_dr_ne_cr',       $q$alter table public.journals add constraint journals_dr_ne_cr check (debit_account <> credit_account) not valid$q$);
 
-select public._mig_try('0005','custom_roles_id_chk',     $q$alter table public.custom_roles add constraint custom_roles_id_chk check (id ~ '^[^[:space:]]{1,64}$' and id not in ('admin','branch_manager','accountant','fee_collector','none')) not valid$q$);
+select public._mig_try('0005','custom_roles_id_chk',     $q$alter table public.custom_roles add constraint custom_roles_id_chk check (id ~ '^[^[:space:]]{1,64}$' and id not in ('admin','branch_manager','accountant','fee_collector','teacher','none')) not valid$q$);
 
 -- ---------- NOT NULL (only where no row is NULL today) ----------
 do $$
@@ -129,8 +129,10 @@ select public._mig_unique_index('0005','accounts_code_live_uq',
   $q$create unique index if not exists accounts_code_live_uq on public.accounts (lower(btrim(code))) where deleted_at is null and coalesce(btrim(code),'') <> ''$q$);
 
 select public._mig_unique_index('0005','students_admission_no_live_uq',
-  $q$select 1 from public.students where deleted_at is null and coalesce(btrim(student_id),'') <> '' group by lower(btrim(student_id)) having count(*) > 1$q$,
-  $q$create unique index if not exists students_admission_no_live_uq on public.students (lower(btrim(student_id))) where deleted_at is null and coalesce(btrim(student_id),'') <> ''$q$);
+  $q$select 1 from public.students where deleted_at is null and coalesce(extra->>'historical','') <> 'true' and coalesce(btrim(student_id),'') <> '' group by lower(btrim(student_id)) having count(*) > 1$q$,
+  $q$create unique index if not exists students_admission_no_live_uq on public.students (lower(btrim(student_id))) where deleted_at is null and coalesce(extra->>'historical','') <> 'true' and coalesce(btrim(student_id),'') <> ''$q$);
+-- (imported Manager.io history rows carry extra.historical = true and may reuse old
+--  admission codes, so they are outside this key; current students stay unique.)
 
 -- A payment can be reversed at most once (ACC-14 race). Legacy double
 -- reversals make this SKIP until they are reviewed.

@@ -77,15 +77,15 @@ select t.logout(); select t.login('a0000000-0000-0000-0000-000000000009');
 select t.chk('MAIN collector sees only main-office students', 'select * from public.students', 'rows=2');
 select t.chk('MAIN invoices (main office only)', 'select * from public.invoices', 'rows=2');
 select t.logout(); select t.login('a0000000-0000-0000-0000-000000000002');
-select t.chk('ACC sees invoices of all branches', 'select * from public.invoices', 'rows=4');
+select t.chk('ACC sees invoices of all branches', 'select * from public.invoices', 'rows=5');
 select t.chk('ACC has no canViewStudents', 'select * from public.students', 'rows=0');
 select t.chk('ACC sees whole chart of accounts (6 live)', 'select * from public.accounts where deleted_at is null', 'rows=6');
 select t.chk('ACC journals', 'select * from public.journals', 'rows=1');
 select t.chk('ACC cannot read audit_log', 'select * from public.audit_log', 'rows=0');
 select t.logout(); select t.login('a0000000-0000-0000-0000-000000000001');
-select t.chk('admin sees all users', 'select * from public.users', 'rows=8');
+select t.chk('admin sees all users', 'select * from public.users', 'rows=10');
 select t.chk('admin sees audit_log', 'select * from public.audit_log', 'ok');
-select t.chk('admin sees all invoices', 'select * from public.invoices', 'rows=4');
+select t.chk('admin sees all invoices', 'select * from public.invoices', 'rows=5');
 select t.logout(); select t.login('a0000000-0000-0000-0000-000000000007');
 select t.chk('profile-less user: branches', 'select * from public.branches', 'rows=0');
 select t.chk('profile-less user: custom_roles', 'select * from public.custom_roles', 'rows=0');
@@ -96,7 +96,7 @@ select t.logout(); select t.login('a0000000-0000-0000-0000-000000000006');
 select t.chk('custom role sees only its own custom_roles row', 'select * from public.custom_roles', 'rows=1');
 select t.chk('custom role (canManageUsers ignored) sees only itself in users', 'select * from public.users', 'rows=1');
 select t.logout(); select t.login('a0000000-0000-0000-0000-000000000004');
-select t.chk('branches readable by users with a role', 'select * from public.branches', 'rows=3');
+select t.chk('branches readable by users with a role', 'select * from public.branches', 'rows=4');
 select t.logout(); select t.anon();
 select t.chk('anon cannot read invoices (no grant)', 'select * from public.invoices', 'err=42501');
 select t.chk('anon cannot call has_perm', $q$select public.has_perm('canViewFees')$q$, 'err=42501');
@@ -332,7 +332,7 @@ select t.eq('trashed with payments reversed', $q$select (deleted_at is not null)
 select t.login('a0000000-0000-0000-0000-000000000001');
 select t.chk('restore_invoice', $q$select public.restore_invoice(id) from public.invoices where idempotency_key='33333333-3333-3333-3333-333333333333'$q$, 'rows=1');
 select t.logout();
-select t.eq('restored unpaid (ledger says 0)', $q$select (deleted_at is null)::text || ':' || status || ':' || paid_amount from public.invoices where idempotency_key='33333333-3333-3333-3333-333333333333'$q$, 'true:pending:0');
+select t.eq('restored: the reversed 4000 is re-posted, invoice paid again', $q$select (deleted_at is null)::text || ':' || status || ':' || paid_amount from public.invoices where idempotency_key='33333333-3333-3333-3333-333333333333'$q$, 'true:paid:4000');
 select t.login('a0000000-0000-0000-0000-000000000003');
 select t.chk('MGR cannot trash_invoice (no canDeleteFees)', $q$select public.trash_invoice('f0000000-0000-0000-0000-000000000003')$q$, 'err=42501');
 -- recurring
@@ -411,5 +411,161 @@ select t.eq('internal _apply_invoice_payment not executable by authenticated', $
 select t.eq('document_counters unreadable by authenticated', $q$select has_table_privilege('authenticated','public.document_counters','select')::text$q$, 'false');
 select t.eq('migration_log unreadable by authenticated', $q$select has_table_privilege('authenticated','public.migration_log','select')::text$q$, 'false');
 select t.eq('security.sql refuses to re-run (guard present)', $q$select (to_regclass('public.migration_log') is not null)::text$q$, 'true');
+rollback;
+
+\echo ===== 11. teacher / LMS / attendance (main's modules)
+begin; select t.grp('11 teacher+lms');
+select t.eq('NOT NULL on expenses.amount was skipped (legacy NULL exists), not forced', $q$select count(*)::text from public.migration_log where step='not_null_expenses.amount' and status='skipped'$q$, '1');
+select t.login('a0000000-0000-0000-0000-00000000000a');
+select t.eq('teacher can edit attendance', $q$select public.has_perm('canEditAttendance')::text$q$, 'true');
+select t.eq('teacher cannot edit fees', $q$select public.has_perm('canEditFees')::text$q$, 'false');
+select t.eq('teacher cannot manage users', $q$select public.has_perm('canManageUsers')::text$q$, 'false');
+select t.chk('teacher reads students of own branch (2)', 'select * from public.students', 'rows=2');
+select t.chk('teacher cannot edit students', $q$update public.students set grade='9' where id='d0000000-0000-0000-0000-000000000001'$q$, 'rows=0');
+select t.chk('teacher cannot trash a student', $q$update public.students set deleted_at=now() where id='d0000000-0000-0000-0000-000000000001'$q$, 'rows=0');
+select t.chk('teacher sees no invoices', 'select * from public.invoices', 'rows=0');
+select t.chk('teacher sees no payments', 'select * from public.payments', 'rows=0');
+select t.chk('teacher sees no payslips', 'select * from public.payslips', 'rows=0');
+select t.chk('teacher sees no accounts', 'select * from public.accounts', 'rows=0');
+select t.chk('teacher cannot pay anything (RPC)', $q$select public.record_invoice_payment('f0000000-0000-0000-0000-000000000001', 1, 'Cash')$q$, 'err=42501');
+select t.chk('teacher cannot self-promote', $q$update public.users set role='admin' where id = 'a0000000-0000-0000-0000-00000000000a'$q$, 'err=42501');
+-- attendance
+select t.chk('teacher reads student attendance of own branch only (1; employee rows hidden)', 'select * from public.attendance', 'rows=1');
+select t.chk('teacher marks attendance for a student of own branch', $q$insert into public.attendance(subject_type,subject_id,date,status,branch_id) values ('student','d0000000-0000-0000-0000-000000000002','2026-09-02','present','b0000000-0000-0000-0000-00000000000a')$q$, 'ok');
+select t.chk('teacher changes an attendance mark', $q$update public.attendance set status='late' where subject_id='d0000000-0000-0000-0000-000000000002'$q$, 'rows=1');
+select t.chk('teacher cannot mark attendance in another branch', $q$insert into public.attendance(subject_type,subject_id,date,status,branch_id) values ('student','d0000000-0000-0000-0000-000000000003','2026-09-02','present','b0000000-0000-0000-0000-00000000000c')$q$, 'err=42501');
+select t.chk('teacher cannot mark EMPLOYEE attendance', $q$insert into public.attendance(subject_type,subject_id,date,status,branch_id) values ('employee','e0000000-0000-0000-0000-000000000001','2026-09-02','present','b0000000-0000-0000-0000-00000000000a')$q$, 'err=42501');
+select t.chk('bad attendance status refused', $q$insert into public.attendance(subject_type,subject_id,date,status,branch_id) values ('student','d0000000-0000-0000-0000-000000000002','2026-09-03','sick','b0000000-0000-0000-0000-00000000000a')$q$, 'err=23514');
+select t.chk('teacher cannot touch other branch attendance', $q$update public.attendance set status='absent' where subject_id='d0000000-0000-0000-0000-000000000003'$q$, 'rows=0');
+-- marks / exams
+select t.chk('teacher sees exams of own branch only', 'select * from public.exams', 'rows=1');
+select t.chk('teacher enters marks (own branch)', $q$insert into public.exam_results(exam_id,student_id,subject_id,marks_obtained,max_marks,branch_id) values ('12000000-0000-0000-0000-000000000001','d0000000-0000-0000-0000-000000000002','11000000-0000-0000-0000-000000000001',55,100,'b0000000-0000-0000-0000-00000000000a')$q$, 'ok');
+select t.chk('teacher edits a mark', $q$update public.exam_results set marks_obtained=60 where student_id='d0000000-0000-0000-0000-000000000002'$q$, 'rows=1');
+select t.chk('teacher cannot enter marks in another branch', $q$insert into public.exam_results(exam_id,student_id,subject_id,marks_obtained,max_marks,branch_id) values ('12000000-0000-0000-0000-000000000002','d0000000-0000-0000-0000-000000000003','11000000-0000-0000-0000-000000000002',1,100,'b0000000-0000-0000-0000-00000000000c')$q$, 'err=42501');
+select t.chk('mark for a non-existent exam refused (reference check)', $q$insert into public.exam_results(exam_id,student_id,subject_id,marks_obtained,max_marks,branch_id) values (gen_random_uuid()::text,'d0000000-0000-0000-0000-000000000002','11000000-0000-0000-0000-000000000001',1,100,'b0000000-0000-0000-0000-00000000000a')$q$, 'err=23503');
+select t.chk('negative marks refused', $q$insert into public.exam_results(exam_id,student_id,subject_id,marks_obtained,max_marks,branch_id) values ('12000000-0000-0000-0000-000000000001','d0000000-0000-0000-0000-000000000001','11000000-0000-0000-0000-000000000001',-5,100,'b0000000-0000-0000-0000-00000000000a')$q$, 'err=23514');
+select t.chk('duplicate mark for same exam/student/subject refused (main unique key)', $q$insert into public.exam_results(exam_id,student_id,subject_id,marks_obtained,max_marks,branch_id) values ('12000000-0000-0000-0000-000000000001','d0000000-0000-0000-0000-000000000001','11000000-0000-0000-0000-000000000001',1,100,'b0000000-0000-0000-0000-00000000000a')$q$, 'err=23505');
+-- learning
+select t.chk('teacher creates assignment, material, subject', $q$insert into public.materials(title,kind,grade,branch_id) values ('m','note','5','b0000000-0000-0000-0000-00000000000a')$q$, 'ok');
+select t.chk('submission status check', $q$update public.submissions set status='weird'$q$, 'err=23514');
+select t.chk('teacher grades a submission', $q$update public.submissions set status='graded', marks=8$q$, 'rows=1');
+select t.chk('teacher sees only own-branch learning rows (assignments 1)', 'select * from public.assignments', 'rows=1');
+select t.logout();
+select t.eq('exam changes are in row_history with the teacher as actor', $q$select count(*)::text from public.row_history where table_name='exam_results' and actor='a0000000-0000-0000-0000-00000000000a'$q$, '2');
+select t.login('a0000000-0000-0000-0000-00000000000b');
+select t.chk('T2 (Gulshan) sees its own exam only', 'select * from public.exams', 'rows=1');
+select t.chk('T2 cannot read Baneen marks', $q$select * from public.exam_results where branch_id='b0000000-0000-0000-0000-00000000000a'$q$, 'rows=0');
+select t.logout();
+-- other roles
+select t.login('a0000000-0000-0000-0000-000000000005');
+select t.chk('fee collector cannot read subjects', 'select * from public.subjects', 'rows=0');
+select t.chk('fee collector cannot read exams', 'select * from public.exams', 'rows=0');
+select t.chk('fee collector cannot read marks', 'select * from public.exam_results', 'rows=0');
+select t.chk('fee collector cannot read assignments', 'select * from public.assignments', 'rows=0');
+select t.chk('fee collector cannot read materials', 'select * from public.materials', 'rows=0');
+select t.chk('fee collector cannot read submissions', 'select * from public.submissions', 'rows=0');
+select t.chk('fee collector cannot write marks', $q$insert into public.exam_results(exam_id,student_id,subject_id,branch_id) values ('12000000-0000-0000-0000-000000000002','d0000000-0000-0000-0000-000000000003','11000000-0000-0000-0000-000000000002','b0000000-0000-0000-0000-00000000000c')$q$, 'err=42501');
+select t.chk('fee collector cannot create a subject', $q$insert into public.subjects(name,branch_id) values ('x','b0000000-0000-0000-0000-00000000000c')$q$, 'err=42501');
+select t.chk('fee collector cannot mark attendance', $q$insert into public.attendance(subject_type,subject_id,date,status,branch_id) values ('student','d0000000-0000-0000-0000-000000000003','2026-09-05','present','b0000000-0000-0000-0000-00000000000c')$q$, 'err=42501');
+select t.chk('fee collector can still READ student attendance (canViewStudents, main semantics)', 'select * from public.attendance', 'rows=1');
+select t.logout(); select t.login('a0000000-0000-0000-0000-000000000002');
+select t.chk('accountant: no academic data', 'select * from public.exams', 'rows=0');
+select t.chk('accountant: no attendance', 'select * from public.attendance', 'rows=0');
+select t.logout(); select t.login('a0000000-0000-0000-0000-000000000003');
+select t.chk('branch manager can create a subject in own branch', $q$insert into public.subjects(name,branch_id) values ('Art','b0000000-0000-0000-0000-00000000000a')$q$, 'ok');
+select t.chk('branch manager cannot in another branch', $q$insert into public.subjects(name,branch_id) values ('Art','b0000000-0000-0000-0000-00000000000c')$q$, 'err=42501');
+select t.logout(); select t.anon();
+select t.chk('anon cannot read attendance', 'select * from public.attendance', 'err=42501');
+select t.chk('anon cannot read exams', 'select * from public.exams', 'err=42501');
+select t.logout();
+-- guards accept the teacher role
+select t.login('a0000000-0000-0000-0000-000000000001');
+select t.chk('admin can assign role teacher', $q$update public.users set role='teacher' where id = 'a0000000-0000-0000-0000-000000000004'$q$, 'rows=1');
+select t.chk('custom role may not be called teacher', $q$insert into public.custom_roles(id) values ('teacher')$q$, 'err');
+select t.chk('override: admin revokes canEditExams from T1', $q$update public.users set extra='{"pagePermissions":{"canEditExams":false}}' where id = 'a0000000-0000-0000-0000-00000000000a'$q$, 'rows=1');
+select t.logout(); select t.login('a0000000-0000-0000-0000-00000000000a');
+select t.chk('override is enforced: T1 cannot enter marks any more', $q$insert into public.exam_results(exam_id,student_id,subject_id,marks_obtained,max_marks,branch_id) values ('12000000-0000-0000-0000-000000000001','d0000000-0000-0000-0000-000000000002','11000000-0000-0000-0000-000000000001',1,100,'b0000000-0000-0000-0000-00000000000a')$q$, 'err=42501');
+select t.logout();
+-- student 'left' status and numeric blanks (main's data shapes)
+select t.login('a0000000-0000-0000-0000-000000000001');
+select t.chk('student can be marked left (status lives in extra)', $q$update public.students set extra = extra || '{"status":"left","leftDate":"2026-10-01"}'::jsonb, recurring_fee=false where id='d0000000-0000-0000-0000-000000000001'$q$, 'rows=1');
+select t.chk('legacy left student with NULL fee stays editable', $q$update public.students set grade='4' where id='d0000000-0000-0000-0000-000000000006'$q$, 'rows=1');
+select t.chk('student insert with blank (NULL) fee', $q$insert into public.students(name,student_id,branch_id,monthly_fee) values ('Nofee','S-77','b0000000-0000-0000-0000-00000000000a',null)$q$, 'ok');
+select t.chk('legacy expense with NULL amount is editable (its NOT NULL was skipped, not forced)', $q$update public.expenses set description='fixed' where id='70000000-0000-0000-0000-000000000002'$q$, 'rows=1');
+select t.logout();
+rollback;
+
+\echo ===== 12. money RPCs after main's invoice edit / restore flows
+begin; select t.grp('12 rpc2');
+select t.login('a0000000-0000-0000-0000-000000000003');
+select t.chk('MGR records 2000 on f01', $q$select public.record_invoice_payment('f0000000-0000-0000-0000-000000000001', 2000, 'Cash', '2026-01-15', false, null, 'd1111111-1111-1111-1111-111111111111')$q$, 'rows=1');
+select t.chk('edit_invoice: raise total to 6000 (status stays partial)', $q$select public.edit_invoice('f0000000-0000-0000-0000-000000000001', 'b0000000-0000-0000-0000-00000000000a', 'January', 2026, '2026-01-20', 'n', '[{"description":"Tuition Fee","amount":6000}]'::jsonb, 6000)$q$, 'rows=1');
+select t.logout();
+select t.eq('edited: partial, 2000 paid, total 6000, notes merged, studentName kept', $q$select status || ':' || paid_amount || ':' || amount || ':' || (extra->>'notes') || ':' || (extra->>'studentName') from public.invoices where id='f0000000-0000-0000-0000-000000000001'$q$, 'partial:2000:6000:n:Ali');
+select t.login('a0000000-0000-0000-0000-000000000003');
+select t.chk('edit_invoice: total below received refused', $q$select public.edit_invoice('f0000000-0000-0000-0000-000000000001', 'b0000000-0000-0000-0000-00000000000a', 'January', 2026, null, null, null, 1000)$q$, 'err=23514');
+select t.chk('edit_invoice: MGR cannot move to another branch', $q$select public.edit_invoice('f0000000-0000-0000-0000-000000000001', 'b0000000-0000-0000-0000-00000000000c', 'January', 2026, null, null, null, 6000)$q$, 'err=42501');
+select t.logout(); select t.login('a0000000-0000-0000-0000-000000000002');
+select t.chk('edit_invoice: unknown branch refused', $q$select public.edit_invoice('f0000000-0000-0000-0000-000000000001', 'b9999999-0000-0000-0000-000000000000', 'January', 2026, null, null, null, 6000)$q$, 'err=23503');
+select t.chk('edit_invoice: accountant moves it to Gulshan', $q$select public.edit_invoice('f0000000-0000-0000-0000-000000000001', 'b0000000-0000-0000-0000-00000000000c', 'January', 2026, null, null, null, 6000)$q$, 'rows=1');
+select set_config('app.money_rpc', 'off', true);   -- a separate request: the RPC flag is transaction-local
+select t.chk('legacy direct payment-branch update is now refused (ledger guard)', $q$update public.payments set branch_id='' where source_id='f0000000-0000-0000-0000-000000000001'$q$, 'err=55000');
+select t.logout();
+select t.eq('payments followed the invoice to Gulshan', $q$select string_agg(distinct branch_id, ',') from public.payments where source='invoice' and source_id='f0000000-0000-0000-0000-000000000001'$q$, 'b0000000-0000-0000-0000-00000000000c');
+-- reverse ONE payment
+select t.login('a0000000-0000-0000-0000-000000000002');
+select t.chk('reverse_payment', $q$select public.reverse_payment(id) from public.payments where source_id='f0000000-0000-0000-0000-000000000001' and reversal_of is null$q$, 'rows=1');
+select t.eq('invoice back to pending / 0', $q$select status || ':' || paid_amount from public.invoices where id='f0000000-0000-0000-0000-000000000001'$q$, 'pending:0');
+select t.eq('second reverse_payment returns NULL (already reversed)', $q$select public.reverse_payment(id)::text from public.payments where source_id='f0000000-0000-0000-0000-000000000001' and reversal_of is null$q$, null);
+select t.chk('a reversal row cannot be reversed', $q$select public.reverse_payment(id) from public.payments where reversal_of is not null limit 1$q$, 'err=22023');
+-- pay in full, trash, restore -> money re-posted; the earlier deliberate reversal is NOT brought back
+select t.chk('pay 6000', $q$select public.record_invoice_payment('f0000000-0000-0000-0000-000000000001', 6000, 'Bank', '2026-02-01', false, null, null)$q$, 'rows=1');
+select t.logout(); select t.login('a0000000-0000-0000-0000-000000000001');
+select t.chk('trash_document(invoices)', $q$select public.trash_document('invoices','f0000000-0000-0000-0000-000000000001')$q$, 'rows=1');
+select t.logout();
+select t.eq('trashed and unpaid in the books', $q$select (deleted_at is not null)::text || ':' || status || ':' || paid_amount || ':' || public._invoice_paid(id) from public.invoices where id='f0000000-0000-0000-0000-000000000001'$q$, 'true:pending:0:0');
+select t.login('a0000000-0000-0000-0000-000000000002');
+select t.chk('accountant cannot restore (no canDeleteFees)', $q$select public.restore_document('invoices','f0000000-0000-0000-0000-000000000001')$q$, 'err=42501');
+select t.logout(); select t.login('a0000000-0000-0000-0000-000000000001');
+select t.eq('restore_document re-posts exactly the 6000', $q$select public.restore_document('invoices','f0000000-0000-0000-0000-000000000001')::text$q$, '{"reposted": 1}');
+select t.chk('restore of a live record refused', $q$select public.restore_document('invoices','f0000000-0000-0000-0000-000000000001')$q$, 'err=P0002');
+select t.logout();
+select t.eq('restored paid 6000 and the ledger agrees', $q$select (deleted_at is null)::text || ':' || status || ':' || paid_amount || ':' || public._invoice_paid(id) from public.invoices where id='f0000000-0000-0000-0000-000000000001'$q$, 'true:paid:6000:6000');
+select t.eq('re-posted entry is tagged repostOf', $q$select count(*)::text from public.payments where extra ? 'repostOf' and source_id='f0000000-0000-0000-0000-000000000001'$q$, '1');
+-- payslip / expense trash + restore
+select t.login('a0000000-0000-0000-0000-000000000002');
+select t.chk('pay payslip', $q$select public.pay_payslip('80000000-0000-0000-0000-000000000001','Bank','2026-02-01',null)$q$, 'rows=1');
+select t.logout(); select t.login('a0000000-0000-0000-0000-000000000001');
+select t.chk('trash payslip (reverses salary)', $q$select public.trash_document('payslips','80000000-0000-0000-0000-000000000001')$q$, 'rows=1');
+select t.eq('payslip pending + trashed', $q$select (deleted_at is not null)::text || ':' || status from public.payslips where id='80000000-0000-0000-0000-000000000001'$q$, 'true:pending');
+select t.eq('restore payslip re-posts salary', $q$select public.restore_document('payslips','80000000-0000-0000-0000-000000000001')::text$q$, '{"reposted": 1}');
+select t.eq('payslip paid again', $q$select status || ':' || paid_account from public.payslips where id='80000000-0000-0000-0000-000000000001'$q$, 'paid:Bank');
+select t.chk('unsupported table refused', $q$select public.trash_document('students','d0000000-0000-0000-0000-000000000001')$q$, 'err=22023');
+select t.logout();
+-- unposted receipts
+select t.logout();
+insert into public.invoices(id, student_id, branch_id, amount, status, paid_amount, extra)
+values ('f0000000-0000-0000-0000-000000000006','d0000000-0000-0000-0000-000000000001','b0000000-0000-0000-0000-00000000000a',100,'paid',100,'{"ledgerPosted":false,"month":"March","studentName":"Ali"}');
+select t.login('a0000000-0000-0000-0000-000000000003');
+select t.chk('record_invoice_payment refuses an unposted receipt', $q$select public.record_invoice_payment('f0000000-0000-0000-0000-000000000006', 1, 'Cash')$q$, 'err=23514');
+select t.chk('post_unposted_invoice posts the missing 100', $q$select public.post_unposted_invoice('f0000000-0000-0000-0000-000000000006','Cash','2026-03-01','d2222222-2222-2222-2222-222222222222')$q$, 'rows=1');
+select t.chk('post_unposted_invoice again is a no-op', $q$select public.post_unposted_invoice('f0000000-0000-0000-0000-000000000006','Cash','2026-03-01')$q$, 'rows=1');
+select t.logout();
+select t.eq('exactly one 100 posted and flag cleared', $q$select (select count(*) from public.payments where source_id='f0000000-0000-0000-0000-000000000006')::text || ':' || (select extra->>'ledgerPosted' from public.invoices where id='f0000000-0000-0000-0000-000000000006')$q$, '1:true');
+-- historical rows are not numbered
+insert into public.invoices(id, student_id, branch_id, amount, status, extra)
+values ('f0000000-0000-0000-0000-000000000007','d0000000-0000-0000-0000-000000000001','b0000000-0000-0000-0000-00000000000a',5,'pending','{"historical":true}');
+select t.eq('imported history gets no invoice number', $q$select coalesce(invoice_no,'none') from public.invoices where id='f0000000-0000-0000-0000-000000000007'$q$, 'none');
+select t.eq('real invoices do', $q$select (invoice_no is not null)::text from public.invoices where id='f0000000-0000-0000-0000-000000000006'$q$, 'true');
+rollback;
+
+\echo ===== 13. 0013 structure
+begin; select t.grp('13 structure');
+select t.eq('academic tables have 4 policies each', $q$select string_agg(distinct c::text, ',') from (select count(*) c from pg_policies where schemaname='public' and tablename in ('attendance','subjects','exams','exam_results','assignments','submissions','materials') group by tablename) z$q$, '4');
+select t.eq('no open policy on academic tables', $q$select count(*)::text from pg_policies where schemaname='public' and tablename in ('attendance','subjects','exams','exam_results','assignments','submissions','materials') and (qual='true' or with_check='true' or policyname='auth all')$q$, '0');
+select t.eq('academic tables not in a FULL replica identity', $q$select count(*)::text from pg_class c where c.relnamespace='public'::regnamespace and c.relname in ('attendance','subjects','exams','exam_results','assignments','submissions','materials') and c.relreplident='f'$q$, '0');
+select t.eq('anon has no privileges on academic tables', $q$select count(*)::text from information_schema.role_table_grants where grantee='anon' and table_schema='public' and table_name in ('attendance','subjects','exams','exam_results','assignments','submissions','materials')$q$, '0');
+select t.eq('policies use the once-per-statement form', $q$select count(*)::text from pg_policies where schemaname='public' and tablename='exam_results' and cmd='SELECT' and qual like '%SELECT has_perm%'$q$, '1');
+select t.eq('has_perm still the hardened one (overrides)', $q$select (pg_get_functiondef('public.has_perm(text)'::regprocedure) like '%pagePermissions%')::text$q$, 'true');
 rollback;
 

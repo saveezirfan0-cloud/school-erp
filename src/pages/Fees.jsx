@@ -3,8 +3,13 @@ import { useUser } from "../context/UserContext";
 import { db } from "../firebase";
 import { collection, addDoc, deleteDoc, doc, onSnapshot, serverTimestamp, updateDocs, deleteDocs } from "../firebase";
 import { useBranch } from "../context/BranchContext";
+import { matchesBranch } from "../utils/branchFilter";
+import { isLeftStudent } from "../utils/studentStatus";
 import Pagination from "../components/UI/Pagination";
 import SearchableSelect from "../components/UI/SearchableSelect";
+import InvoiceEditModal from "../components/UI/InvoiceEditModal";
+import MultiSelect from "../components/UI/MultiSelect";
+import { studentName, studentOptionLabel } from "../utils/studentLabel";
 import { useBulkSelect } from "../hooks/useBulkSelect";
 import BulkBar, { RowCheckbox, HeaderCheckbox } from "../components/UI/BulkBar";
 import BulkEditModal from "../components/UI/BulkEditModal";
@@ -15,29 +20,33 @@ import {
   collectInvoicePayment, createInvoiceAndCollect, postUnpostedInvoice, reverseSourcePayments,
   getSourcePaidTotal, needsPosting, pickDefaultAccountId, rememberAccountChoice,
 } from "../utils/accounting";
-import { parsePositiveAmount, sumMoney, subMoney, round2, toMinor, todayLocal, formatMoney } from "../utils/money";
+import { parsePositiveAmount, sumMoney, subMoney, round2, todayLocal, formatMoney } from "../utils/money";
 import { useAccounts } from "../utils/useAccounts";
 import { useSubmitLock } from "../utils/useSubmitLock";
-import { matchesBranch } from "../utils/branchFilter";
 import { exportToCSV, exportToPDF } from "../utils/exportUtils";
+import { summarizeInvoices, invoiceFacts } from "../utils/reporting";
+import InvoiceModal from "../components/UI/InvoiceModal";
 import toast from "react-hot-toast";
-import { Plus, MessageCircle, CheckCircle, X, Trash2, Download, FileText, RefreshCw, Users, Pencil, AlertTriangle } from "lucide-react";
+import { Plus, MessageCircle, CheckCircle, X, Trash2, Download, FileText, RefreshCw, Users, Pencil, AlertTriangle, Search } from "lucide-react";
 
 const DEFAULT_LINE_ITEMS = [{ description: "Tuition Fee", amount: "" }];
 const LINE_ITEM_PRESETS = ["Tuition Fee", "Registration Fee", "Exam Fee", "Transport Fee", "Custom"];
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 const emptyForm = () => ({ studentId: "", month: "", year: new Date().getFullYear(), dueDate: "", notes: "", directPayment: false, directAccountId: "" });
 
-// Money received so far / still owed on one invoice, in exact paisa maths.
-// Legacy "paid" invoices that carry no paidAmount count as fully collected.
-const invoiceCollected = (i) => {
-  const paid = Number(i.paidAmount);
-  if (Number.isFinite(paid) && toMinor(paid) > 0) return round2(paid);
-  return i.status === "paid" ? Math.max(0, subMoney(i.amount || 0, i.concessionAmount || 0)) : 0;
-};
-const invoiceOutstanding = (i) => {
-  if (i.status === "paid") return 0;
-  return Math.max(0, subMoney(subMoney(i.amount || 0, invoiceCollected(i)), i.concessionAmount || 0));
+// Money still owed on one invoice. ONE definition for every screen
+// (utils/reporting.js invoiceFacts): 0 once marked paid, otherwise
+// amount - paid - concession. An invoice marked paid with no money recorded
+// is "unverified" there: neither collected nor outstanding.
+const invoiceOutstanding = (i) => invoiceFacts(i).outstanding;
+
+// Figures for the printable invoice, from the same definition as the totals.
+const invoiceFigures = (i) => {
+  const f = invoiceFacts(i);
+  const statusLabel = f.status === "paid" ? "Paid"
+    : f.paid > 0 ? "Partial"
+    : (i.dueDate && i.dueDate < todayLocal() ? "Overdue" : "Pending");
+  return { paid: f.paid, concession: f.concession, balance: f.outstanding, statusLabel };
 };
 
 function useIsMobile() {
@@ -52,7 +61,7 @@ function useIsMobile() {
 
 export default function Fees() {
   const { can } = useUser();
-  const { activeBranch } = useBranch();
+  const { branches, activeBranch } = useBranch();
   const isMobile = useIsMobile();
   const [invoices, setInvoices] = useState([]);
   const [students, setStudents] = useState([]);
@@ -73,6 +82,7 @@ export default function Fees() {
   const [showBulk, setShowBulk] = useState(false);
   const [showRecurring, setShowRecurring] = useState(false);
   const [selectedInvoice, setSelectedInvoice] = useState(null);
+  const [editInvoice, setEditInvoice] = useState(null);
   const [form, setForm] = useState(emptyForm());
   const [lineItems, setLineItems] = useState(DEFAULT_LINE_ITEMS);
   const [filterStatus, setFilterStatus] = useState("");
@@ -86,6 +96,8 @@ export default function Fees() {
   const [bulkDueDate, setBulkDueDate] = useState("");
   const [bulkReceiveAccount, setBulkReceiveAccount] = useState("");
   const [bulkStudents, setBulkStudents] = useState([]);
+  const [bulkSearch, setBulkSearch] = useState("");
+  const [bulkGrades, setBulkGrades] = useState([]);
   const [recurringMonth, setRecurringMonth] = useState(MONTHS[new Date().getMonth()]);
   const [recurringYear, setRecurringYear] = useState(new Date().getFullYear());
   const [showBulkEdit, setShowBulkEdit] = useState(false);
@@ -102,19 +114,40 @@ export default function Fees() {
     const u2 = onSnapshot(collection(db, "students"), snap => {
       const s = snap.docs.map(d => ({ id: d.id, ...d.data() }));
       setStudents(s);
-      // Keep ticks and typed amounts when a student record changes elsewhere.
-      setBulkStudents(prev => s.map(st => {
-        const old = prev.find(p => p.id === st.id);
-        return old
-          ? { ...st, selected: old.selected, amount: old.amount, paid: old.paid }
-          : { ...st, selected: false, amount: st.monthlyFee || "", paid: false };
-      }));
+      // Keep ticks / edited amounts when students update live, so a snapshot
+      // arriving mid-entry doesn't wipe the bulk form.
+      setBulkStudents(prev => {
+        const old = new Map(prev.map(p => [p.id, p]));
+        return s.filter(st => !isLeftStudent(st)).map(st => {
+          const o = old.get(st.id);
+          return o
+            ? { ...st, selected: o.selected, amount: o.amount, paid: o.paid }
+            : { ...st, selected: false, amount: st.monthlyFee || "", paid: false };
+        });
+      });
     });
     return () => { u1(); u2(); };
   }, []);
 
   // The account to pre-select: a remembered one, or the only one. Never an arbitrary pick.
   const defaultAccountId = () => pickDefaultAccountId(postable);
+
+  // Bulk invoice modal: students in the active branch, narrowed by the
+  // search box and class filter. Select All / Deselect All act on these.
+  const bulkQ = bulkSearch.trim().toLowerCase();
+  const bulkVisible = bulkStudents.filter(s =>
+    matchesBranch(s, activeBranch) &&
+    (bulkGrades.length === 0 || bulkGrades.includes(s.grade || "")) &&
+    (!bulkQ || [s.name, s.studentId, s.grade, s.parentName, s.parentPhone].some(v => String(v ?? "").toLowerCase().includes(bulkQ)))
+  );
+  const bulkGradeOptions = [...new Set(bulkStudents.filter(s => matchesBranch(s, activeBranch)).map(s => s.grade).filter(Boolean))].sort().map(g => ({ value: g, label: g }));
+  const bulkSelectedCount = bulkStudents.filter(s => s.selected).length;
+  const setBulkVisible = (patch) => {
+    const ids = new Set(bulkVisible.map(s => s.id));
+    setBulkStudents(p => p.map(s => ids.has(s.id) ? { ...s, ...patch } : s));
+  };
+  const updateBulkStudent = (id, patch) => setBulkStudents(p => p.map(s => s.id === id ? { ...s, ...patch } : s));
+  const openBulk = () => { setBulkSearch(""); setBulkGrades([]); setShowBulk(true); };
 
   useEffect(() => { setPage(1); }, [filterStatus, filterMonth, filterBranch, filterStudent, pageSize, activeBranch]);
 
@@ -147,8 +180,9 @@ export default function Fees() {
   const bulk = useBulkSelect(filtered.map(inv => inv.id));
   const pagedIds = paged.map(inv => inv.id);
   const totalAmount = sumMoney(lineItems.map(i => i.amount));
-  const totalCollected = sumMoney(filtered.map(invoiceCollected));
-  const totalPending = sumMoney(filtered.map(invoiceOutstanding));
+  // ONE definition of collected / pending: utils/reporting.js (same as the
+  // Dashboard and Reports). Only the scope differs: the filtered invoices.
+  const { collected: totalCollected, outstanding: totalPending } = summarizeInvoices(filtered);
   const unpostedCount = filtered.filter(needsPosting).length;
 
   const addLineItem = () => setLineItems(p => [...p, { description: "", amount: "" }]);
@@ -182,7 +216,7 @@ export default function Fees() {
       if (lines.error) return toast.error(lines.error);
       try {
         const invoiceData = {
-          studentId: student.id, studentName: student.name, parentPhone: student.parentPhone,
+          studentId: student.id, studentName: studentName(student), parentPhone: student.parentPhone,
           branchId: student.branchId, month: form.month, year: form.year,
           dueDate: form.dueDate, notes: form.notes, lineItems: lines.items, amount: lines.total,
         };
@@ -192,7 +226,7 @@ export default function Fees() {
           await createInvoiceAndCollect({ invoiceData, accounts, accountId: form.directAccountId, date: todayLocal() });
           rememberAccountChoice(form.directAccountId);
           if (student.parentPhone) {
-            await sendWhatsAppMessage(student.parentPhone, `✅ Fee payment of Rs. ${lines.total} received for ${student.name} for ${form.month}. Thank you!`);
+            await sendWhatsAppMessage(student.parentPhone, `✅ Fee payment of Rs. ${lines.total} received for ${studentName(student)} for ${form.month}. Thank you!`);
           }
         } else {
           await addDoc(collection(db, "invoices"), {
@@ -200,7 +234,7 @@ export default function Fees() {
           });
         }
         toast.success(form.directPayment ? "Payment received!" : "Invoice created");
-        logActivity(form.directPayment ? "collected" : "created", "Invoices", `Invoice ${student.name} — ${form.month} ${form.year} · Rs. ${formatMoney(lines.total)}${form.directPayment ? " (paid on the spot)" : ""}`);
+        logActivity(form.directPayment ? "collected" : "created", "Invoices", `Invoice ${studentName(student)} — ${form.month} ${form.year} · Rs. ${formatMoney(lines.total)}${form.directPayment ? " (paid on the spot)" : ""}`);
         setShowModal(false);
         setForm(emptyForm());
         setLineItems(DEFAULT_LINE_ITEMS);
@@ -220,7 +254,7 @@ export default function Fees() {
       if (paidRows.length > 0 && !bulkReceiveAccount) return toast.error("Choose the account that received the money for the rows marked Paid");
       // validate everything before writing anything
       for (const s of selected) {
-        const a = parsePositiveAmount(s.amount, `Amount for ${s.name}`);
+        const a = parsePositiveAmount(s.amount, `Amount for ${studentName(s)}`);
         if (!a.ok) return toast.error(a.error);
       }
       const exists = (s) => invoices.some(i => i.studentId === s.id && i.month === bulkMonth && Number(i.year) === Number(bulkYear));
@@ -231,7 +265,7 @@ export default function Fees() {
         try {
           const amount = round2(s.amount);
           const invoiceData = {
-            studentId: s.id, studentName: s.name, parentPhone: s.parentPhone,
+            studentId: s.id, studentName: studentName(s), parentPhone: s.parentPhone,
             branchId: s.branchId, amount, month: bulkMonth, year: bulkYear,
             dueDate: bulkDueDate,
             lineItems: [{ description: "Tuition Fee", amount }],
@@ -239,7 +273,7 @@ export default function Fees() {
           if (s.paid) {
             await createInvoiceAndCollect({ invoiceData, accounts, accountId: bulkReceiveAccount, date: todayLocal() });
             if (s.parentPhone) {
-              await sendWhatsAppMessage(s.parentPhone, `✅ Fee of Rs. ${amount} received for ${s.name} — ${bulkMonth} ${bulkYear}. Thank you!`);
+              await sendWhatsAppMessage(s.parentPhone, `✅ Fee of Rs. ${amount} received for ${studentName(s)} — ${bulkMonth} ${bulkYear}. Thank you!`);
             }
           } else {
             await addDoc(collection(db, "invoices"), {
@@ -248,7 +282,7 @@ export default function Fees() {
           }
           count++;
         } catch (err) {
-          failures.push(`${s.name}: ${err?.message || "failed"}`);
+          failures.push(`${studentName(s)}: ${err?.message || "failed"}`);
         }
       }
       if (paidRows.length > 0) rememberAccountChoice(bulkReceiveAccount);
@@ -260,12 +294,16 @@ export default function Fees() {
         toast.success(parts.join(", "));
       }
       if (count > 0) logActivity("created", "Invoices", `${count} invoices — ${bulkMonth} ${bulkYear} (bulk)`);
-      if (failures.length === 0) setShowBulk(false);
+      if (failures.length === 0) {
+        // Untick everyone so reopening the modal can't create duplicates by accident.
+        setBulkStudents(p => p.map(st => ({ ...st, selected: false, paid: false })));
+        setShowBulk(false);
+      }
     });
   };
 
   const handleGenerateRecurring = () => runSubmit(async () => {
-    const recurringStudents = students.filter(s => s.recurringFee);
+    const recurringStudents = students.filter(s => s.recurringFee && !isLeftStudent(s));
     if (recurringStudents.length === 0) return toast.error("No students have auto-recurring fees enabled");
     const existing = invoices.filter(i => i.month === recurringMonth && Number(i.year) === Number(recurringYear));
     const existingIds = new Set(existing.map(i => i.studentId));
@@ -276,7 +314,7 @@ export default function Fees() {
         const fee = parsePositiveAmount(s.monthlyFee);
         if (!fee.ok) { noFee++; continue; } // never create a NaN / zero invoice
         await addDoc(collection(db, "invoices"), {
-          studentId: s.id, studentName: s.name, parentPhone: s.parentPhone,
+          studentId: s.id, studentName: studentName(s), parentPhone: s.parentPhone,
           branchId: s.branchId, status: "pending", amount: fee.value, paidAmount: 0, paidDate: null,
           month: recurringMonth, year: recurringYear,
           lineItems: [{ description: "Tuition Fee", amount: fee.value }],
@@ -367,6 +405,7 @@ export default function Fees() {
   };
 
   const handleDelete = async (inv) => {
+    if (!can("canDeleteFees")) return;
     if (!window.confirm("Delete this invoice? Any recorded payments for it will be reversed. You can restore it from Trash (the payments are re-posted on restore).")) return;
     try {
       // Reverse any money posted for this invoice so balances don't drift.
@@ -380,6 +419,7 @@ export default function Fees() {
   const selectedInvoices = () => invoices.filter(i => bulk.selected.has(i.id));
 
   const handleBulkDelete = async () => {
+    if (!can("canDeleteFees")) return;
     const items = selectedInvoices();
     if (items.length === 0) return;
     if (!window.confirm(`Delete ${items.length} invoice${items.length === 1 ? "" : "s"}? Any recorded payments for them will be reversed. You can restore them from Trash.`)) return;
@@ -445,12 +485,17 @@ export default function Fees() {
     } finally { setBulkBusy(false); }
   });
 
-  const handleCSV = () => exportToCSV("fees",
+  const openEdit = (inv) => {
+    setEditInvoice(inv);
+    return true;
+  };
+
+  const handleCSV = () => can("canExport") && exportToCSV("fees",
     ["Student", "Month", "Year", "Amount", "Status", "Due Date"],
     filtered.map(i => [i.studentName, i.month, i.year, i.amount, i.status, i.dueDate])
   );
 
-  const handlePDF = () => exportToPDF("Fees & Invoices",
+  const handlePDF = () => can("canExport") && exportToPDF("Fees & Invoices",
     ["Student", "Month", "Amount", "Status", "Due Date"],
     filtered.map(i => [i.studentName, `${i.month} ${i.year}`, `Rs. ${Number(i.amount).toLocaleString()}`, i.status, i.dueDate])
   );
@@ -480,7 +525,7 @@ export default function Fees() {
             </>
           )}
           <button onClick={() => setShowRecurring(true)} style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13 }}><RefreshCw size={14} />{!isMobile && " Recurring"}</button>
-          <button onClick={() => setShowBulk(true)} style={{ display: "flex", alignItems: "center", gap: 5, padding: "9px 14px", background: "#2a8c7a", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600, fontSize: 13 }}><Users size={14} />{!isMobile && " Bulk"}</button>
+          <button onClick={openBulk} style={{ display: "flex", alignItems: "center", gap: 5, padding: "9px 14px", background: "#2a8c7a", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600, fontSize: 13 }}><Users size={14} />{!isMobile && " Bulk"}</button>
           <button onClick={openCreate}
             style={{ display: "flex", alignItems: "center", gap: 5, padding: "9px 14px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600, fontSize: 13 }}>
             <Plus size={14} />{!isMobile && " New Invoice"}
@@ -588,6 +633,10 @@ export default function Fees() {
                   style={{ flex: 1, border: "none", background: "var(--primary-light)", color: "var(--primary)", padding: "10px", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 600 }}>
                   View
                 </button>
+                <button onClick={() => openEdit(inv)} title="Edit invoice"
+                  style={{ border: "none", background: "#f1f5f9", color: "#475569", padding: "10px 12px", borderRadius: 8, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  <Pencil size={15} />
+                </button>
                 {can("canDeleteFees") && <button onClick={() => handleDelete(inv)} title="Delete invoice"
                   style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "10px 12px", borderRadius: 8, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
                   <Trash2 size={15} />
@@ -647,6 +696,7 @@ export default function Fees() {
                         )}
                         <button onClick={() => sendReminder(inv)} style={{ border: "none", background: "#f0fdf4", color: "#16a34a", padding: "5px 9px", borderRadius: 6, cursor: "pointer", fontSize: 11 }}>Remind</button>
                         <button onClick={() => setSelectedInvoice(inv)} style={{ border: "none", background: "var(--primary-light)", color: "var(--primary)", padding: "5px 9px", borderRadius: 6, cursor: "pointer", fontSize: 11 }}>View</button>
+                        <button onClick={() => openEdit(inv)} title="Edit invoice" style={{ border: "none", background: "#f1f5f9", color: "#475569", padding: "5px 8px", borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center" }}><Pencil size={13} /></button>
                         {can("canDeleteFees") && <button onClick={() => handleDelete(inv)} title="Delete invoice" style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "5px 8px", borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center" }}><Trash2 size={13} /></button>}
                       </div>
                     </td>
@@ -865,8 +915,9 @@ export default function Fees() {
                       setForm(p => ({ ...p, studentId: val }));
                       if (s?.monthlyFee) setLineItems([{ description: "Tuition Fee", amount: s.monthlyFee }]);
                     }}
-                    options={students.map(s => ({ value: s.id, label: `${s.name} (${s.studentId})`, sublabel: s.grade || "" }))}
+                    options={students.map(s => ({ value: s.id, label: studentOptionLabel(s), sublabel: s.grade || "" }))}
                     placeholder="Search student by name or ID..."
+                    rememberKey="fees.student"
                   />
                 </div>
                 <div>
@@ -981,12 +1032,30 @@ export default function Fees() {
                 </div>
               </div>
 
-              <div style={{ display: "flex", gap: 8, marginBottom: 10, alignItems: "center" }}>
-                <button type="button" onClick={() => setBulkStudents(p => p.map(s => ({ ...s, selected: true })))}
-                  style={{ padding: "6px 12px", border: "1px solid var(--border)", borderRadius: 6, cursor: "pointer", fontSize: 12, background: "white" }}>Select All</button>
-                <button type="button" onClick={() => setBulkStudents(p => p.map(s => ({ ...s, selected: false })))}
-                  style={{ padding: "6px 12px", border: "1px solid var(--border)", borderRadius: 6, cursor: "pointer", fontSize: 12, background: "white" }}>Deselect All</button>
-                <span style={{ fontSize: 13, color: "var(--text-muted)" }}>{bulkStudents.filter(s => s.selected).length} selected</span>
+              {/* Find students: search + multi-select class filter */}
+              <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
+                <div style={{ position: "relative", flex: 1, minWidth: 160 }}>
+                  <Search size={14} style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: "var(--text-muted)" }} />
+                  <input value={bulkSearch} onChange={e => setBulkSearch(e.target.value)} placeholder="Search name, ID, class, parent..."
+                    style={{ width: "100%", padding: "8px 8px 8px 30px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 13, boxSizing: "border-box" }} />
+                </div>
+                {bulkGradeOptions.length > 0 && (
+                  <MultiSelect values={bulkGrades} onChange={setBulkGrades} options={bulkGradeOptions} placeholder="All Classes" />
+                )}
+              </div>
+
+              <div style={{ display: "flex", gap: 8, marginBottom: 10, alignItems: "center", flexWrap: "wrap" }}>
+                <button type="button" onClick={() => setBulkVisible({ selected: true })}
+                  style={{ padding: "6px 12px", border: "1px solid var(--border)", borderRadius: 6, cursor: "pointer", fontSize: 12, background: "white" }}>
+                  {bulkVisible.length === bulkStudents.length ? "Select All" : `Select ${bulkVisible.length} shown`}
+                </button>
+                <button type="button" onClick={() => setBulkVisible({ selected: false })}
+                  style={{ padding: "6px 12px", border: "1px solid var(--border)", borderRadius: 6, cursor: "pointer", fontSize: 12, background: "white" }}>
+                  {bulkVisible.length === bulkStudents.length ? "Deselect All" : "Deselect shown"}
+                </button>
+                <span style={{ fontSize: 13, color: "var(--text-muted)" }}>
+                  {bulkSelectedCount} selected{bulkVisible.length !== bulkStudents.length ? ` · showing ${bulkVisible.length} of ${bulkStudents.length}` : ""}
+                </span>
               </div>
 
               {bulkStudents.some(s => s.selected && s.paid) && (
@@ -1005,22 +1074,25 @@ export default function Fees() {
               )}
 
               <div style={{ border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden", marginBottom: 16, maxHeight: 320, overflowY: "auto" }}>
-                {bulkStudents.map((s, idx) => (
+                {bulkVisible.length === 0 && (
+                  <div style={{ padding: 24, textAlign: "center", color: "var(--text-muted)", fontSize: 13 }}>No students match</div>
+                )}
+                {bulkVisible.map(s => (
                   <div key={s.id} style={{ display: "grid", gridTemplateColumns: "36px 1fr auto auto", padding: "10px 12px", borderBottom: "1px solid var(--border)", gap: 10, alignItems: "center", background: s.selected ? "#fef9f9" : "white" }}>
                     <input type="checkbox" checked={s.selected}
-                      onChange={e => setBulkStudents(p => p.map((st, i) => i === idx ? { ...st, selected: e.target.checked } : st))}
+                      onChange={e => updateBulkStudent(s.id, { selected: e.target.checked })}
                       style={{ width: 16, height: 16 }} />
                     <div>
-                      <div style={{ fontSize: 14, fontWeight: 500 }}>{s.name}</div>
-                      <div style={{ fontSize: 11, color: "var(--text-muted)" }}>{s.grade}</div>
+                      <div style={{ fontSize: 14, fontWeight: 500 }}>{studentName(s)}</div>
+                      <div style={{ fontSize: 11, color: "var(--text-muted)" }}>{[s.studentId, s.grade].filter(Boolean).join(" · ")}</div>
                     </div>
                     <input type="number" min="0.01" step="0.01" value={s.amount}
-                      onChange={e => setBulkStudents(p => p.map((st, i) => i === idx ? { ...st, amount: e.target.value } : st))}
+                      onChange={e => updateBulkStudent(s.id, { amount: e.target.value })}
                       style={{ padding: "6px 8px", border: "1px solid var(--border)", borderRadius: 6, fontSize: 13, width: 90 }}
                       placeholder="Amount" />
                     <div style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: "var(--text-muted)" }}>
                       <input type="checkbox" checked={s.paid}
-                        onChange={e => setBulkStudents(p => p.map((st, i) => i === idx ? { ...st, paid: e.target.checked } : st))}
+                        onChange={e => updateBulkStudent(s.id, { paid: e.target.checked })}
                         style={{ width: 15, height: 15 }} />
                       Paid
                     </div>
@@ -1033,7 +1105,7 @@ export default function Fees() {
                   style={{ flex: 1, padding: "11px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", fontSize: 14 }}>Cancel</button>
                 <button type="submit" disabled={submitting}
                   style={{ flex: 2, padding: "11px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: submitting ? "not-allowed" : "pointer", opacity: submitting ? 0.7 : 1, fontWeight: 600, fontSize: 14 }}>
-                  {submitting ? "Saving..." : `Create ${bulkStudents.filter(s => s.selected).length} Invoices`}
+                  {submitting ? "Saving..." : `Create ${bulkSelectedCount} Invoices`}
                 </button>
               </div>
             </form>
@@ -1050,7 +1122,7 @@ export default function Fees() {
               <button onClick={() => setShowRecurring(false)} style={{ border: "none", background: "none", cursor: "pointer" }}><X size={20} /></button>
             </div>
             <div style={{ padding: 14, background: "#f8fafc", borderRadius: 10, marginBottom: 16, fontSize: 13, color: "var(--text-muted)" }}>
-              Will generate invoices for <strong style={{ color: "#10b981" }}>{students.filter(s => s.recurringFee).length} students</strong> with auto-recurring fees enabled. Existing invoices for this month are skipped.
+              Will generate invoices for <strong style={{ color: "#10b981" }}>{students.filter(s => s.recurringFee && !isLeftStudent(s)).length} students</strong> with auto-recurring fees enabled. Existing invoices for this month are skipped.
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 20 }}>
               <div>
@@ -1079,46 +1151,16 @@ export default function Fees() {
       )}
 
       {/* Invoice Detail Modal */}
-      {selectedInvoice && (
-        <div style={modalStyle}>
-          <div style={{ ...sheetStyle, maxWidth: isMobile ? "100%" : 480 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 20 }}>
-              <h3 style={{ fontSize: 17, fontWeight: 700 }}>Invoice Detail</h3>
-              <button onClick={() => setSelectedInvoice(null)} style={{ border: "none", background: "none", cursor: "pointer" }}><X size={20} /></button>
-            </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
-              {[
-                { label: "Student", value: selectedInvoice.studentName },
-                { label: "Period", value: `${selectedInvoice.month} ${selectedInvoice.year}` },
-                { label: "Due Date", value: selectedInvoice.dueDate || "—" },
-                { label: "Status", value: selectedInvoice.status + (needsPosting(selectedInvoice) ? " (unposted)" : "") },
-              ].map(({ label, value }) => (
-                <div key={label} style={{ padding: "10px 14px", background: "#f8fafc", borderRadius: 8 }}>
-                  <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 3 }}>{label}</div>
-                  <div style={{ fontSize: 14, fontWeight: 600 }}>{value}</div>
-                </div>
-              ))}
-            </div>
-            {selectedInvoice.lineItems && (
-              <div style={{ border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden", marginBottom: 16 }}>
-                {selectedInvoice.lineItems.map((li, i) => (
-                  <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "11px 14px", borderBottom: "1px solid var(--border)", fontSize: 14 }}>
-                    <span>{li.customDescription || li.description}</span>
-                    <span style={{ fontWeight: 600 }}>Rs. {Number(li.amount).toLocaleString()}</span>
-                  </div>
-                ))}
-                <div style={{ display: "flex", justifyContent: "space-between", padding: "12px 14px", background: "#f8fafc", fontWeight: 700, fontSize: 15 }}>
-                  <span>Total</span>
-                  <span style={{ color: "var(--primary)" }}>Rs. {Number(selectedInvoice.amount).toLocaleString()}</span>
-                </div>
-              </div>
-            )}
-            <button onClick={() => setSelectedInvoice(null)}
-              style={{ width: "100%", padding: "11px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600, fontSize: 14 }}>
-              Close
-            </button>
-          </div>
-        </div>
+      <InvoiceModal
+        invoice={selectedInvoice}
+        student={students.find(st => st.id === selectedInvoice?.studentId)}
+        figures={selectedInvoice ? invoiceFigures(selectedInvoice) : undefined}
+        onEdit={() => { if (openEdit(selectedInvoice)) setSelectedInvoice(null); }}
+        onClose={() => setSelectedInvoice(null)}
+      />
+
+      {editInvoice && (
+        <InvoiceEditModal invoice={editInvoice} branches={branches} isMobile={isMobile} onClose={() => setEditInvoice(null)} />
       )}
     </div>
   );

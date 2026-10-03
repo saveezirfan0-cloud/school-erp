@@ -15,8 +15,10 @@ import Login from "./pages/Login";
 
 const Dashboard = lazy(() => import("./pages/Dashboard"));
 const Students = lazy(() => import("./pages/Students"));
+const StudentProfile = lazy(() => import("./pages/StudentProfile"));
 const StudentLedger = lazy(() => import("./pages/StudentLedger"));
 const Employees = lazy(() => import("./pages/Employees"));
+const EmployeeProfile = lazy(() => import("./pages/EmployeeProfile"));
 const Fees = lazy(() => import("./pages/Fees"));
 const Expenses = lazy(() => import("./pages/Expenses"));
 const QuickPayment = lazy(() => import("./pages/QuickPayment"));
@@ -38,6 +40,13 @@ const ReminderLogs = lazy(() => import("./pages/ReminderLogs"));
 const Import = lazy(() => import("./pages/Import"));
 const Trash = lazy(() => import("./pages/Trash"));
 const ActivityLog = lazy(() => import("./pages/ActivityLog"));
+const Attendance = lazy(() => import("./pages/Attendance"));
+const Exams = lazy(() => import("./pages/Exams"));
+const ReportCards = lazy(() => import("./pages/ReportCards"));
+const Subjects = lazy(() => import("./pages/Subjects"));
+const Homework = lazy(() => import("./pages/Homework"));
+const Materials = lazy(() => import("./pages/Materials"));
+const StudentAcademics = lazy(() => import("./pages/StudentAcademics"));
 
 const PageLoader = () => (
   <div style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: 60 }}>
@@ -119,14 +128,59 @@ export default function App() {
                     <Students />
                   </PrivateRoute>
                 } />
+                <Route path="students/:id" element={
+                  <PrivateRoute permission="canViewStudents">
+                    <StudentProfile />
+                  </PrivateRoute>
+                } />
                 <Route path="students/:id/ledger" element={
                   <PrivateRoute permission="canViewStudents">
                     <StudentLedger />
                   </PrivateRoute>
                 } />
+                <Route path="students/:id/academics" element={
+                  <PrivateRoute permission="canViewStudents">
+                    <StudentAcademics />
+                  </PrivateRoute>
+                } />
+                <Route path="attendance" element={
+                  <PrivateRoute permission="canViewAttendance">
+                    <Attendance />
+                  </PrivateRoute>
+                } />
+                <Route path="exams" element={
+                  <PrivateRoute permission="canViewExams">
+                    <Exams />
+                  </PrivateRoute>
+                } />
+                <Route path="report-cards" element={
+                  <PrivateRoute permission="canViewExams">
+                    <ReportCards />
+                  </PrivateRoute>
+                } />
+                <Route path="subjects" element={
+                  <PrivateRoute permission="canViewLearning">
+                    <Subjects />
+                  </PrivateRoute>
+                } />
+                <Route path="homework" element={
+                  <PrivateRoute permission="canViewLearning">
+                    <Homework />
+                  </PrivateRoute>
+                } />
+                <Route path="materials" element={
+                  <PrivateRoute permission="canViewLearning">
+                    <Materials />
+                  </PrivateRoute>
+                } />
                 <Route path="employees" element={
                   <PrivateRoute permission="canViewEmployees">
                     <Employees />
+                  </PrivateRoute>
+                } />
+                <Route path="employees/:id" element={
+                  <PrivateRoute permission="canViewEmployees">
+                    <EmployeeProfile />
                   </PrivateRoute>
                 } />
                 <Route path="fees" element={

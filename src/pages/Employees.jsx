@@ -13,7 +13,9 @@ import { bulkResultMessage } from "../utils/bulk";
 import { logActivity } from "../utils/auditLog";
 import { exportToCSV, exportToPDF } from "../utils/exportUtils";
 import toast from "react-hot-toast";
-import { Plus, Trash2, X, Edit2, Download, FileText } from "lucide-react";
+import { Plus, Trash2, X, Edit2, Download, FileText, CalendarCheck } from "lucide-react";
+import { useNavigate } from "react-router-dom";
+import RollCallModal from "../components/Profile/RollCallModal";
 
 const empty = { name: "", role: "", phone: "", email: "", branchId: "", salary: "", joinDate: "", recurringPayslip: false };
 
@@ -31,6 +33,8 @@ export default function Employees() {
   const { can } = useUser();
   const { branches, activeBranch } = useBranch();
   const isMobile = useIsMobile();
+  const navigate = useNavigate();
+  const [showRollCall, setShowRollCall] = useState(false);
   const [showModal, setShowModal] = useState(false);
   const [form, setForm] = useState(empty);
   const [editing, setEditing] = useState(null);
@@ -136,6 +140,11 @@ export default function Employees() {
             {can("canExport") && <button onClick={handleCSV} style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13 }}><Download size={14} /> CSV</button>}
             {can("canExport") && <button onClick={handlePDF} style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13 }}><FileText size={14} /> PDF</button>}
           </>}
+          {can("canEditEmployees") && (
+            <button onClick={() => setShowRollCall(true)} style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13 }}>
+              <CalendarCheck size={14} /> Attendance
+            </button>
+          )}
           <button onClick={() => { setForm(empty); setEditing(null); setShowModal(true); }}
             style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 18px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600 }}>
             <Plus size={16} /> Add Employee
@@ -166,7 +175,7 @@ export default function Employees() {
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 16 }}>
         {paged.map(emp => (
-          <div key={emp.id} style={{ background: "white", borderRadius: 12, padding: 20, border: bulk.isSelected(emp.id) ? "1.5px solid var(--primary)" : "1px solid var(--border)" }}>
+          <div key={emp.id} onClick={() => navigate(`/employees/${emp.id}`)} title="Open employee profile" style={{ background: "white", borderRadius: 12, padding: 20, cursor: "pointer", border: bulk.isSelected(emp.id) ? "1.5px solid var(--primary)" : "1px solid var(--border)" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                 <RowCheckbox checked={bulk.isSelected(emp.id)} onChange={() => bulk.toggle(emp.id)} label={`Select ${emp.name}`} />
@@ -174,13 +183,13 @@ export default function Employees() {
                   {emp.name?.charAt(0)?.toUpperCase()}
                 </div>
               </div>
-              <div style={{ display: "flex", gap: 6 }}>
+              <div style={{ display: "flex", gap: 6 }} onClick={(e) => e.stopPropagation()}>
                 <button onClick={() => { setForm(emp); setEditing(emp.id); setShowModal(true); }} style={{ border: "none", background: "var(--primary-light)", color: "var(--primary)", padding: "6px 8px", borderRadius: 6, cursor: "pointer" }}><Edit2 size={13} /></button>
                 {can("canDeleteEmployees") && <button onClick={() => handleDeleteOne(emp)} style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "6px 8px", borderRadius: 6, cursor: "pointer" }}><Trash2 size={13} /></button>}
               </div>
             </div>
             <div style={{ marginTop: 12 }}>
-              <div style={{ fontWeight: 600, fontSize: 15 }}>{emp.name}</div>
+              <div style={{ fontWeight: 600, fontSize: 15, color: "var(--primary)" }}>{emp.name}</div>
               <div style={{ color: "var(--text-muted)", fontSize: 13, marginTop: 2 }}>{emp.role}</div>
               <div style={{ color: "var(--text-muted)", fontSize: 13 }}>{emp.phone}</div>
               <div style={{ marginTop: 10, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -198,6 +207,15 @@ export default function Employees() {
         page={safePage} pageCount={pageCount} total={total} pageSize={pageSize}
         onPage={setPage} onPageSize={setPageSize}
       />
+
+      {showRollCall && (
+        <RollCallModal
+          subjectType="employee" noun="employees"
+          scopeLabel={filterRole ? filterRole : "all roles in the current list"}
+          people={filtered.map((e) => ({ id: e.id, name: e.name, sub: e.role, branchId: e.branchId }))}
+          onClose={() => setShowRollCall(false)}
+        />
+      )}
 
       {/* Bulk actions bar */}
       <BulkBar
