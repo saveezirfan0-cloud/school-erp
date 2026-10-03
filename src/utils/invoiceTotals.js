@@ -40,7 +40,7 @@ export function invoicePaymentDate(inv) {
 //   collected   cash received (includes part-payments on partial invoices)
 //   concessions amount waived
 //   pending     outstanding balance on pending + partial invoices
-export function summarizeInvoices(invoices) {
+export function sumInvoices(invoices) {
   return invoices.reduce((t, inv) => {
     t.billed += num(inv.amount);
     t.collected += invoiceCollected(inv);

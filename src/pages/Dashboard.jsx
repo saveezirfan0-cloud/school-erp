@@ -4,7 +4,7 @@ import { collection, getDocs } from "../firebase";
 import { useBranch } from "../context/BranchContext";
 import { matchesBranch } from "../utils/branchFilter";
 import { toMillis } from "../utils/dates";
-import { summarizeInvoices, collectedByMonth } from "../utils/invoiceTotals";
+import { sumInvoices, collectedByMonth } from "../utils/invoiceTotals";
 import { Users, Receipt, TrendingDown, TrendingUp, UserCheck, Building2 } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line } from "recharts";
 
@@ -41,7 +41,7 @@ export default function Dashboard() {
         payslips = payslips.filter(p => matchesBranch(p, activeBranch));
 
         // Same formulas as Reports and Fees & Invoices (see utils/invoiceTotals).
-        const { collected, pending } = summarizeInvoices(fees);
+        const { collected, pending } = sumInvoices(fees);
         // Total expenses = operating expenses + payroll, matching the P&L report.
         const salaries = payslips.reduce((s, p) => s + Number(p.netPay || 0), 0);
         const totalExp = expenses.reduce((s, e) => s + Number(e.amount || 0), 0) + salaries;

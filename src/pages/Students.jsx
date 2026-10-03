@@ -7,11 +7,12 @@ import ListToolbar from "../components/UI/ListToolbar";
 import Pagination from "../components/UI/Pagination";
 import BulkBar, { RowCheckbox, HeaderCheckbox } from "../components/UI/BulkBar";
 import BulkEditModal from "../components/UI/BulkEditModal";
+import BulkAddStudentsModal from "../components/UI/BulkAddStudentsModal";
 import { bulkResultMessage } from "../utils/bulk";
 import { logActivity } from "../utils/auditLog";
 import { exportToCSV, exportToPDF } from "../utils/exportUtils";
 import toast from "react-hot-toast";
-import { Plus, Edit2, Trash2, X, Download, FileText, Receipt } from "lucide-react";
+import { Plus, Users, Edit2, Trash2, X, Download, FileText, Receipt } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 
 const emptyStudent = { name: "", studentId: "", grade: "", parentName: "", parentPhone: "", email: "", branchId: "", monthlyFee: "", address: "", dob: "", recurringFee: false };
@@ -60,6 +61,7 @@ export default function Students() {
   const bulk = useBulkSelect(filtered.map((s) => s.id));
   const pagedIds = paged.map((s) => s.id);
   const [showBulkEdit, setShowBulkEdit] = useState(false);
+  const [showBulkAdd, setShowBulkAdd] = useState(false);
   const [bulkBusy, setBulkBusy] = useState(false);
 
   React.useEffect(() => { setPage(1); }, [search, filterGrade, pageSize, activeBranch]);
@@ -140,6 +142,10 @@ export default function Students() {
             <button onClick={handleCSV} style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13 }}><Download size={14} /> CSV</button>
             <button onClick={handlePDF} style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13 }}><FileText size={14} /> PDF</button>
           </>}
+          <button onClick={() => setShowBulkAdd(true)}
+            style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 14px", background: "white", color: "var(--primary)", border: "1px solid var(--primary)", borderRadius: 8, cursor: "pointer", fontWeight: 600, fontSize: 13 }}>
+            <Users size={15} /> Bulk Add
+          </button>
           <button onClick={() => { setForm(emptyStudent); setEditing(null); setShowModal(true); }}
             style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 16px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600, fontSize: 13 }}>
             <Plus size={15} /> Add Student
@@ -172,7 +178,7 @@ export default function Students() {
       {isMobile ? (
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           {paged.map((s) => (
-            <div key={s.id} style={{ background: "white", borderRadius: 12, padding: 16, border: bulk.isSelected(s.id) ? "1.5px solid var(--primary)" : "1px solid var(--border)" }}>
+            <div key={s.id} onClick={() => navigate(`/students/${s.id}`)} style={{ background: "white", borderRadius: 12, padding: 16, cursor: "pointer", border: bulk.isSelected(s.id) ? "1.5px solid var(--primary)" : "1px solid var(--border)" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                   <RowCheckbox checked={bulk.isSelected(s.id)} onChange={() => bulk.toggle(s.id)} label={`Select ${s.name}`} />
@@ -184,7 +190,7 @@ export default function Students() {
                     <div style={{ fontSize: 12, color: "var(--text-muted)", fontFamily: "monospace" }}>{s.studentId}</div>
                   </div>
                 </div>
-                <div style={{ display: "flex", gap: 6 }}>
+                <div style={{ display: "flex", gap: 6 }} onClick={(e) => e.stopPropagation()}>
                   <button onClick={() => navigate(`/students/${s.id}/ledger`)} title="Ledger" style={{ border: "none", background: "#eff6ff", color: "#2563eb", padding: "7px 9px", borderRadius: 8, cursor: "pointer" }}><Receipt size={14} /></button>
                   <button onClick={() => { setForm(s); setEditing(s.id); setShowModal(true); }} style={{ border: "none", background: "var(--primary-light)", color: "var(--primary)", padding: "7px 9px", borderRadius: 8, cursor: "pointer" }}><Edit2 size={14} /></button>
                   <button onClick={() => handleDelete(s)} style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "7px 9px", borderRadius: 8, cursor: "pointer" }}><Trash2 size={14} /></button>
@@ -220,12 +226,13 @@ export default function Students() {
               </thead>
               <tbody>
                 {paged.map((s) => (
-                  <tr key={s.id} style={{ borderTop: "1px solid var(--border)", background: bulk.isSelected(s.id) ? "var(--primary-light)" : undefined }}>
+                  <tr key={s.id} onClick={() => navigate(`/students/${s.id}`)} title="Open student profile"
+                    style={{ borderTop: "1px solid var(--border)", cursor: "pointer", background: bulk.isSelected(s.id) ? "var(--primary-light)" : undefined }}>
                     <td style={{ padding: "11px 6px 11px 14px" }}>
                       <RowCheckbox checked={bulk.isSelected(s.id)} onChange={() => bulk.toggle(s.id)} label={`Select ${s.name}`} />
                     </td>
                     <td style={{ padding: "11px 14px", fontSize: 12, fontFamily: "monospace" }}>{s.studentId}</td>
-                    <td style={{ padding: "11px 14px", fontSize: 14, fontWeight: 500, whiteSpace: "nowrap" }}>{s.name}</td>
+                    <td style={{ padding: "11px 14px", fontSize: 14, fontWeight: 500, whiteSpace: "nowrap", color: "var(--primary)" }}>{s.name}</td>
                     <td style={{ padding: "11px 14px", fontSize: 13 }}>{s.grade}</td>
                     <td style={{ padding: "11px 14px", fontSize: 13, whiteSpace: "nowrap" }}>{s.parentName}</td>
                     <td style={{ padding: "11px 14px", fontSize: 13 }}>{s.parentPhone}</td>
@@ -236,7 +243,7 @@ export default function Students() {
                         {s.recurringFee ? "Auto" : "Manual"}
                       </span>
                     </td>
-                    <td style={{ padding: "11px 14px" }}>
+                    <td style={{ padding: "11px 14px" }} onClick={(e) => e.stopPropagation()}>
                       <div style={{ display: "flex", gap: 6 }}>
                         <button onClick={() => navigate(`/students/${s.id}/ledger`)} title="Ledger" style={{ border: "none", background: "#eff6ff", color: "#2563eb", padding: "6px 9px", borderRadius: 6, cursor: "pointer" }}><Receipt size={13} /></button>
                         <button onClick={() => { setForm(s); setEditing(s.id); setShowModal(true); }} style={{ border: "none", background: "var(--primary-light)", color: "var(--primary)", padding: "6px 9px", borderRadius: 6, cursor: "pointer" }}><Edit2 size={13} /></button>
@@ -271,6 +278,16 @@ export default function Students() {
         ]}
       />
 
+      {showBulkAdd && (
+        <BulkAddStudentsModal
+          branches={branches}
+          activeBranch={activeBranch}
+          existingIds={rows.map((s) => (s.studentId || "").trim().toLowerCase()).filter(Boolean)}
+          onClose={() => setShowBulkAdd(false)}
+          onDone={({ keepOpen } = {}) => { if (!keepOpen) setShowBulkAdd(false); }}
+        />
+      )}
+
       {/* Bulk edit modal */}
       {showBulkEdit && (
         <BulkEditModal
@@ -301,6 +318,7 @@ export default function Students() {
                   { label: "Student ID", key: "studentId", required: true },
                   { label: "Grade / Class", key: "grade" },
                   { label: "Date of Birth", key: "dob", type: "date" },
+                  { label: "Admission Date", key: "admissionDate", type: "date" },
                   { label: "Parent Name", key: "parentName" },
                   { label: "Parent Phone (+92...)", key: "parentPhone" },
                   { label: "Email", key: "email", type: "email" },

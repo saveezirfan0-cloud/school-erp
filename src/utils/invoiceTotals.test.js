@@ -1,20 +1,20 @@
-import { summarizeInvoices, collectedByMonth, invoiceCollected, invoiceOutstanding } from "./invoiceTotals";
+import { sumInvoices, collectedByMonth, invoiceCollected, invoiceOutstanding } from "./invoiceTotals";
 
 const inv = (o) => ({ amount: 0, status: "pending", ...o });
 
 describe("invoiceTotals", () => {
   test("fully paid invoice counts its paidAmount", () => {
-    const t = summarizeInvoices([inv({ amount: 4000, status: "paid", paidAmount: 4000 })]);
+    const t = sumInvoices([inv({ amount: 4000, status: "paid", paidAmount: 4000 })]);
     expect(t).toMatchObject({ billed: 4000, collected: 4000, pending: 0, concessions: 0 });
   });
 
   test("partial invoice: paid part is collected, balance is pending", () => {
-    const t = summarizeInvoices([inv({ amount: 4000, status: "partial", paidAmount: 3500 })]);
+    const t = sumInvoices([inv({ amount: 4000, status: "partial", paidAmount: 3500 })]);
     expect(t).toMatchObject({ collected: 3500, pending: 500 });
   });
 
   test("concession-closed invoice: waived amount is not collected or pending", () => {
-    const t = summarizeInvoices([inv({ amount: 4000, status: "paid", paidAmount: 2500, concessionAmount: 1500 })]);
+    const t = sumInvoices([inv({ amount: 4000, status: "paid", paidAmount: 2500, concessionAmount: 1500 })]);
     expect(t).toMatchObject({ collected: 2500, concessions: 1500, pending: 0 });
   });
 

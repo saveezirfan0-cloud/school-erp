@@ -13,7 +13,7 @@ import { logActivity } from "../utils/auditLog";
 import { sendWhatsAppMessage } from "../utils/whatsapp";
 import { recordPayment, bankCashAccounts, reverseSourcePayments, getSourcePaidTotal } from "../utils/accounting";
 import { exportToCSV, exportToPDF } from "../utils/exportUtils";
-import { summarizeInvoices } from "../utils/invoiceTotals";
+import { sumInvoices } from "../utils/invoiceTotals";
 import toast from "react-hot-toast";
 import { Plus, MessageCircle, CheckCircle, X, Trash2, Download, FileText, RefreshCw, Users, Pencil } from "lucide-react";
 
@@ -120,7 +120,7 @@ export default function Fees() {
   const totalAmount = lineItems.reduce((s, i) => s + Number(i.amount || 0), 0);
   // Same formulas as Dashboard and Reports (see utils/invoiceTotals); only the
   // scope differs — these cover the currently filtered invoices.
-  const { collected: totalCollected, pending: totalPending } = summarizeInvoices(filtered);
+  const { collected: totalCollected, pending: totalPending } = sumInvoices(filtered);
 
   const addLineItem = () => setLineItems(p => [...p, { description: "", amount: "" }]);
   const removeLineItem = (idx) => setLineItems(p => p.filter((_, i) => i !== idx));
