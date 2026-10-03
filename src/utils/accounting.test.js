@@ -327,6 +327,13 @@ describe("createInvoiceAndCollect", () => {
     expect(mockDb.invoices).toHaveLength(1);
     expect(livePayments()).toHaveLength(1);
   });
+  test("a part-paid imported invoice posts only what was received", async () => {
+    const r = await createInvoiceAndCollect({ invoiceData: data, accounts: ACCOUNTS, accountId: "a-cash", date: "2026-03-05", receivedAmount: 2000 });
+    expect(r).toMatchObject({ status: "partial", paidAmount: 2000, balance: 3000, cash: 2000 });
+    expect(nets()).toBe(2000);
+    await expect(createInvoiceAndCollect({ invoiceData: data, accounts: ACCOUNTS, accountId: "a-cash", receivedAmount: 6000 })).rejects.toMatchObject({ code: ERR.BAD_AMOUNT });
+    expect(mockDb.invoices).toHaveLength(1);
+  });
   test("a bad account is rejected BEFORE the invoice is written", async () => {
     await expect(createInvoiceAndCollect({ invoiceData: data, accounts: ACCOUNTS, accountId: "" })).rejects.toMatchObject({ code: ERR.ACCOUNT_REQUIRED });
     await expect(createInvoiceAndCollect({ invoiceData: data, accounts: [], accountId: "" })).rejects.toMatchObject({ code: ERR.NO_ACCOUNTS });

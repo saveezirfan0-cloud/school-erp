@@ -548,9 +548,16 @@ export async function collectInvoicePayment({
  * collection fails after the invoice exists, the new invoice is moved
  * back to Trash so a retry cannot create a duplicate.
  */
-export async function createInvoiceAndCollect({ invoiceData, accounts, accountId, date, allowUnposted = false, concessionNote = "" }) {
+export async function createInvoiceAndCollect({ invoiceData, accounts, accountId, date, allowUnposted = false, concessionNote = "", receivedAmount }) {
   const amt = parsePositiveAmount(invoiceData?.amount, "Invoice amount");
   if (!amt.ok) throw new AccountingError(ERR.BAD_AMOUNT, amt.error);
+  // Normally the whole invoice is received; imports of part-paid invoices pass less.
+  let received = amt;
+  if (receivedAmount !== undefined && receivedAmount !== null) {
+    received = parsePositiveAmount(receivedAmount, "Amount received");
+    if (!received.ok) throw new AccountingError(ERR.BAD_AMOUNT, received.error);
+    if (received.minor > amt.minor) throw new AccountingError(ERR.BAD_AMOUNT, "Amount received cannot exceed the invoice amount");
+  }
   const when = date || todayLocal();
   if (!isIsoDate(when)) throw new AccountingError(ERR.BAD_DATE, "Enter a valid payment date");
 
@@ -574,7 +581,7 @@ export async function createInvoiceAndCollect({ invoiceData, accounts, accountId
   const invoice = { ...base, id: ref.id, concessionAmount: 0 };
   try {
     const result = await collectInvoicePayment({
-      invoice, accounts, accountId, amount: amt.value, date: when, allowUnposted, concessionNote,
+      invoice, accounts, accountId, amount: received.value, date: when, allowUnposted, concessionNote,
     });
     return { id: ref.id, ...result };
   } catch (err) {
