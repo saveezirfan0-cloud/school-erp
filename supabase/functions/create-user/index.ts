@@ -51,9 +51,33 @@ Deno.serve(async (req) => {
       });
     }
 
-    // 3) Create the auth user + profile.
-    const { name, email, password, role, branchId, pin } = await req.json();
+    // 3) Validate input (SEC-14 / DB-15): never create an account with a
+    //    missing or unknown role. The role must be a built-in role or the id
+    //    of an existing custom role. Nobody is created as admin by omission.
+    const { name, email, password, role, branchId } = await req.json();
+    const BUILTIN = ["admin", "branch_manager", "accountant", "fee_collector"];
+    if (!email || typeof email !== "string" || !password || typeof password !== "string" || password.length < 8) {
+      return new Response(JSON.stringify({ error: "email and a password of at least 8 characters are required" }), {
+        status: 400, headers: { ...cors, "Content-Type": "application/json" },
+      });
+    }
+    if (!role || typeof role !== "string") {
+      return new Response(JSON.stringify({ error: "role is required" }), {
+        status: 400, headers: { ...cors, "Content-Type": "application/json" },
+      });
+    }
+    if (!BUILTIN.includes(role)) {
+      const { data: cr } = await admin.from("custom_roles").select("id").eq("id", role).maybeSingle();
+      if (!cr) {
+        return new Response(JSON.stringify({ error: "unknown role" }), {
+          status: 400, headers: { ...cors, "Content-Type": "application/json" },
+        });
+      }
+    }
 
+    // 4) Create the auth user, then the profile. If the profile insert
+    //    fails, delete the auth user again so no profile-less login is left
+    //    behind. (The PIN column is no longer written: PIN login was removed.)
     const { data: created, error: cErr } =
       await admin.auth.admin.createUser({
         email,
@@ -70,9 +94,11 @@ Deno.serve(async (req) => {
       email,
       role,
       branch_id: branchId || null,
-      pin: pin || null,
     });
-    if (pErr) throw pErr;
+    if (pErr) {
+      await admin.auth.admin.deleteUser(id);
+      throw pErr;
+    }
 
     return new Response(JSON.stringify({ id }), {
       status: 200, headers: { ...cors, "Content-Type": "application/json" },
