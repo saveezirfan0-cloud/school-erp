@@ -17,7 +17,17 @@ const chip = (on) => ({
 export default function PreviewModal({ makeDoc, baseOptions, landscape, onClose }) {
   const [ov, setOv] = useState({ language: baseOptions.language || "en", accounts: baseOptions.accounts !== false, outstanding: baseOptions.outstanding !== false, branchSplit: baseOptions.branchSplit !== false });
   const frame = useRef(null);
-  const html = useMemo(() => renderDocument(makeDoc(ov)), [makeDoc, ov]);
+  const html = useMemo(() => renderDocument(makeDoc(ov), { preview: true }), [makeDoc, ov]);
+  // The iframe is as tall as the whole report (the modal scrolls, not the frame),
+  // and grows again once the Urdu font or logo has loaded.
+  const [height, setHeight] = useState(null);
+  const fit = () => {
+    const d = frame.current?.contentDocument;
+    if (!d?.documentElement) return;
+    setHeight(d.documentElement.scrollHeight);
+    d.fonts?.ready?.then(() => setHeight(d.documentElement.scrollHeight)).catch(() => {});
+    d.querySelectorAll("img").forEach((img) => { if (!img.complete) img.addEventListener("load", () => setHeight(d.documentElement.scrollHeight), { once: true }); });
+  };
   const toggle = (k) => setOv((o) => ({ ...o, [k]: !o[k] }));
 
   const print = () => {
@@ -53,8 +63,8 @@ export default function PreviewModal({ makeDoc, baseOptions, landscape, onClose 
         </div>
 
         <div style={{ flex: 1, padding: 16, overflow: "auto" }}>
-          <iframe ref={frame} title="Report preview" srcDoc={html}
-            style={{ display: "block", margin: "0 auto", width: landscape ? "297mm" : "210mm", maxWidth: "100%", minHeight: "100%", height: landscape ? "210mm" : "297mm", border: "none", background: "white", boxShadow: "0 2px 12px rgba(0,0,0,0.18)" }} />
+          <iframe ref={frame} title="Report preview" srcDoc={html} onLoad={fit} scrolling="no"
+            style={{ display: "block", margin: "0 auto", width: landscape ? "297mm" : "210mm", maxWidth: "100%", minHeight: landscape ? "210mm" : "297mm", height: height || (landscape ? "210mm" : "297mm"), border: "none", background: "white", boxShadow: "0 2px 12px rgba(0,0,0,0.18)" }} />
         </div>
       </div>
     </div>,

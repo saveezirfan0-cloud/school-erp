@@ -46,14 +46,18 @@ const BASE_CSS = `
   .closed { background: #ecfdf5; border: 1px solid #a7f3d0; color: #065f46; border-radius: 8px; padding: 6px 10px; font-size: 11px; margin-bottom: 8px; }
 `;
 
-// A document is { head, body, lang, title }. renderDocument makes the full HTML;
-// the preview shows it in an iframe, "print" opens it in a window that prints
-// itself once the logo and (for Urdu) the font have loaded.
-export function renderDocument(doc, { autoPrint = false } = {}) {
+// A document is { head, body, lang, title, margin }. renderDocument makes the
+// full HTML; the preview shows it in an iframe, "print" opens it in a window that
+// prints itself once the logo and (for Urdu) the font have loaded.
+// An iframe ignores @page, so the preview pads the body by the page margin on
+// screen to match the printed page; print media keeps using @page alone.
+export function renderDocument(doc, { autoPrint = false, preview = false } = {}) {
   const rtl = isRtl(doc.lang);
+  const previewCss = preview ? `<style>@media screen { body { padding: ${doc.margin || "12mm"}; } }</style>` : "";
   return `<html dir="${rtl ? "rtl" : "ltr"}" lang="${doc.lang === "en" ? "en" : "ur"}"><head><meta charset="utf-8"><title>${esc(doc.title)}</title>
   ${doc.lang === "en" ? "" : FONT_LINK}
   ${doc.head}
+  ${previewCss}
   </head><body class="${esc(doc.lang)}">${doc.body}
   ${autoPrint ? `<script>window.onload = function () {
     var go = function () { window.focus(); window.print(); };
@@ -145,7 +149,7 @@ export function monthlyDocument(s, { orgName = "Zohra Majeed Islamic Institute",
   ${accounts}
   <div class="foot">${bdi(tr(lang, "generated"))} ${esc(new Date().toLocaleDateString("en-GB"))} — ZMI School Management System</div>`;
   const title = single ? `Haji Sahab Report — ${monthName(s.month)} ${s.year}` : `Haji Sahab Report — ${rangeLabel(s.from, s.to)}`;
-  return { head, body, lang, title };
+  return { head, body, lang, title, margin: "12mm" };
 }
 
 export const printMonthlyStatement = (s, opts) => printDocument(monthlyDocument(s, opts));
@@ -175,7 +179,7 @@ export function yearDocument(table, year, { orgName = "Zohra Majeed Islamic Inst
     <tr class="g"><td>${bdi(tr(lang, "closing"))}</td>${numCells(table.closing)}<td></td></tr>
   </table>
   <div class="foot">${bdi(tr(lang, "generated"))} ${esc(new Date().toLocaleDateString("en-GB"))} — ZMI School Management System</div>`;
-  return { head, body, lang, title: `Haji Sahab Report — ${year}` };
+  return { head, body, lang, title: `Haji Sahab Report — ${year}`, margin: "10mm" };
 }
 
 export const printYearStatement = (table, year, opts) => printDocument(yearDocument(table, year, opts));
