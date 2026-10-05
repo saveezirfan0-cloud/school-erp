@@ -48,7 +48,9 @@ jest.mock("../context/UserContext", () => ({ useUser: () => ({ can: (k) => !!moc
 jest.mock("../components/AcademicsWidget", () => () => null);
 jest.mock("recharts", () => {
   const Stub = ({ children }) => <div>{children}</div>;
-  return new Proxy({}, { get: () => Stub });
+  // The bar chart exposes its onClick as a button so a chart click can be simulated.
+  const Bar = ({ onClick }) => <button data-testid="bar-chart" onClick={() => onClick({ activePayload: [{ payload: { key: "2026-10-02", label: "2 Oct" } }] })}>bar</button>;
+  return new Proxy({}, { get: (_t, name) => (name === "BarChart" ? Bar : Stub) });
 });
 
 // eslint-disable-next-line import/first
@@ -103,5 +105,19 @@ test("CSV export in popups is hidden without canExport", async () => {
   expect(dialog).toBeTruthy();
   expect([...dialog.querySelectorAll("button")].some(b => b.textContent.includes("CSV"))).toBe(false);
   mockCan.canExport = true;
+  await act(async () => { root.unmount(); });
+});
+
+test("clicking a chart day opens the entries behind that day", async () => {
+  const { el, root } = await mount();
+  await act(async () => { el.querySelector('[data-testid="bar-chart"]').dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+  const dialog = el.querySelector('[role="dialog"]');
+  expect(dialog).toBeTruthy();
+  expect(dialog.textContent).toContain("Activity on 2 Oct 2026");
+  // 2 Oct: Sara's cash received 3,000 and the 1,000 Utilities expense; nothing else
+  expect(dialog.textContent).toContain("Rs. 3,000");
+  expect(dialog.textContent).toContain("Utilities");
+  expect(dialog.textContent).toContain("2 records");
+  expect(dialog.textContent).not.toContain("Donation");
   await act(async () => { root.unmount(); });
 });

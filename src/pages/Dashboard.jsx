@@ -7,7 +7,7 @@ import { effectiveBranchId, matchesBranch } from "../utils/branchFilter";
 import { toMillis } from "../utils/dates";
 import { studentName } from "../utils/studentLabel";
 import { useNavigate, Link } from "react-router-dom";
-import { buildBuckets, bucketKey, defaultPeriod, resolveRange, describePeriod } from "../utils/dateRange";
+import { buildBuckets, bucketKey, defaultPeriod, resolveRange, describePeriod, MONTH_NAMES } from "../utils/dateRange";
 import {
   profitAndLoss, invoiceFacts, invoiceDate, invoicePaidDate, expenseDate, payslipPaidDate, payslipAmount,
   inRange, isLive, num, round2, todayLocal, toYmd,
@@ -29,6 +29,9 @@ const loadPeriod = () => {
 };
 
 const rs = (n) => `Rs. ${Number(n || 0).toLocaleString()}`;
+// "2026-08-22" -> "22 Aug 2026", "2026-08" -> "Aug 2026"
+const fmtDay = (ymd) => { const [y, m, d] = String(ymd || "").split("-").map(Number); return y ? `${d} ${MONTH_NAMES[m - 1]} ${y}` : ""; };
+const fmtMonth = (ym) => { const [y, m] = String(ym || "").split("-").map(Number); return y ? `${MONTH_NAMES[m - 1]} ${y}` : ""; };
 
 const COLLECTIONS = ["students", "employees", "invoices", "expenses", "payslips", "payments"];
 
@@ -38,6 +41,7 @@ export default function Dashboard() {
   const navigate = useNavigate();
   const [period, setPeriod] = useState(loadPeriod);
   const [detail, setDetail] = useState(null); // key of the open popup
+  const [bucket, setBucket] = useState(null); // chart day / month behind the "bucket" popup
   const { data, loading, capped, errors } = useReportData(COLLECTIONS);
 
   useEffect(() => {
@@ -134,17 +138,36 @@ export default function Dashboard() {
     };
   }), [money, base, branches, range, today]);
 
+  // Every dated money movement in scope, signed (+ in, − out). The Net popup
+  // lists all of them; a chart click lists the ones in that day / month. Both
+  // the chart totals and these rows come from the same `scope` lists.
+  const entries = useMemo(() => [
+    ...scope.collected.map(r => ({ id: `f-${r.id}`, _branch: r._branch, date: r._paidOn, type: "Fee", details: `${r.studentName || "—"} · ${r.month || ""} ${r.year || ""}`.trim(), signed: r._f.paid, studentId: r.studentId })),
+    ...scope.otherIncome.map(r => ({ id: `o-${r.id}`, _branch: r._branch, date: r._on, type: "Income", details: r.description || r.category || "—", signed: r._amount })),
+    ...scope.expenses.map(r => ({ id: `e-${r.id}`, _branch: r._branch, date: r._on, type: r.category === "Salaries" ? "Salary" : "Expense", details: r.description || r.category || "—", signed: -r._amount })),
+  ].sort((a, b) => (b.date || "").localeCompare(a.date || "")), [scope]);
+
   // Timeline: fees vs expenses per day (short ranges) or per month.
-  const chartData = useMemo(() => {
-    const dates = [...scope.collected.map(r => r._paidOn), ...scope.otherIncome.map(r => r._on), ...scope.expenses.map(r => r._on)].filter(Boolean).sort();
+  const { chartData, chartUnit } = useMemo(() => {
+    const dates = entries.map(r => r.date).filter(Boolean).sort();
     const { unit, buckets } = buildBuckets(range, { from: dates[0], to: dates[dates.length - 1] });
     const rows = buckets.map(b => ({ ...b, income: 0, expenses: 0 }));
     const idx = new Map(rows.map((r, i) => [r.key, i]));
-    scope.collected.forEach(r => { const i = idx.get(bucketKey(unit, r._paidOn)); if (i != null) rows[i].income += r._f.paid; });
-    scope.otherIncome.forEach(r => { const i = idx.get(bucketKey(unit, r._on)); if (i != null) rows[i].income += r._amount; });
-    scope.expenses.forEach(r => { const i = idx.get(bucketKey(unit, r._on)); if (i != null) rows[i].expenses += r._amount; });
-    return rows;
-  }, [scope, range]);
+    entries.forEach(r => {
+      const i = idx.get(bucketKey(unit, r.date));
+      if (i == null) return;
+      if (r.signed >= 0) rows[i].income += r.signed; else rows[i].expenses -= r.signed;
+    });
+    return { chartData: rows, chartUnit: unit };
+  }, [entries, range]);
+
+  // Click a bar / point: open the entries behind that day's (or month's) figures.
+  const openBucket = (state) => {
+    const row = state && state.activePayload && state.activePayload[0] && state.activePayload[0].payload;
+    if (!row) return;
+    setBucket({ key: row.key, label: row.label });
+    setDetail("bucket");
+  };
 
   const recentInvoices = [...scope.cohort].sort((a, b) => toMillis(b.createdAt) - toMillis(a.createdAt)).slice(0, 6);
 
@@ -176,6 +199,15 @@ export default function Dashboard() {
   const totalFoot = (label, value) => <strong style={{ color: "var(--text)" }}>{label}: {rs(value)}</strong>;
   const byOutstanding = (a, b) => b._f.outstanding - a._f.outstanding;
   const outstandingRows = (list) => [...list].sort(byOutstanding).map(r => ({ ...r, _out: r._f.outstanding, onClick: openStudent(r.studentId) }));
+
+  const withStudentLink = (r) => ({ ...r, onClick: openStudent(r.studentId) });
+  const netColumns = [
+    { key: "date", label: "Date" },
+    { key: "type", label: "Type" },
+    { key: "details", label: "Details" },
+    branchCol,
+    { key: "signed", label: "Amount", align: "right", text: r => r.signed, render: r => <strong style={{ color: r.signed >= 0 ? "#10b981" : "#ef4444" }}>{r.signed >= 0 ? "+" : "−"}{rs(Math.abs(r.signed))}</strong> },
+  ];
 
   const details = {
     students: {
@@ -251,19 +283,29 @@ export default function Dashboard() {
         { label: "Expenses & salaries paid", value: rs(totalExp), color: "#ef4444" },
         { label: netSurplus >= 0 ? "Net surplus" : "Net deficit", value: rs(Math.abs(netSurplus)), color: netSurplus >= 0 ? "#10b981" : "#ef4444" },
       ],
-      columns: [
-        { key: "date", label: "Date" },
-        { key: "type", label: "Type" },
-        { key: "details", label: "Details" },
-        branchCol,
-        { key: "signed", label: "Amount", align: "right", text: r => r.signed, render: r => <strong style={{ color: r.signed >= 0 ? "#10b981" : "#ef4444" }}>{r.signed >= 0 ? "+" : "−"}{rs(Math.abs(r.signed))}</strong> },
-      ],
-      rows: [
-        ...scope.collected.map(r => ({ id: `f-${r.id}`, _branch: r._branch, date: r._paidOn, type: "Fee", details: `${r.studentName || "—"} · ${r.month || ""} ${r.year || ""}`.trim(), signed: r._f.paid, onClick: openStudent(r.studentId) })),
-        ...scope.otherIncome.map(r => ({ id: `o-${r.id}`, _branch: r._branch, date: r._on, type: "Income", details: r.description || r.category || "—", signed: r._amount })),
-        ...scope.expenses.map(r => ({ id: `e-${r.id}`, _branch: r._branch, date: r._on, type: r.category === "Salaries" ? "Salary" : "Expense", details: r.description || r.category || "—", signed: -r._amount })),
-      ].sort((a, b) => (b.date || "").localeCompare(a.date || "")),
+      columns: netColumns,
+      rows: entries.map(withStudentLink),
     },
+    // A chart click: the same signed entries, limited to the clicked day / month,
+    // so income + expenses here equal the bar / point that was clicked.
+    bucket: (() => {
+      const rows = bucket ? entries.filter(r => bucketKey(chartUnit, r.date) === bucket.key) : [];
+      const inc = round2(rows.filter(r => r.signed > 0).reduce((t, r) => t + r.signed, 0));
+      const exp = round2(rows.filter(r => r.signed < 0).reduce((t, r) => t - r.signed, 0));
+      const net = round2(inc - exp);
+      const sub = chartUnit === "day" ? bucket?.key : bucket?.label;
+      return {
+        title: chartUnit === "day" ? `Activity on ${fmtDay(bucket?.key)}` : `Activity in ${fmtMonth(bucket?.key)}`,
+        subtitle: `${scopeTitle} · ${sub || ""} · fees received, other income, expenses and salaries paid`,
+        summary: [
+          { label: "Income", value: rs(inc), color: "#10b981" },
+          { label: "Expenses", value: rs(exp), color: "#ef4444" },
+          { label: net >= 0 ? "Net surplus" : "Net deficit", value: rs(Math.abs(net)), color: net >= 0 ? "#10b981" : "#ef4444" },
+        ],
+        columns: netColumns,
+        rows: rows.map(withStudentLink),
+      };
+    })(),
     // Collection rate = cash received / (billed - concessions) over the
     // invoices billed in the period (same cohort as the Fee Collection report).
     rate: {
@@ -403,11 +445,12 @@ export default function Dashboard() {
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: 16, marginBottom: 20 }}>
         <div style={{ background: "white", borderRadius: 12, padding: "20px 16px", border: "1px solid var(--border)" }}>
-          <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 16 }}>Income vs Expenses</h3>
+          <h3 style={{ fontSize: 14, fontWeight: 600 }}>Income vs Expenses</h3>
+          <p style={{ fontSize: 11, color: "var(--text-muted)", margin: "2px 0 12px" }}>Click a {chartUnit === "day" ? "day" : "month"} to see the entries behind it</p>
           <div style={{ overflowX: "auto" }}>
             <div style={{ minWidth: 300 }}>
               <ResponsiveContainer width="100%" height={220}>
-                <BarChart data={chartData} margin={{ left: -10 }}>
+                <BarChart data={chartData} margin={{ left: -10 }} onClick={openBucket} style={{ cursor: "pointer" }}>
                   <XAxis dataKey="label" tick={{ fontSize: 11 }} />
                   <YAxis tick={{ fontSize: 11 }} tickFormatter={axisFmt} />
                   <Tooltip formatter={v => rs(v)} />
@@ -419,11 +462,12 @@ export default function Dashboard() {
           </div>
         </div>
         <div style={{ background: "white", borderRadius: 12, padding: "20px 16px", border: "1px solid var(--border)" }}>
-          <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 16 }}>Cash Flow Trend</h3>
+          <h3 style={{ fontSize: 14, fontWeight: 600 }}>Cash Flow Trend</h3>
+          <p style={{ fontSize: 11, color: "var(--text-muted)", margin: "2px 0 12px" }}>Click a {chartUnit === "day" ? "day" : "month"} to see the entries behind it</p>
           <div style={{ overflowX: "auto" }}>
             <div style={{ minWidth: 300 }}>
               <ResponsiveContainer width="100%" height={220}>
-                <LineChart data={chartData} margin={{ left: -10 }}>
+                <LineChart data={chartData} margin={{ left: -10 }} onClick={openBucket} style={{ cursor: "pointer" }}>
                   <XAxis dataKey="label" tick={{ fontSize: 11 }} />
                   <YAxis tick={{ fontSize: 11 }} tickFormatter={axisFmt} />
                   <Tooltip formatter={v => rs(v)} />
