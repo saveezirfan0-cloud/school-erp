@@ -38,9 +38,9 @@ const raw = {
     { id: "a3", code: "2000", name: "Loan", type: "Liabilities", balance: 700 },
   ],
   payments: [
-    { id: "x1", type: "cash_in", account: "Cash", amount: 1000, category: "Fee Collection", date: "2026-01-10", branchId: "b1" },
+    { id: "x1", type: "cash_in", source: "invoice", account: "Cash", amount: 1000, category: "Fee Collection", date: "2026-01-10", branchId: "b1" },
     { id: "x2", type: "cash_out", account: "Cash", amount: 300, category: "Utilities", date: "2026-01-15", branchId: "b1" },
-    { id: "x3", type: "cash_in", account: "Bank", amount: 400, category: "Fee Collection", date: "2026-02-20", branchId: "b1" },
+    { id: "x3", type: "cash_in", source: "invoice", account: "Bank", amount: 400, category: "Fee Collection", date: "2026-02-20", branchId: "b1" },
     // posted then reversed: both must drop out
     { id: "x4", type: "cash_in", account: "Cash", amount: 999, category: "Fee Collection", date: "2026-02-21", reversed: true },
     { id: "x5", type: "cash_out", account: "Cash", amount: 999, category: "Fee Collection (reversal)", date: "2026-02-22", reversalOf: "x4" },
@@ -462,4 +462,41 @@ describe("class view", () => {
 test("buildSummaryText lays out title, scope, lines and highlights", () => {
   const t = buildSummaryText({ title: "P&L report", scope: "All · 2026", lines: [["Income", "Rs. 5"]], highlights: [{ text: "Up 5%." }] });
   expect(t).toBe("P&L report\nAll · 2026\n\nIncome: Rs. 5\n\nHighlights:\n- Up 5%.\n\nGenerated from ZMI School ERP");
+});
+
+describe("ledger income (workbook imports, welfare, donations)", () => {
+  const ledger = prepareData({
+    invoices: [{ id: "i1", studentId: "s1", amount: 1000, paidAmount: 1000, status: "paid", paidDate: "2026-02-05", month: "February", year: 2026, branchId: "b1" }],
+    payments: [
+      // receipt of the invoice above: counted through the invoice, never again
+      { id: "r1", type: "cash_in", source: "invoice", sourceId: "i1", amount: 1000, category: "Fee Collection", date: "2026-02-05", branchId: "b1" },
+      { id: "l1", type: "cash_in", amount: 500, category: "Baneen Fees", date: "2026-02-10", branchId: "b1" },
+      { id: "l2", type: "cash_in", amount: 300, category: "Welfare", date: "2026-02-12", branchId: "" },
+      { id: "l3", type: "cash_in", amount: 900, category: "Bank Deposit", date: "2026-02-13" },          // transfer
+      { id: "l4", type: "cash_in", amount: 800, category: "Welfare", date: "2026-02-14", reversed: true }, // reversed
+      { id: "l5", type: "cash_out", amount: 700, category: "Utilities", date: "2026-02-15" },              // not income
+      { id: "l6", type: "cash_in", amount: 200, category: "Welfare", date: "2026-03-05", branchId: "" },   // outside Feb
+    ],
+  });
+
+  test("adds ledger receipts to income without counting invoice receipts twice", () => {
+    const f = computeFinancials(ledger, { range: FEB, branch: "all" });
+    expect(f.collected).toBe(1000);
+    expect(f.otherIncome).toBe(800);
+    expect(f.income).toBe(1800);
+    expect(f.net).toBe(1800);
+    expect(Object.fromEntries(f.byHead.map(h => [h.label, h.amount]))).toEqual({ Fees: 1000, "Baneen Fees": 500, Welfare: 300 });
+  });
+
+  test("respects the branch filter and the accrual basis", () => {
+    expect(computeFinancials(ledger, { range: FEB, branch: "b1" }).otherIncome).toBe(500);
+    expect(computeFinancials(ledger, { range: FEB, branch: "main" }).otherIncome).toBe(300);
+    const acc = computeFinancials(ledger, { range: FEB, branch: "all", basis: "accrual" });
+    expect(acc.income).toBe(1000 + 800); // billed 1,000 + ledger receipts
+  });
+
+  test("the series puts ledger income in the right bucket", () => {
+    const { buckets } = buildSeries(ledger, { range: JAN_FEB, branch: "all", granularity: "month" });
+    expect(buckets.map(b => b.income)).toEqual([0, 1800]);
+  });
 });

@@ -367,12 +367,14 @@ function plLines(cur, prev, detail) {
   if (cur.basis === "accrual") {
     line("Fees billed (face value)", cur.billed, prev?.billed);
     line("Concessions (waived, not income)", cur.concessions, prev?.concessions, { color: AMBER, goodWhen: "down" });
-    line("Fee revenue (billed less concessions)", cur.income, prev?.income, { color: GREEN });
+    line("Fee revenue (billed less concessions)", cur.income - cur.otherIncome, prev ? prev.income - prev.otherIncome : null, { color: GREEN });
+    line("Other income (ledger receipts: welfare, donations, imported months)", cur.otherIncome, prev?.otherIncome, { color: GREEN });
     subs("byHead");
     line("Cash received in period", cur.collected, prev?.collected, { muted: true });
   } else {
     line("Total billed (face value)", cur.billed, prev?.billed, { muted: true });
     line("Fee collections (received)", cur.collected, prev?.collected, { color: GREEN });
+    line("Other income (ledger receipts: welfare, donations, imported months)", cur.otherIncome, prev?.otherIncome, { color: GREEN });
     subs("byHead");
     line("Concessions (waived, not income)", cur.concessions, prev?.concessions, { color: AMBER, goodWhen: "down" });
   }
