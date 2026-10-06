@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { useUser } from "../context/UserContext";
-import { serverTimestamp, updateDocs } from "../firebase";
+import { serverTimestamp, updateDocs, isHistoryVisible } from "../firebase";
 import { useBranch } from "../context/BranchContext";
 import { useCollection } from "../hooks/useCollection";
 import { useBulkSelect } from "../hooks/useBulkSelect";
@@ -222,6 +222,12 @@ export default function Payments() {
   const clearFilters = () => { setSearch(""); setFilterType(""); setFilterCategory(""); setFilterDateFrom(""); setFilterDateTo(""); };
   const hasFilters = search || filterType || filterCategory || filterDateFrom || filterDateTo;
 
+  // Imported (Manager.io / workbook) rows are hidden while History is off, so an
+  // empty result for an older date range usually means they are filtered out.
+  const emptyHint = !isHistoryVisible() && (
+    <div style={{ fontSize: 12, marginTop: 8 }}>Imported historical payments are hidden while History is off. Turn on <strong>History</strong> in the top bar to include them.</div>
+  );
+
   const modalStyle = {
     position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)",
     display: "flex", alignItems: isMobile ? "flex-end" : "center",
@@ -313,7 +319,7 @@ export default function Payments() {
               </div>
             </div>
           ))}
-          {total === 0 && <div style={{ padding: 40, textAlign: "center", color: "var(--text-muted)", background: "white", borderRadius: 12 }}>No payments found</div>}
+          {total === 0 && <div style={{ padding: 40, textAlign: "center", color: "var(--text-muted)", background: "white", borderRadius: 12 }}>No payments found{emptyHint}</div>}
         </div>
       ) : (
         /* Desktop table */
@@ -363,7 +369,7 @@ export default function Payments() {
               </tbody>
             </table>
           </div>
-          {total === 0 && <div style={{ padding: 40, textAlign: "center", color: "var(--text-muted)" }}>No payments found</div>}
+          {total === 0 && <div style={{ padding: 40, textAlign: "center", color: "var(--text-muted)" }}>No payments found{emptyHint}</div>}
         </div>
       )}
 
