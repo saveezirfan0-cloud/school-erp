@@ -509,6 +509,27 @@ export async function upsertDocs(name, rows, onConflict) {
   return rows.length;
 }
 
+// A payment's auto-posted fee/salary journal (extra.source "payment",
+// sourceId = payment id) mirrors that payment, so it goes to Trash with it.
+// Left behind it would be posted on its own and, once the accounts it names
+// change, show up in the Books Check as an unpostable entry. Best effort: the
+// payment itself is already trashed, so a failure here is only logged.
+async function trashPaymentJournals(ids) {
+  const list = [].concat(ids).filter(Boolean);
+  if (!list.length) return;
+  try {
+    const { error } = await supabase
+      .from("journals")
+      .update({ deleted_at: new Date().toISOString() })
+      .eq("extra->>source", "payment")
+      .in("extra->>sourceId", list)
+      .is("deleted_at", null);
+    if (error) throw error;
+  } catch (err) {
+    console.warn("Could not move journal entries of deleted payments to Trash:", err);
+  }
+}
+
 export async function deleteDoc(ref) {
   // Soft-delete tables: move to Trash by stamping deleted_at.
   // Other tables (users, etc.): hard delete as before.
@@ -520,6 +541,7 @@ export async function deleteDoc(ref) {
       .select("id");
     if (error) throw error;
     if (!data || data.length === 0) throw noRowsError("deleteDoc");
+    if (ref.table === "payments") await trashPaymentJournals(ref.id);
     return;
   }
   const { data, error } = await supabase.from(ref.table).delete().eq("id", ref.id).select("id");
@@ -665,6 +687,7 @@ export async function deleteDocs(name, ids) {
       : supabase.from(table).delete().in("id", part);
     const { data: done, error } = await q.select("id");
     if (error) throw error;
+    if (table === "payments") await trashPaymentJournals((done || []).map((r) => r.id));
     return (done || []).length;
   });
 }

@@ -17,6 +17,24 @@ const ACCOUNT_TYPES = [
 
 const empty = { code: "", name: "", type: "", subType: "", description: "", balance: "0" };
 
+// Live journal entries that reference an account, by id (stable across renames)
+// or by name (legacy entries). A failed lookup counts as none, like the
+// payments check beside it.
+async function countJournalsUsing(acc) {
+  if (!acc) return 0;
+  const count = (build) => build(supabase.from("journals").select("id", { count: "exact", head: true }).is("deleted_at", null))
+    .then(({ count: n, error }) => (error ? 0 : n || 0), () => 0);
+  const name = String(acc.name || "");
+  const [drId, crId, drName, crName] = await Promise.all([
+    count((q) => q.eq("extra->>debitAccountId", acc.id)),
+    count((q) => q.eq("extra->>creditAccountId", acc.id)),
+    name ? count((q) => q.eq("debit_account", name)) : 0,
+    name ? count((q) => q.eq("credit_account", name)) : 0,
+  ]);
+  // An entry usually matches by both id and name; take the larger view, not the sum.
+  return Math.max(drId + crId, drName + crName);
+}
+
 export default function ChartOfAccounts() {
   const [accounts, setAccounts] = useState([]);
   const [showModal, setShowModal] = useState(false);
@@ -117,6 +135,10 @@ export default function ChartOfAccounts() {
       if (!error) used = count;
     } catch { /* fall through to the plain confirm */ }
     if (used > 0) return toast.error(`"${acc?.name}" has ${used} transaction${used === 1 ? "" : "s"} and cannot be deleted. Transfer or reverse them first.`);
+    // Journals point at accounts too (fee income and expense accounts never
+    // appear on a payment). Deleting one would leave those entries unpostable.
+    const journals = await countJournalsUsing(acc);
+    if (journals > 0) return toast.error(`"${acc?.name}" is used by ${journals} journal entr${journals === 1 ? "y" : "ies"} and cannot be deleted. Move those entries to Trash or re-point them first.`);
     if (!window.confirm("Delete this account? You can restore it from Trash.")) return;
     try {
       await deleteDoc(doc(db, "accounts", id));
