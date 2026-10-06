@@ -522,3 +522,33 @@ describe("onSnapshot", () => {
     expect(mock.channels[0].removed).toBe(true);
   });
 });
+
+describe("deleting payments", () => {
+  test("deleteDoc moves the payment's auto-posted journals to Trash too", async () => {
+    const mock = useBackend((rec) => ({ data: rec.table === "payments" ? [{ id: "p1" }] : null, error: null }));
+    await deleteDoc(doc(db, "payments", "p1"));
+    expect(mock.calls.map((r) => r.table)).toEqual(["payments", "journals"]);
+    const j = mock.calls[1];
+    expect(firstArgs(j, "update")[0].deleted_at).toEqual(expect.any(String));
+    expect(firstArgs(j, "eq")).toEqual(["extra->>source", "payment"]);
+    expect(firstArgs(j, "in")).toEqual(["extra->>sourceId", ["p1"]]);
+  });
+
+  test("a journal clean-up failure does not fail the delete", async () => {
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    useBackend((rec) => (rec.table === "payments" ? { data: [{ id: "p1" }], error: null } : { data: null, error: new Error("denied") }));
+    await expect(deleteDoc(doc(db, "payments", "p1"))).resolves.toBeUndefined();
+    warn.mockRestore();
+  });
+
+  test("deleteDocs trashes journals only for payments that were really deleted", async () => {
+    const mock = useBackend((rec) => (rec.table === "payments"
+      ? { data: firstArgs(rec, "in")[1].slice(0, 1).map((id) => ({ id })), error: null }
+      : { data: null, error: null }));
+    expect(await deleteDocs("payments", ["a", "b"])).toBe(1);
+    expect(firstArgs(mock.calls[1], "in")[1]).toEqual(["a"]);
+    // other tables never touch journals
+    await deleteDocs("invoices", ["x"]);
+    expect(mock.calls.slice(2).every((r) => r.table === "invoices")).toBe(true);
+  });
+});
