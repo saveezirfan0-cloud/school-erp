@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { useBranch } from "../context/BranchContext";
 import { useUser } from "../context/UserContext";
 import { useReportData } from "../hooks/useReportData";
+import { isHistoryVisible } from "../firebase";
 import { DataWarnings } from "../components/ReportControls";
 import { effectiveBranchId, matchesBranch } from "../utils/branchFilter";
 import { toMillis } from "../utils/dates";
@@ -369,6 +370,11 @@ export default function Dashboard() {
         The period applies to collected, expenses, collection rate and the charts. Pending and overdue are balances as of today.
       </p>
       <DataWarnings capped={capped} errors={errors} />
+      {!isHistoryVisible() && (
+        <p style={{ fontSize: 12, color: "var(--text-muted)", margin: "-6px 0 14px" }}>
+          Imported historical records (e.g. the Manager.io and workbook months) are hidden, so older periods can look empty. Turn on <strong>History</strong> in the top bar to include them.
+        </p>
+      )}
 
       {pl.unverifiedAllTime > 0 && can("canViewReports") && (
         <div style={{ display: "flex", gap: 10, alignItems: "flex-start", padding: "10px 14px", marginBottom: 14, borderRadius: 10, background: "#fffbeb", border: "1px solid #fcd34d", color: "#92400e", fontSize: 13 }}>

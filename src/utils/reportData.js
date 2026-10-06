@@ -30,6 +30,9 @@ import { invoiceDate, invoicePaidDate, expenseDate, payslipPaidDate, payslipPeri
 // Matches a payment to a chart account by id (survives renames), else by name.
 // Same rule as reporting.attributePayments.
 import { paymentInAccount } from "./paymentAccount";
+// Income recorded straight in the payments ledger (imported workbook months,
+// welfare, donations...). The Dashboard reads it through the same rule.
+import { isLedgerIncome } from "./ledgerIncome";
 
 export const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 const MONTH_SHORT = MONTH_NAMES.map(m => m.slice(0, 3));
@@ -434,11 +437,21 @@ export function computeFinancials(d, { range, branch = "all", basis = "cash" }) 
     }
   }
 
+  // Ledger income: cash_in receipts that are NOT the receipt side of an invoice,
+  // expense or payslip (those are already counted above), reversals or transfers.
+  // It is cash received, so it is dated by payment date on both bases.
+  let otherIncome = 0;
+  for (const p of d.payments || []) {
+    if (!isLedgerIncome(p) || p._amount <= 0 || !matchesBranch(p, branch) || !inRange(p._on, range)) continue;
+    otherIncome += p._amount;
+    tally(heads, uncategorised(p.category, "Other income"), p._amount);
+  }
+
   const totalExpenses = opex + payroll;
-  const income = accrual ? earned : collected;
+  const income = (accrual ? earned : collected) + otherIncome;
   const net = income - totalExpenses;
   return {
-    basis, billed, collected, concessions, pending, income,
+    basis, billed, collected, concessions, pending, income, otherIncome,
     unverified, unverifiedCount, unverifiedAllTime, unverifiedAllTimeCount, undated,
     opex, payroll, payrollUnpaid, totalExpenses, net,
     margin: income > 0 ? net / income : null,
@@ -465,6 +478,7 @@ export function buildSeries(d, { range, branch = "all", granularity, basis = "ca
     if (basis === "accrual") add(i._billedOn, "income", Math.max(0, i._amount - i._concession));
     else if (i._paid > 0) add(i._collectedOn, "income", i._paid);
   }
+  for (const p of d.payments || []) if (isLedgerIncome(p) && p._amount > 0 && matchesBranch(p, branch)) add(p._on, "income", p._amount);
   for (const e of d.expenses) if (matchesBranch(e, branch)) add(e._on, "expenses", e._amount);
   for (const p of d.payslips) if (p._isPaid && matchesBranch(p, branch)) add(p._on, "payroll", p._amount);
   for (const b of buckets) { b.outflow = b.expenses + b.payroll; b.net = b.income - b.outflow; }

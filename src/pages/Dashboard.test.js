@@ -40,6 +40,7 @@ jest.mock("../firebase", () => ({
   db: {},
   collection: (_db, name) => ({ name }),
   getDocs: async (ref) => ({ size: mockTables[ref.name].length, docs: mockTables[ref.name].map(({ id, ...rest }) => ({ id, data: () => rest })) }),
+  isHistoryVisible: () => false,
 }));
 jest.mock("../context/BranchContext", () => ({
   useBranch: () => ({ activeBranch: "all", setActiveBranch: () => {}, branches: [{ id: "b1", name: "North Campus" }] }),
