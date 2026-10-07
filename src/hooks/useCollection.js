@@ -105,6 +105,9 @@ export function useCollection(name, {
 
       for (const [key, val] of Object.entries(flt)) {
         if (isBlank(val)) continue;
+        // keys with a custom predicate (e.g. dateFrom/dateTo) are not row fields;
+        // they are judged by that predicate below, never by equality.
+        if (typeof fns[key] === "function") continue;
         if (Array.isArray(val)) {
           if (val.length === 0) continue;
           if (!val.some((v) => String(v) === String(row[key] ?? ""))) return false;
