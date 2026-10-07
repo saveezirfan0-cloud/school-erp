@@ -278,14 +278,14 @@ export default function Payments() {
         ]}
         active={hasFilters}
         onClear={clearFilters}
-        rightSlot={!isMobile ? (
+        rightSlot={(
           <>
-            <input type="date" value={filterDateFrom} onChange={e => setFilterDateFrom(e.target.value)} title="From date"
-              style={{ padding: "8px 10px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 13 }} />
-            <input type="date" value={filterDateTo} onChange={e => setFilterDateTo(e.target.value)} title="To date"
-              style={{ padding: "8px 10px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 13 }} />
+            <input type="date" value={filterDateFrom} onChange={e => setFilterDateFrom(e.target.value)} title="From date" aria-label="From date"
+              style={{ padding: "8px 10px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 13, flex: isMobile ? "1 1 140px" : undefined }} />
+            <input type="date" value={filterDateTo} onChange={e => setFilterDateTo(e.target.value)} title="To date" aria-label="To date"
+              style={{ padding: "8px 10px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 13, flex: isMobile ? "1 1 140px" : undefined }} />
           </>
-        ) : null}
+        )}
       />
 
       {/* Mobile cards */}
