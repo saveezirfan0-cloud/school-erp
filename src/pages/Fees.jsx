@@ -27,6 +27,7 @@ import ExportMenu from "../components/UI/ExportMenu";
 import DocumentViewer from "../components/UI/DocumentViewer";
 import { buildInvoiceDoc, buildReceiptDoc, downloadDocsPDF } from "../utils/documents";
 import { summarizeInvoices, invoiceFacts } from "../utils/reporting";
+import { monthRange, periodLabel, periodKey, periodsAlreadyInvoiced, MAX_PERIODS } from "../utils/billingPeriods";
 import InvoiceModal from "../components/UI/InvoiceModal";
 import toast from "react-hot-toast";
 import { Plus, MessageCircle, CheckCircle, X, Trash2, Receipt, Printer, RefreshCw, Users, Pencil, AlertTriangle, Search } from "lucide-react";
@@ -34,7 +35,12 @@ import { Plus, MessageCircle, CheckCircle, X, Trash2, Receipt, Printer, RefreshC
 const DEFAULT_LINE_ITEMS = [{ description: "Tuition Fee", amount: "" }];
 const LINE_ITEM_PRESETS = ["Tuition Fee", "Registration Fee", "Exam Fee", "Transport Fee", "Custom"];
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
-const emptyForm = () => ({ studentId: "", month: "", year: new Date().getFullYear(), dueDate: "", notes: "", directPayment: false, directAccountId: "" });
+// month/year is the first (or only) month billed; with multiMonth on, every
+// month up to toMonth/toYear gets its own invoice with the same line items.
+const emptyForm = () => ({
+  studentId: "", month: "", year: new Date().getFullYear(), dueDate: "", notes: "", directPayment: false, directAccountId: "",
+  multiMonth: false, toMonth: "", toYear: new Date().getFullYear(), skipExisting: true,
+});
 
 // Money still owed on one invoice. ONE definition for every screen
 // (utils/reporting.js invoiceFacts): 0 once marked paid, otherwise
@@ -210,6 +216,23 @@ export default function Fees() {
     setShowModal(true);
   };
 
+  // The months the New Invoice form will bill, from its month/year (and
+  // toMonth/toYear when "several months" is on). Shown as a preview and used
+  // on submit, so what the user sees is exactly what gets created.
+  const billing = (() => {
+    const range = monthRange({
+      fromMonth: form.month, fromYear: form.year,
+      toMonth: form.multiMonth ? form.toMonth : "", toYear: form.multiMonth ? form.toYear : "",
+    });
+    if (range.error) return { error: range.error, periods: [], existing: [], toCreate: [] };
+    const existing = periodsAlreadyInvoiced(range.periods, invoices, form.studentId);
+    // Skipping only applies to a range: a single month may deliberately get a
+    // second invoice (e.g. an exam fee on top of the tuition one), as before.
+    const skip = new Set(form.multiMonth && form.skipExisting ? existing.map(periodKey) : []);
+    const toCreate = range.periods.filter(p => !skip.has(periodKey(p)));
+    return { periods: range.periods, existing, toCreate };
+  })();
+
   const handleCreate = (e) => {
     e.preventDefault();
     return runSubmit(async () => {
@@ -217,32 +240,77 @@ export default function Fees() {
       if (!student) return toast.error("Student not found");
       const lines = cleanLineItems();
       if (lines.error) return toast.error(lines.error);
-      try {
-        const invoiceData = {
-          studentId: student.id, studentName: studentName(student), parentPhone: student.parentPhone,
-          branchId: student.branchId, month: form.month, year: form.year,
-          dueDate: form.dueDate, notes: form.notes, lineItems: lines.items, amount: lines.total,
-        };
-        if (form.directPayment) {
-          if (!form.directAccountId) return toast.error("Choose the account that received the money");
-          // One shared path: creates the invoice, posts the cash_in, marks it paid.
-          await createInvoiceAndCollect({ invoiceData, accounts, accountId: form.directAccountId, date: todayLocal() });
-          rememberAccountChoice(form.directAccountId);
-          if (student.parentPhone) {
-            await sendWhatsAppMessage(student.parentPhone, `✅ Fee payment of Rs. ${lines.total} received for ${studentName(student)} for ${form.month}. Thank you!`);
+      if (billing.error) return toast.error(billing.error);
+      const periods = billing.toCreate;
+      if (periods.length === 0) return toast.error(`${studentName(student)} already has an invoice for ${periodLabel(billing.periods)}. Untick "skip" to bill again.`);
+      if (form.directPayment && !form.directAccountId) return toast.error("Choose the account that received the money");
+
+      const name = studentName(student);
+      const when = todayLocal();
+      const baseData = {
+        studentId: student.id, studentName: name, parentPhone: student.parentPhone,
+        branchId: student.branchId, dueDate: form.dueDate, notes: form.notes, lineItems: lines.items, amount: lines.total,
+      };
+      // One invoice per month, each with the same line items. Months are
+      // written in order; a failure stops the run and reports how far it got,
+      // so a retry can start from the first month that is still missing.
+      const created = []; // invoice rows as they now exist, for the receipts/invoices viewer
+      let failure = null;
+      for (const p of periods) {
+        const invoiceData = { ...baseData, month: p.month, year: p.year };
+        try {
+          if (form.directPayment) {
+            // One shared path: creates the invoice, posts the cash_in, marks it paid.
+            const res = await createInvoiceAndCollect({ invoiceData, accounts, accountId: form.directAccountId, date: when });
+            created.push({
+              id: res.id, ...invoiceData, status: res.status, paidAmount: res.paidAmount, paidDate: when,
+              concessionAmount: 0, paidAccount: res.accountName, ledgerPosted: res.posted, createdAt: new Date().toISOString(),
+            });
+          } else {
+            const ref = await addDoc(collection(db, "invoices"), {
+              ...invoiceData, status: "pending", paidAmount: 0, paidDate: null, createdAt: serverTimestamp(),
+            });
+            created.push({ id: ref.id, ...invoiceData, status: "pending", paidAmount: 0, paidDate: null, createdAt: new Date().toISOString() });
           }
-        } else {
-          await addDoc(collection(db, "invoices"), {
-            ...invoiceData, status: "pending", paidAmount: 0, paidDate: null, createdAt: serverTimestamp(),
-          });
+        } catch (err) {
+          failure = { period: p, message: err?.message || "failed" };
+          break;
         }
-        toast.success(form.directPayment ? "Payment received!" : "Invoice created");
-        logActivity(form.directPayment ? "collected" : "created", "Invoices", `Invoice ${studentName(student)} — ${form.month} ${form.year} · Rs. ${formatMoney(lines.total)}${form.directPayment ? " (paid on the spot)" : ""}`);
-        setShowModal(false);
-        setForm(emptyForm());
-        setLineItems(DEFAULT_LINE_ITEMS);
-      } catch (err) {
-        toast.error(err?.message || "Error creating invoice", { duration: 7000 });
+      }
+
+      const n = created.length;
+      const label = periodLabel(created);
+      if (n > 0) {
+        if (form.directPayment) rememberAccountChoice(form.directAccountId);
+        if (form.directPayment && student.parentPhone) {
+          const total = sumMoney(created.map(i => i.amount));
+          await sendWhatsAppMessage(student.parentPhone, `✅ Fee payment of Rs. ${formatMoney(total)} received for ${name} for ${label}${n > 1 ? ` (${n} months)` : ""}. Thank you!`);
+        }
+        logActivity(form.directPayment ? "collected" : "created", "Invoices",
+          `${n > 1 ? `${n} invoices` : "Invoice"} ${name} — ${label} · Rs. ${formatMoney(lines.total)}${n > 1 ? " each" : ""}${form.directPayment ? " (paid on the spot)" : ""}`);
+      }
+
+      if (failure) {
+        toast.error(periods.length === 1
+          ? failure.message
+          : `${n} of ${periods.length} invoices ${form.directPayment ? "received" : "created"}${n ? ` (${label})` : ""}; ${failure.period.month} ${failure.period.year} failed: ${failure.message}`,
+          { duration: 9000 });
+        return; // keep the form open so the remaining months can be retried
+      }
+
+      const skipped = billing.periods.length - periods.length;
+      toast.success(
+        (form.directPayment ? (n > 1 ? `${n} payments received (${label})` : "Payment received!") : (n > 1 ? `${n} invoices created (${label})` : "Invoice created"))
+        + (skipped ? ` · ${skipped} month${skipped === 1 ? "" : "s"} skipped (already invoiced)` : "")
+      );
+      setShowModal(false);
+      setForm(emptyForm());
+      setLineItems(DEFAULT_LINE_ITEMS);
+      // Several months at once: open every receipt (or invoice) together so
+      // they can be printed or saved as one PDF.
+      if (n > 1) {
+        if (form.directPayment) openReceipts(created);
+        else openInvoices(created);
       }
     });
   };
@@ -952,7 +1020,7 @@ export default function Fees() {
                   />
                 </div>
                 <div>
-                  <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 5 }}>Month</label>
+                  <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 5 }}>{form.multiMonth ? "From month" : "Month"}</label>
                   <select value={form.month} onChange={e => setForm(p => ({ ...p, month: e.target.value }))} required
                     style={{ width: "100%", padding: "10px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14 }}>
                     <option value="">Select month</option>
@@ -960,10 +1028,80 @@ export default function Fees() {
                   </select>
                 </div>
                 <div>
-                  <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 5 }}>Due Date</label>
+                  <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 5 }}>Year</label>
+                  <input type="number" min="2000" max="2100" value={form.year} onChange={e => setForm(p => ({ ...p, year: e.target.value }))} required
+                    style={{ width: "100%", padding: "10px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14, boxSizing: "border-box" }} />
+                </div>
+                <div style={{ gridColumn: isMobile ? "1" : "span 2" }}>
+                  <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 5 }}>Due Date{form.multiMonth ? " (same for every month)" : ""}</label>
                   <input type="date" value={form.dueDate} onChange={e => setForm(p => ({ ...p, dueDate: e.target.value }))}
                     style={{ width: "100%", padding: "10px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14, boxSizing: "border-box" }} />
                 </div>
+              </div>
+
+              {/* Several months at once: one invoice per month, same line items */}
+              <div style={{ padding: 12, background: form.multiMonth ? "#eef2ff" : "#f8fafc", borderRadius: 10, marginBottom: 16, border: `1px solid ${form.multiMonth ? "#c7d2fe" : "var(--border)"}` }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <input type="checkbox" id="multiMonth" checked={form.multiMonth}
+                    onChange={e => setForm(p => ({ ...p, multiMonth: e.target.checked, toMonth: p.toMonth || p.month, toYear: p.toYear || p.year }))}
+                    style={{ width: 18, height: 18 }} />
+                  <div>
+                    <label htmlFor="multiMonth" style={{ fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Bill several months at once</label>
+                    <div style={{ fontSize: 11, color: "var(--text-muted)" }}>Creates one invoice per month with the same line items (up to {MAX_PERIODS} months)</div>
+                  </div>
+                </div>
+                {!form.multiMonth && billing.existing.length > 0 && (
+                  <div style={{ marginTop: 10, fontSize: 12, color: "#b45309" }}>This student already has an invoice for {periodLabel(billing.periods)}.</div>
+                )}
+                {form.multiMonth && (
+                  <>
+                    <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 12, marginTop: 12 }}>
+                      <div>
+                        <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 5 }}>To month</label>
+                        <select value={form.toMonth} onChange={e => setForm(p => ({ ...p, toMonth: e.target.value }))} required
+                          style={{ width: "100%", padding: "10px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14, background: "white" }}>
+                          <option value="">Select month</option>
+                          {MONTHS.map(m => <option key={m}>{m}</option>)}
+                        </select>
+                      </div>
+                      <div>
+                        <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 5 }}>To year</label>
+                        <input type="number" min="2000" max="2100" value={form.toYear} onChange={e => setForm(p => ({ ...p, toYear: e.target.value }))} required
+                          style={{ width: "100%", padding: "10px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14, boxSizing: "border-box" }} />
+                      </div>
+                    </div>
+                    <div style={{ marginTop: 12, fontSize: 13 }}>
+                      {billing.error ? (
+                        <span style={{ color: "#b45309" }}>{billing.error}</span>
+                      ) : (
+                        <>
+                          <div>
+                            <strong>{billing.toCreate.length}</strong> invoice{billing.toCreate.length === 1 ? "" : "s"} · {periodLabel(billing.periods)}
+                            {totalAmount > 0 && billing.toCreate.length > 0 && <> · Rs. {formatMoney(totalAmount)} each, <strong>Rs. {formatMoney(sumMoney(billing.toCreate.map(() => totalAmount)))}</strong> in total</>}
+                          </div>
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
+                            {billing.periods.map(p => {
+                              const dup = billing.existing.some(x => periodKey(x) === periodKey(p));
+                              const skipped = dup && form.skipExisting;
+                              return (
+                                <span key={periodKey(p)} title={dup ? "This student already has an invoice for this month" : ""}
+                                  style={{ padding: "3px 9px", borderRadius: 20, fontSize: 12, background: skipped ? "#f1f5f9" : dup ? "#fffbeb" : "white", color: skipped ? "#94a3b8" : dup ? "#b45309" : "#1e293b", border: `1px solid ${dup && !skipped ? "#fde68a" : "var(--border)"}`, textDecoration: skipped ? "line-through" : "none" }}>
+                                  {p.month.slice(0, 3)} {p.year}{dup ? " · invoiced" : ""}
+                                </span>
+                              );
+                            })}
+                          </div>
+                          {billing.existing.length > 0 && (
+                            <label style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 10, cursor: "pointer", color: "#b45309" }}>
+                              <input type="checkbox" checked={form.skipExisting} onChange={e => setForm(p => ({ ...p, skipExisting: e.target.checked }))} style={{ width: 16, height: 16 }} />
+                              Skip the {billing.existing.length} month{billing.existing.length === 1 ? "" : "s"} this student is already invoiced for
+                            </label>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  </>
+                )}
               </div>
 
               {/* Direct payment toggle */}
@@ -1025,7 +1163,11 @@ export default function Fees() {
                 <button type="submit" disabled={submitting || (form.directPayment && postable.length === 0)}
                   style={{ flex: 2, padding: "11px", background: form.directPayment ? "#10b981" : "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: (submitting || (form.directPayment && postable.length === 0)) ? "not-allowed" : "pointer", fontWeight: 600, fontSize: 14, opacity: (submitting || (form.directPayment && postable.length === 0)) ? 0.7 : 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
                   {submitting && <span style={{ width: 15, height: 15, border: "2px solid rgba(255,255,255,0.5)", borderTop: "2px solid white", borderRadius: "50%", display: "inline-block", animation: "spin 0.7s linear infinite" }} />}
-                  {submitting ? "Saving..." : (form.directPayment ? "Receive Payment" : "Create Invoice")}
+                  {submitting ? "Saving..." : (() => {
+                    const n = form.multiMonth && !billing.error ? billing.toCreate.length : 1;
+                    if (form.directPayment) return n > 1 ? `Receive ${n} Payments` : "Receive Payment";
+                    return n > 1 ? `Create ${n} Invoices` : "Create Invoice";
+                  })()}
                 </button>
               </div>
             </form>
