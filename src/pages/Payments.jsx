@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { useUser } from "../context/UserContext";
-import { serverTimestamp, updateDocs, deleteDocs, isHistoryVisible } from "../firebase";
+import { serverTimestamp, updateDocs, isHistoryVisible } from "../firebase";
 import { useBranch } from "../context/BranchContext";
 import { useCollection } from "../hooks/useCollection";
 import { useBulkSelect } from "../hooks/useBulkSelect";
@@ -10,7 +10,7 @@ import BulkBar, { RowCheckbox, HeaderCheckbox } from "../components/UI/BulkBar";
 import BulkEditModal from "../components/UI/BulkEditModal";
 import { runBulk, bulkResultMessage } from "../utils/bulk";
 import { logActivity } from "../utils/auditLog";
-import { postManualPayment, reversePayment, isReversalRow, isPostedBySource, pickDefaultAccountId, rememberAccountChoice } from "../utils/accounting";
+import { postManualPayment, reversePayment, deletePaymentsWithPairs, isReversalRow, isPostedBySource, pickDefaultAccountId, rememberAccountChoice } from "../utils/accounting";
 import { parsePositiveAmount, sumMoney, todayLocal, isIsoDate, formatMoney } from "../utils/money";
 import { useAccounts } from "../utils/useAccounts";
 import { useSubmitLock } from "../utils/useSubmitLock";
@@ -37,6 +37,20 @@ const reverseBlockReason = (p) => {
 };
 // A reversal entry is a bookkeeping row, not a receipt or voucher (reversed originals print marked REVERSED).
 const canPrintReceipt = (p) => !!p.id && !isReversalRow(p);
+
+// Delete works on every row. A reversed payment and its reversal entry
+// cancel each other out, so they go to Trash together (whichever side is
+// picked) and no balance moves. A live payment goes alone and its amount
+// leaves the balance.
+const isPairedRow = (p) => !!(p.reversed || isReversalRow(p));
+const deleteTitle = (p) => isReversalRow(p)
+  ? "Delete this reversal entry together with the payment it reverses"
+  : p.reversed ? "Delete this payment together with its reversal entry" : "Delete this payment";
+const deletePrompt = (p) => isReversalRow(p)
+  ? "Delete this reversal entry and the payment it reverses? The two cancel each other out, so the account balance does not change. You can restore them from Trash."
+  : p.reversed
+    ? "Delete this payment and its reversal entry? The two cancel each other out, so the account balance does not change. You can restore them from Trash."
+    : "Delete this payment? Its amount is removed from the account balance. You can restore it from Trash.";
 
 function useIsMobile() {
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
@@ -186,45 +200,41 @@ export default function Payments() {
     } finally { setBulkBusy(false); }
   });
 
-  // Single-row delete: same rules as the bulk action below.
+  // Single-row delete: a reversed payment or a reversal entry takes its other
+  // half along (deletePaymentsWithPairs), so the ledger never keeps one side
+  // of a cancelled pair. Same rules as the bulk action below.
   const handleDelete = (p) => runSubmit(async () => {
-    if (!window.confirm("Delete this payment? Its amount is removed from the account balance. You can restore it from Trash.")) return;
+    if (!window.confirm(deletePrompt(p))) return;
     try {
-      await deleteDocs("payments", [p.id]);
-      if (p.reversalOf) {
-        await updateDocs("payments", [p.reversalOf], { reversed: false, updatedAt: serverTimestamp() })
-          .catch(err => console.warn("Could not clear the reversed flag on the original payment:", err));
-      }
-      toast.success("Payment moved to Trash");
-      logActivity("deleted", "Payments", `${p.type === "cash_in" ? "Cash in" : "Cash out"} Rs. ${formatMoney(p.amount || 0)} — ${p.account}${p.description ? ` (${p.description})` : ""}`);
+      const { deleted, partners } = await deletePaymentsWithPairs([p]);
+      if (!deleted) return toast.error("The payment could not be deleted (it may already be in Trash).");
+      toast.success(partners ? "Payment and its reversal entry moved to Trash" : "Payment moved to Trash");
+      logActivity("deleted", "Payments", `${p.type === "cash_in" ? "Cash in" : "Cash out"} Rs. ${formatMoney(p.amount || 0)} — ${p.account}${p.description ? ` (${p.description})` : ""}${partners ? ` + ${partners} linked reversal row${partners === 1 ? "" : "s"}` : ""}`);
     } catch (err) { toast.error(err?.message || "Could not delete the payment"); }
   });
 
   // Delete moves the selected rows to Trash (their auto-posted journals go
-  // with them, see firebase.js deleteDocs). Unlike Reverse, this removes the
-  // amount from the account balance instead of offsetting it, so it is gated
-  // by canDeletePayments and the rows can be restored from Trash.
+  // with them, see firebase.js deleteDocs). A live payment leaves the account
+  // balance when deleted, so the action is gated by canDeletePayments; a
+  // reversed payment or reversal entry goes together with its other half, so
+  // nothing moves. Everything can be restored from Trash.
   const handleBulkDelete = () => runSubmit(async () => {
     const rows = filtered.filter(p => bulk.selected.has(p.id));
     if (rows.length === 0) return;
     const n = rows.length;
-    if (!window.confirm(`Delete ${n} payment${n === 1 ? "" : "s"}? Their amounts are removed from the account balances. You can restore them from Trash.`)) return;
+    const live = rows.filter(p => !isPairedRow(p)).length;
+    const balanceNote = live === n
+      ? " Their amounts are removed from the account balances."
+      : live === 0
+        ? " Reversed payments and reversal entries go to Trash together with their other half, so account balances do not change."
+        : ` ${live} of them ${live === 1 ? "is" : "are"} not reversed and ${live === 1 ? "its amount leaves" : "their amounts leave"} the account balance; reversed payments and reversal entries go together with their other half, so they change nothing.`;
+    if (!window.confirm(`Delete ${n} payment${n === 1 ? "" : "s"}?${balanceNote} You can restore them from Trash.`)) return;
     setBulkBusy(true);
     const t = toast.loading(`Deleting ${n} payment${n === 1 ? "" : "s"}…`);
     try {
-      const ids = rows.map(p => p.id);
-      const done = await deleteDocs("payments", ids);
-      // A reversal entry that is deleted while its original stays leaves that
-      // original flagged "reversed" with nothing offsetting it. Clear the flag
-      // so the ledger reads as it now is and the original can be reversed again.
-      const deleted = new Set(ids);
-      const unflag = rows.filter(p => p.reversalOf && !deleted.has(p.reversalOf)).map(p => p.reversalOf);
-      if (unflag.length) {
-        await updateDocs("payments", [...new Set(unflag)], { reversed: false, updatedAt: serverTimestamp() })
-          .catch(err => console.warn("Could not clear the reversed flag on the original payments:", err));
-      }
-      toast.success(bulkResultMessage(done, 0, "moved to Trash", "payments"), { id: t });
-      logActivity("deleted", "Payments", `${done} payments (bulk)`);
+      const { deleted, partners } = await deletePaymentsWithPairs(rows);
+      toast.success(bulkResultMessage(deleted, 0, "moved to Trash", "payments") + (partners ? ` · ${partners} linked reversal row${partners === 1 ? "" : "s"} included` : ""), { id: t });
+      logActivity("deleted", "Payments", `${deleted} payments (bulk${partners ? `, incl. ${partners} linked reversal row${partners === 1 ? "" : "s"}` : ""})`);
       bulk.clear();
     } catch (err) {
       toast.error(err?.message || "Bulk delete failed", { id: t });
@@ -360,7 +370,7 @@ export default function Payments() {
                   </div>
                   {canPrintReceipt(p) && <button onClick={() => openVouchers([p])} title={p.type === "cash_in" ? "Receipt" : "Voucher"} style={{ border: "none", background: "var(--primary-light)", color: "var(--primary)", padding: "6px 9px", borderRadius: 6, cursor: "pointer" }}><FileText size={13} /></button>}
                   <button onClick={() => handleReverse(p)} disabled={submitting} title={reverseBlockReason(p) || "Reverse this payment"} style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "6px 9px", borderRadius: 6, cursor: "pointer", opacity: reverseBlockReason(p) ? 0.45 : 1 }}><Undo2 size={13} /></button>
-                  {can("canDeletePayments") && <button onClick={() => handleDelete(p)} disabled={submitting} title="Delete this payment" style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "6px 9px", borderRadius: 6, cursor: "pointer" }}><Trash2 size={13} /></button>}
+                  {can("canDeletePayments") && <button onClick={() => handleDelete(p)} disabled={submitting} title={deleteTitle(p)} style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "6px 9px", borderRadius: 6, cursor: "pointer" }}><Trash2 size={13} /></button>}
                 </div>
               </div>
             </div>
@@ -409,7 +419,7 @@ export default function Payments() {
                     <td style={{ padding: "11px 14px", textAlign: "right", whiteSpace: "nowrap" }}>
                       {canPrintReceipt(p) && <button onClick={() => openVouchers([p])} title={p.type === "cash_in" ? "View / print receipt" : "View / print voucher"} style={{ border: "none", background: "var(--primary-light)", color: "var(--primary)", padding: "7px 9px", borderRadius: 8, cursor: "pointer", marginRight: 6 }}><FileText size={14} /></button>}
                       <button onClick={() => handleReverse(p)} disabled={submitting} title={reverseBlockReason(p) || "Reverse this payment"} style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "7px 9px", borderRadius: 8, cursor: "pointer", opacity: reverseBlockReason(p) ? 0.45 : 1 }}><Undo2 size={14} /></button>
-                      {can("canDeletePayments") && <button onClick={() => handleDelete(p)} disabled={submitting} title="Delete this payment" style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "7px 9px", borderRadius: 8, cursor: "pointer", marginLeft: 6 }}><Trash2 size={14} /></button>}
+                      {can("canDeletePayments") && <button onClick={() => handleDelete(p)} disabled={submitting} title={deleteTitle(p)} style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "7px 9px", borderRadius: 8, cursor: "pointer", marginLeft: 6 }}><Trash2 size={14} /></button>}
                     </td>
                   </tr>
                 ))}

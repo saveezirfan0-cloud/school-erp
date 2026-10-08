@@ -55,6 +55,16 @@ jest.mock("../firebase", () => ({
     if (mockFail.update === "restore") throw new Error("restore failed");
     mockDb[ref.table].find((r) => r.id === ref.id).deleted_at = null;
   },
+  deleteDocs: async (table, ids) => {
+    let n = 0;
+    for (const id of ids) { const row = mockDb[table].find((r) => r.id === id); if (row) { row.deleted_at = "T"; n++; } }
+    return n;
+  },
+  restoreDocs: async (table, ids) => {
+    let n = 0;
+    for (const id of ids) { const row = mockDb[table].find((r) => r.id === id); if (row) { row.deleted_at = null; n++; } }
+    return n;
+  },
   updateDocs: async (table, ids, patch) => {
     if (mockFail.update === table) throw new Error("update failed");
     let n = 0;
@@ -112,7 +122,7 @@ jest.mock("../lib/supabaseClient", () => {
 import {
   AccountingError, ERR, bankCashAccounts, isBankCashAccount, resolvePostingAccount, describeAccountsProblem,
   recordPayment, getSourcePayments, getSourcePaidTotal, sumLive, reversePayment, reverseSourcePayments,
-  restoreWithLedger, collectInvoicePayment, createInvoiceAndCollect, postUnpostedInvoice, payPayslip,
+  restoreWithLedger, deletePaymentsWithPairs, restorePaymentWithPair, collectInvoicePayment, createInvoiceAndCollect, postUnpostedInvoice, payPayslip,
   createExpenseAndPost, pickDefaultAccountId, rememberAccountChoice, paymentInAccount,
 } from "./accounting";
 import { todayLocal } from "./money";
@@ -455,6 +465,93 @@ describe("restoreWithLedger (ACC-03, CODE-09/10)", () => {
   test("collections without ledger entries just restore", async () => {
     mockDb.invoices.push({ id: "z", deleted_at: "T" });
     expect(await restoreWithLedger("students", "z").catch(() => ({ reposted: 0 }))).toEqual({ reposted: 0 });
+  });
+});
+
+describe("deletePaymentsWithPairs / restorePaymentWithPair (Payments Delete, Trash Restore)", () => {
+  // What the account statement shows: every live row counts, reversal rows included.
+  const statementNet = () => livePayments().reduce((m, p) => m + (p.type === "cash_in" ? 1 : -1) * p.amount, 0);
+  const row = (id) => { const r = mockDb.payments.find((p) => p.id === id); return { id: r.id, type: r.type, amount: r.amount, reversed: r.reversed === true, reversalOf: r.reversal_of || null }; };
+  const postAndReverse = async (amount = 4000) => {
+    const id = (await recordPayment({ type: "cash_in", account: "Cash in Hand", accountId: "a-cash", amount, category: "Other", description: "d" })).id;
+    const revId = await reversePayment({ id, type: "cash_in", account: "Cash in Hand", accountId: "a-cash", amount, category: "Other", description: "d" });
+    return { id, revId };
+  };
+
+  test("deleting a reversed payment takes its reversal entry along, so the statement does not move", async () => {
+    const { id, revId } = await postAndReverse();
+    await recordPayment({ type: "cash_in", account: "Cash in Hand", accountId: "a-cash", amount: 100, category: "Other", description: "keep" });
+    expect(statementNet()).toBe(100);
+    const res = await deletePaymentsWithPairs([row(id)]);
+    expect(res).toEqual({ deleted: 2, partners: 1 });
+    expect(mockDb.payments.find((p) => p.id === id).deleted_at).toBe("T");
+    expect(mockDb.payments.find((p) => p.id === revId).deleted_at).toBe("T");
+    expect(statementNet()).toBe(100);
+    expect(livePayments()).toHaveLength(1);
+  });
+  test("deleting the reversal entry takes the payment it reverses along", async () => {
+    const { id, revId } = await postAndReverse();
+    const res = await deletePaymentsWithPairs([row(revId)]);
+    expect(res).toEqual({ deleted: 2, partners: 1 });
+    expect(livePayments()).toHaveLength(0);
+    expect(mockDb.payments.find((p) => p.id === id).deleted_at).toBe("T");
+    expect(statementNet()).toBe(0);
+  });
+  test("a live (un-reversed) payment goes alone", async () => {
+    const id = (await recordPayment({ type: "cash_out", account: "Cash in Hand", accountId: "a-cash", amount: 50, category: "Other", description: "d" })).id;
+    expect(await deletePaymentsWithPairs([row(id)])).toEqual({ deleted: 1, partners: 0 });
+    expect(livePayments()).toHaveLength(0);
+  });
+  test("selecting both sides of a pair deletes each row once, with no partner counted twice", async () => {
+    const { id, revId } = await postAndReverse();
+    expect(await deletePaymentsWithPairs([row(id), row(revId)])).toEqual({ deleted: 2, partners: 0 });
+  });
+  test("bulk: pairs are completed for every selected row, other rows stay", async () => {
+    const a = await postAndReverse(10);
+    const b = await postAndReverse(20);
+    const c = await postAndReverse(30);
+    expect(await deletePaymentsWithPairs([row(a.id), row(b.revId)])).toEqual({ deleted: 4, partners: 2 });
+    expect(livePayments().map((p) => p.id).sort()).toEqual([c.id, c.revId].sort());
+  });
+  test("a reversed payment whose reversal is already in Trash goes alone (nothing live to pair with)", async () => {
+    const { id, revId } = await postAndReverse();
+    mockDb.payments.find((p) => p.id === revId).deleted_at = "T";
+    expect(await deletePaymentsWithPairs([row(id)])).toEqual({ deleted: 1, partners: 0 });
+    expect(livePayments()).toHaveLength(0);
+  });
+  test("nothing picked, nothing deleted", async () => {
+    await postAndReverse();
+    expect(await deletePaymentsWithPairs([])).toEqual({ deleted: 0, partners: 0 });
+    expect(livePayments()).toHaveLength(2);
+  });
+
+  test("restore brings the pair back from either side, and the statement still does not move", async () => {
+    const { id, revId } = await postAndReverse();
+    await deletePaymentsWithPairs([row(id)]);
+    expect(await restorePaymentWithPair(revId)).toEqual({ restored: 2, partners: 1 });
+    expect(livePayments()).toHaveLength(2);
+    expect(statementNet()).toBe(0);
+    expect(nets()).toBe(0);
+
+    await deletePaymentsWithPairs([row(revId)]);
+    expect(await restorePaymentWithPair(id)).toEqual({ restored: 2, partners: 1 });
+    expect(livePayments()).toHaveLength(2);
+  });
+  test("restoring a reversal entry whose original is live only restores the reversal", async () => {
+    const { id, revId } = await postAndReverse();
+    mockDb.payments.find((p) => p.id === revId).deleted_at = "T";
+    expect(await restorePaymentWithPair(revId)).toEqual({ restored: 1, partners: 0 });
+    expect(mockDb.payments.find((p) => p.id === id).deleted_at).toBeNull();
+    expect(livePayments()).toHaveLength(2);
+  });
+  test("restoreWithLedger('payments') goes through the pair restore and reports the partner", async () => {
+    const { id } = await postAndReverse();
+    await deletePaymentsWithPairs([row(id)]);
+    expect(await restoreWithLedger("payments", id)).toEqual({ reposted: 0, partners: 1 });
+    expect(livePayments()).toHaveLength(2);
+  });
+  test("restoring an unknown payment is an error, not a silent no-op", async () => {
+    await expect(restorePaymentWithPair("nope")).rejects.toMatchObject({ code: ERR.NOT_FOUND });
   });
 });
 

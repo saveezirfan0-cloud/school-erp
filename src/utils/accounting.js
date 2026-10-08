@@ -30,7 +30,7 @@
 //    ledgerPosted, payslips.paidAccountId.
 
 import {
-  db, addDoc, collection, serverTimestamp, doc, getDoc, deleteDoc, restoreDoc, updateDocs,
+  db, addDoc, collection, serverTimestamp, doc, getDoc, deleteDoc, restoreDoc, updateDocs, deleteDocs, restoreDocs,
 } from "../firebase";
 import { supabase } from "../lib/supabaseClient";
 import {
@@ -438,6 +438,10 @@ export async function repostReversedPayments(source, sourceId) {
 export async function restoreWithLedger(collectionName, id) {
   const source = ledgerSourceFor(collectionName);
   if (!source) {
+    if (collectionName === "payments") {
+      const { partners } = await restorePaymentWithPair(id);
+      return { reposted: 0, partners };
+    }
     await restoreDoc(doc(db, collectionName, id));
     return { reposted: 0 };
   }
@@ -456,6 +460,64 @@ export async function restoreWithLedger(collectionName, id) {
     throw err;
   }
   return { reposted };
+}
+
+// ---------------------------------------------------------------
+// Delete / restore of reversed pairs (Payments "Delete", Trash "Restore")
+// ---------------------------------------------------------------
+// A reversed payment and its reversal entry cancel each other out, so they
+// only mean something together. Deleting one side alone would move the
+// account balance by the side that stays, and the 0011 guard refuses to
+// un-flag an original once its reversal is gone. Delete therefore always
+// takes the whole pair to Trash, whichever side was picked, and Restore
+// brings the pair back. A live (un-reversed, non-reversal) row has no
+// partner and goes alone; with 0011 applied the database refuses that and
+// asks for a reversal instead.
+
+// Ids of the rows linked to `rows` by a reversal (the reversal of each
+// original, the original of each reversal), limited to the side of Trash
+// asked for: live partners for Delete, trashed ones for Restore. The given
+// rows themselves are never included.
+async function reversalPartners(rows, { trashed }) {
+  const picked = (rows || []).filter((r) => r && r.id);
+  if (picked.length === 0) return [];
+  const ids = picked.map((r) => r.id);
+  const originals = [...new Set(picked.map((r) => r.reversalOf).filter(Boolean))];
+  const q = (col, vals) => supabase.from("payments").select("id, deleted_at").in(col, vals);
+  const [rev, orig] = await Promise.all([q("reversal_of", ids), originals.length ? q("id", originals) : { data: [] }]);
+  if (rev.error) throw rev.error;
+  if (orig.error) throw orig.error;
+  const mine = new Set(ids);
+  const out = new Set();
+  for (const r of [...(rev.data || []), ...(orig.data || [])]) {
+    if (!mine.has(r.id) && (r.deleted_at != null) === trashed) out.add(r.id);
+  }
+  return [...out];
+}
+
+// Move payments to Trash together with the live rows on the other side of
+// their reversal link. Returns how many rows went and how many of them were
+// partners pulled in beyond the rows picked.
+export async function deletePaymentsWithPairs(rows) {
+  const picked = (rows || []).filter((r) => r && r.id);
+  if (picked.length === 0) return { deleted: 0, partners: 0 };
+  const partners = await reversalPartners(picked, { trashed: false });
+  const ids = [...new Set([...picked.map((r) => r.id), ...partners])];
+  const deleted = await deleteDocs("payments", ids);
+  return { deleted, partners: partners.length };
+}
+
+// Restore a trashed payment together with the trashed rows on the other side
+// of its reversal link, so a reversed pair never comes back one-sided.
+export async function restorePaymentWithPair(id) {
+  const { data: row, error } = await supabase.from("payments").select("id, reversal_of, deleted_at").eq("id", id).maybeSingle();
+  if (error) throw error;
+  if (!row) throw new AccountingError(ERR.NOT_FOUND, "Payment not found");
+  const partners = await reversalPartners([{ id: row.id, reversalOf: row.reversal_of || null }], { trashed: true });
+  const ids = [...new Set([row.id, ...partners])];
+  const restored = await restoreDocs("payments", ids);
+  if (!restored) throw new AccountingError(ERR.UPDATE_FAILED, "The payment could not be restored (it may not be in Trash, or you may not have permission).");
+  return { restored, partners: partners.length };
 }
 
 // ---------------------------------------------------------------

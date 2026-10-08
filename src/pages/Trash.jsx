@@ -36,13 +36,15 @@ const LEDGER_LOCKED = new Set(["payments"]);
 
 // A trashed payment may only be restored when it is a plain manual entry.
 // Payments created by an invoice / expense / payslip come back through that
-// document, and reversal rows are only ever meaningful next to their original.
+// document. A reversed payment and its reversal entry are only meaningful
+// together, so restoring either side brings the other back with it
+// (restoreWithLedger -> restorePaymentWithPair).
 const restoreBlockReason = (key, r) => {
   if (key !== "payments") return "";
-  if (r.reversalOf) return "This is a reversal entry. Restore the document it belongs to instead.";
-  if (r.source) return "This payment belongs to an invoice, expense or payslip. Restore that document and its payments come back with it.";
+  if (r.source) return `This ${r.reversalOf ? "reversal entry" : "payment"} belongs to an invoice, expense or payslip. Restore that document and its payments come back with it.`;
   return "";
 };
+const isPairedPayment = (r) => !!(r.reversed || r.reversalOf);
 
 export default function Trash() {
   const { isAdmin } = useUser();
@@ -66,13 +68,17 @@ export default function Trash() {
   const handleRestore = (r) => runRestore(async () => {
     const why = restoreBlockReason(active, r);
     if (why) return toast.error(why, { duration: 6000 });
-    if (active === "payments" && !window.confirm("Restoring this payment puts its amount back into the account balance. Continue?")) return;
+    if (active === "payments" && !window.confirm(isPairedPayment(r)
+      ? "Restore this payment together with the reversal entry that offsets it? The two cancel each other out, so account balances do not change. Continue?"
+      : "Restoring this payment puts its amount back into the account balance. Continue?")) return;
     try {
       // Invoices, expenses and payslips get the ledger entries that the delete
-      // reversed re-posted, so status and money agree again.
+      // reversed re-posted, so status and money agree again. A reversed payment
+      // or reversal entry comes back with its other half.
       const res = await restoreWithLedger(active, r.id);
-      toast.success(res.reposted > 0 ? `Restored, ${res.reposted} payment${res.reposted === 1 ? "" : "s"} re-posted to the ledger` : "Restored");
-      logActivity("restored", "Trash", `${source.label}: ${r[source.primary] || r.id}${res.reposted ? ` (+${res.reposted} ledger entr${res.reposted === 1 ? "y" : "ies"})` : ""}`);
+      toast.success(res.reposted > 0 ? `Restored, ${res.reposted} payment${res.reposted === 1 ? "" : "s"} re-posted to the ledger`
+        : res.partners > 0 ? "Restored together with its reversal entry" : "Restored");
+      logActivity("restored", "Trash", `${source.label}: ${r[source.primary] || r.id}${res.reposted ? ` (+${res.reposted} ledger entr${res.reposted === 1 ? "y" : "ies"})` : ""}${res.partners ? ` (+${res.partners} linked reversal row${res.partners === 1 ? "" : "s"})` : ""}`);
     }
     catch (e) { toast.error(e?.message || "Error restoring", { duration: 7000 }); }
   });
@@ -182,7 +188,11 @@ export default function Trash() {
               <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
                 <RowCheckbox checked={bulk.isSelected(r.id)} onChange={() => bulk.toggle(r.id)} label={`Select ${r[source.primary] || "record"}`} />
                 <div style={{ minWidth: 0 }}>
-                  <div style={{ fontWeight: 600, fontSize: 14, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r[source.primary] || "—"}</div>
+                  <div style={{ fontWeight: 600, fontSize: 14, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                    {r[source.primary] || "—"}
+                    {active === "payments" && r.reversed && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 10, background: "#fef3c7", color: "#b45309" }}>REVERSED</span>}
+                    {active === "payments" && r.reversalOf && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 10, background: "#f1f5f9", color: "#64748b" }}>REVERSAL</span>}
+                  </div>
                   <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
                     {source.secondary(r)}
                     {r.deletedAt && <span> • deleted {new Date(r.deletedAt).toLocaleDateString()}</span>}
@@ -224,7 +234,7 @@ export default function Trash() {
       <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 12 }}>
         Deleted records are kept here until you restore them or permanently delete them. Permanent deletion cannot be undone.
         {ledgerSourceFor(active) && " Restoring an invoice, expense or payslip re-posts the payments that were reversed when it was deleted."}
-        {LEDGER_LOCKED.has(active) && " Payments are part of the ledger and cannot be permanently deleted."}
+        {LEDGER_LOCKED.has(active) && " Payments are part of the ledger and cannot be permanently deleted. A reversed payment and its reversal entry are restored together."}
       </p>
     </div>
   );
