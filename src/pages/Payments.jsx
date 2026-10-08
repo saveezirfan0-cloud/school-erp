@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { useUser } from "../context/UserContext";
-import { serverTimestamp, updateDocs, isHistoryVisible } from "../firebase";
+import { serverTimestamp, updateDocs, deleteDocs, isHistoryVisible } from "../firebase";
 import { useBranch } from "../context/BranchContext";
 import { useCollection } from "../hooks/useCollection";
 import { useBulkSelect } from "../hooks/useBulkSelect";
@@ -183,6 +183,37 @@ export default function Payments() {
       bulk.clear();
     } catch (err) {
       toast.error(err?.message || "Bulk reverse failed");
+    } finally { setBulkBusy(false); }
+  });
+
+  // Delete moves the selected rows to Trash (their auto-posted journals go
+  // with them, see firebase.js deleteDocs). Unlike Reverse, this removes the
+  // amount from the account balance instead of offsetting it, so it is gated
+  // by canDeletePayments and the rows can be restored from Trash.
+  const handleBulkDelete = () => runSubmit(async () => {
+    const rows = filtered.filter(p => bulk.selected.has(p.id));
+    if (rows.length === 0) return;
+    const n = rows.length;
+    if (!window.confirm(`Delete ${n} payment${n === 1 ? "" : "s"}? Their amounts are removed from the account balances. You can restore them from Trash.`)) return;
+    setBulkBusy(true);
+    const t = toast.loading(`Deleting ${n} payment${n === 1 ? "" : "s"}…`);
+    try {
+      const ids = rows.map(p => p.id);
+      const done = await deleteDocs("payments", ids);
+      // A reversal entry that is deleted while its original stays leaves that
+      // original flagged "reversed" with nothing offsetting it. Clear the flag
+      // so the ledger reads as it now is and the original can be reversed again.
+      const deleted = new Set(ids);
+      const unflag = rows.filter(p => p.reversalOf && !deleted.has(p.reversalOf)).map(p => p.reversalOf);
+      if (unflag.length) {
+        await updateDocs("payments", [...new Set(unflag)], { reversed: false, updatedAt: serverTimestamp() })
+          .catch(err => console.warn("Could not clear the reversed flag on the original payments:", err));
+      }
+      toast.success(bulkResultMessage(done, 0, "moved to Trash", "payments"), { id: t });
+      logActivity("deleted", "Payments", `${done} payments (bulk)`);
+      bulk.clear();
+    } catch (err) {
+      toast.error(err?.message || "Bulk delete failed", { id: t });
     } finally { setBulkBusy(false); }
   });
 
@@ -390,6 +421,7 @@ export default function Payments() {
           { label: "Print / PDF", icon: Printer, onClick: () => openVouchers(filtered.filter(p => bulk.selected.has(p.id) && canPrintReceipt(p))) },
           { label: "Edit", icon: Pencil, onClick: () => setShowBulkEdit(true) },
           { label: "Reverse", icon: Undo2, variant: "danger", onClick: handleBulkReverse },
+          ...(can("canDeletePayments") ? [{ label: "Delete", icon: Trash2, variant: "danger", onClick: handleBulkDelete }] : []),
         ]}
       />
 
