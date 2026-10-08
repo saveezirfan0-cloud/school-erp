@@ -9,11 +9,12 @@ import ListToolbar from "../components/UI/ListToolbar";
 import Pagination from "../components/UI/Pagination";
 import BulkBar, { RowCheckbox, HeaderCheckbox } from "../components/UI/BulkBar";
 import BulkEditModal from "../components/UI/BulkEditModal";
+import BulkAddEmployeesModal from "../components/UI/BulkAddEmployeesModal";
 import { bulkResultMessage } from "../utils/bulk";
 import { logActivity } from "../utils/auditLog";
 import ExportMenu from "../components/UI/ExportMenu";
 import toast from "react-hot-toast";
-import { Plus, Trash2, X, Edit2, CalendarCheck, LayoutGrid, List } from "lucide-react";
+import { Plus, Trash2, X, Edit2, CalendarCheck, LayoutGrid, List, Users } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import RollCallModal from "../components/Profile/RollCallModal";
 
@@ -77,6 +78,7 @@ export default function Employees() {
   const bulk = useBulkSelect(employees.map(e => e.id), activeBranch);
   const pagedIds = paged.map(e => e.id);
   const [showBulkEdit, setShowBulkEdit] = useState(false);
+  const [showBulkAdd, setShowBulkAdd] = useState(false);
   const [bulkBusy, setBulkBusy] = useState(false);
 
   const handleDeleteOne = async (emp) => {
@@ -155,6 +157,10 @@ export default function Employees() {
               <CalendarCheck size={14} /> Attendance
             </button>
           )}
+          <button onClick={() => setShowBulkAdd(true)}
+            style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 14px", background: "white", color: "var(--primary)", border: "1px solid var(--primary)", borderRadius: 8, cursor: "pointer", fontWeight: 600, fontSize: 13 }}>
+            <Users size={15} /> Bulk Add
+          </button>
           <button onClick={() => { setForm(empty); setEditing(null); setShowModal(true); }}
             style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 18px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600 }}>
             <Plus size={16} /> Add Employee
@@ -294,6 +300,15 @@ export default function Employees() {
           ...(can("canDeleteEmployees") ? [{ label: "Delete", icon: Trash2, variant: "danger", onClick: handleBulkDelete }] : []),
         ]}
       />
+
+      {showBulkAdd && (
+        <BulkAddEmployeesModal
+          branches={branches}
+          activeBranch={activeBranch}
+          onClose={() => setShowBulkAdd(false)}
+          onDone={({ keepOpen } = {}) => { if (!keepOpen) setShowBulkAdd(false); }}
+        />
+      )}
 
       {/* Bulk edit modal */}
       {showBulkEdit && (
