@@ -186,6 +186,20 @@ export default function Payments() {
     } finally { setBulkBusy(false); }
   });
 
+  // Single-row delete: same rules as the bulk action below.
+  const handleDelete = (p) => runSubmit(async () => {
+    if (!window.confirm("Delete this payment? Its amount is removed from the account balance. You can restore it from Trash.")) return;
+    try {
+      await deleteDocs("payments", [p.id]);
+      if (p.reversalOf) {
+        await updateDocs("payments", [p.reversalOf], { reversed: false, updatedAt: serverTimestamp() })
+          .catch(err => console.warn("Could not clear the reversed flag on the original payment:", err));
+      }
+      toast.success("Payment moved to Trash");
+      logActivity("deleted", "Payments", `${p.type === "cash_in" ? "Cash in" : "Cash out"} Rs. ${formatMoney(p.amount || 0)} — ${p.account}${p.description ? ` (${p.description})` : ""}`);
+    } catch (err) { toast.error(err?.message || "Could not delete the payment"); }
+  });
+
   // Delete moves the selected rows to Trash (their auto-posted journals go
   // with them, see firebase.js deleteDocs). Unlike Reverse, this removes the
   // amount from the account balance instead of offsetting it, so it is gated
@@ -346,6 +360,7 @@ export default function Payments() {
                   </div>
                   {canPrintReceipt(p) && <button onClick={() => openVouchers([p])} title={p.type === "cash_in" ? "Receipt" : "Voucher"} style={{ border: "none", background: "var(--primary-light)", color: "var(--primary)", padding: "6px 9px", borderRadius: 6, cursor: "pointer" }}><FileText size={13} /></button>}
                   <button onClick={() => handleReverse(p)} disabled={submitting} title={reverseBlockReason(p) || "Reverse this payment"} style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "6px 9px", borderRadius: 6, cursor: "pointer", opacity: reverseBlockReason(p) ? 0.45 : 1 }}><Undo2 size={13} /></button>
+                  {can("canDeletePayments") && <button onClick={() => handleDelete(p)} disabled={submitting} title="Delete this payment" style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "6px 9px", borderRadius: 6, cursor: "pointer" }}><Trash2 size={13} /></button>}
                 </div>
               </div>
             </div>
@@ -394,6 +409,7 @@ export default function Payments() {
                     <td style={{ padding: "11px 14px", textAlign: "right", whiteSpace: "nowrap" }}>
                       {canPrintReceipt(p) && <button onClick={() => openVouchers([p])} title={p.type === "cash_in" ? "View / print receipt" : "View / print voucher"} style={{ border: "none", background: "var(--primary-light)", color: "var(--primary)", padding: "7px 9px", borderRadius: 8, cursor: "pointer", marginRight: 6 }}><FileText size={14} /></button>}
                       <button onClick={() => handleReverse(p)} disabled={submitting} title={reverseBlockReason(p) || "Reverse this payment"} style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "7px 9px", borderRadius: 8, cursor: "pointer", opacity: reverseBlockReason(p) ? 0.45 : 1 }}><Undo2 size={14} /></button>
+                      {can("canDeletePayments") && <button onClick={() => handleDelete(p)} disabled={submitting} title="Delete this payment" style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "7px 9px", borderRadius: 8, cursor: "pointer", marginLeft: 6 }}><Trash2 size={14} /></button>}
                     </td>
                   </tr>
                 ))}
