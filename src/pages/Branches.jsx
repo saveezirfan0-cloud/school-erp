@@ -1,25 +1,53 @@
 import React, { useState } from "react";
 import { db } from "../firebase";
-import { collection, addDoc, deleteDoc, doc, serverTimestamp } from "../firebase";
+import { collection, addDoc, updateDoc, deleteDoc, doc, serverTimestamp } from "../firebase";
 import { useBranch } from "../context/BranchContext";
 import toast from "react-hot-toast";
-import { Plus, Trash2, Building2 } from "lucide-react";
+import { Plus, Pencil, Trash2, Building2 } from "lucide-react";
 
 export default function Branches() {
   const { branches } = useBranch();
-  const [form, setForm] = useState({ name: "", address: "", phone: "", manager: "" });
+  const emptyForm = { name: "", address: "", phone: "", manager: "" };
+  const [form, setForm] = useState(emptyForm);
   const [showForm, setShowForm] = useState(false);
+  const [editing, setEditing] = useState(null); // branch being edited, or null when adding
+
+  const closeForm = () => {
+    setForm(emptyForm);
+    setEditing(null);
+    setShowForm(false);
+  };
+
+  const openAdd = () => {
+    if (showForm && !editing) return closeForm();
+    setForm(emptyForm);
+    setEditing(null);
+    setShowForm(true);
+  };
+
+  const openEdit = (b) => {
+    setForm({ name: b.name || "", address: b.address || "", phone: b.phone || "", manager: b.manager || "" });
+    setEditing(b);
+    setShowForm(true);
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (branches.length >= 4) return toast.error("Maximum 4 branches allowed");
+    const name = form.name.trim();
+    if (!name) return toast.error("Branch name is required");
+    const payload = { name, address: form.address.trim(), phone: form.phone.trim(), manager: form.manager.trim() };
     try {
-      await addDoc(collection(db, "branches"), { ...form, createdAt: serverTimestamp() });
-      toast.success("Branch added");
-      setForm({ name: "", address: "", phone: "", manager: "" });
-      setShowForm(false);
+      if (editing) {
+        await updateDoc(doc(db, "branches", editing.id), { ...payload, updatedAt: serverTimestamp() });
+        toast.success("Branch updated");
+      } else {
+        if (branches.length >= 4) return toast.error("Maximum 4 branches allowed");
+        await addDoc(collection(db, "branches"), { ...payload, createdAt: serverTimestamp() });
+        toast.success("Branch added");
+      }
+      closeForm();
     } catch (err) {
-      toast.error(err?.message || "Could not add branch");
+      toast.error(err?.message || (editing ? "Could not update branch" : "Could not add branch"));
     }
   };
 
@@ -27,6 +55,7 @@ export default function Branches() {
     if (!window.confirm(`Remove branch "${b.name}"? Students and staff assigned to it will no longer match a branch.`)) return;
     try {
       await deleteDoc(doc(db, "branches", b.id));
+      if (editing?.id === b.id) closeForm();
       toast.success("Branch removed");
     } catch (err) {
       toast.error(err?.message || "Could not remove branch");
@@ -40,7 +69,7 @@ export default function Branches() {
           <h2 style={{ fontSize: 22, fontWeight: 700 }}>Branches / Business Units</h2>
           <p style={{ color: "var(--text-muted)", fontSize: 14, marginTop: 2 }}>Main organization + up to 4 branches</p>
         </div>
-        <button onClick={() => setShowForm(!showForm)}
+        <button onClick={openAdd}
           style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 18px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600 }}>
           <Plus size={16} /> Add Branch
         </button>
@@ -48,7 +77,7 @@ export default function Branches() {
 
       {showForm && (
         <div style={{ background: "white", borderRadius: 12, padding: 24, border: "1px solid var(--border)", marginBottom: 24 }}>
-          <h3 style={{ fontWeight: 600, marginBottom: 16 }}>New Branch</h3>
+          <h3 style={{ fontWeight: 600, marginBottom: 16 }}>{editing ? `Edit Branch: ${editing.name}` : "New Branch"}</h3>
           <form onSubmit={handleSubmit}>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
               {[
@@ -65,8 +94,8 @@ export default function Branches() {
               ))}
             </div>
             <div style={{ display: "flex", gap: 12, marginTop: 16 }}>
-              <button type="submit" style={{ padding: "10px 20px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600 }}>Create Branch</button>
-              <button type="button" onClick={() => setShowForm(false)} style={{ padding: "10px 20px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer" }}>Cancel</button>
+              <button type="submit" style={{ padding: "10px 20px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600 }}>{editing ? "Save Changes" : "Create Branch"}</button>
+              <button type="button" onClick={closeForm} style={{ padding: "10px 20px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer" }}>Cancel</button>
             </div>
           </form>
         </div>
@@ -83,7 +112,10 @@ export default function Branches() {
           <div key={b.id} style={{ background: "white", borderRadius: 12, padding: 24, border: "1px solid var(--border)" }}>
             <div style={{ display: "flex", justifyContent: "space-between" }}>
               <Building2 size={24} color="var(--primary)" />
-              <button onClick={() => handleDelete(b)} aria-label="Remove branch" style={{ border: "none", background: "none", cursor: "pointer", color: "var(--text-muted)" }}><Trash2 size={15} /></button>
+              <div style={{ display: "flex", gap: 4 }}>
+                <button onClick={() => openEdit(b)} aria-label="Edit branch" title="Edit branch" style={{ border: "none", background: "none", cursor: "pointer", color: "var(--text-muted)" }}><Pencil size={15} /></button>
+                <button onClick={() => handleDelete(b)} aria-label="Remove branch" title="Remove branch" style={{ border: "none", background: "none", cursor: "pointer", color: "var(--text-muted)" }}><Trash2 size={15} /></button>
+              </div>
             </div>
             <div style={{ fontSize: 16, fontWeight: 700, marginTop: 12 }}>{b.name}</div>
             <div style={{ color: "var(--text-muted)", fontSize: 13, marginTop: 4 }}>{b.address}</div>
