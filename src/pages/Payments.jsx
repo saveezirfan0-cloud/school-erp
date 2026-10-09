@@ -10,6 +10,7 @@ import BulkBar, { RowCheckbox, HeaderCheckbox } from "../components/UI/BulkBar";
 import BulkEditModal from "../components/UI/BulkEditModal";
 import { runBulk, bulkResultMessage } from "../utils/bulk";
 import { logActivity } from "../utils/auditLog";
+import { summarizePayments } from "../utils/paymentTotals";
 import { postManualPayment, reversePayment, isReversalRow, isPostedBySource, pickDefaultAccountId, rememberAccountChoice } from "../utils/accounting";
 import { parsePositiveAmount, sumMoney, todayLocal, isIsoDate, formatMoney } from "../utils/money";
 import { useAccounts } from "../utils/useAccounts";
@@ -92,8 +93,8 @@ export default function Payments() {
   const [showBulkEdit, setShowBulkEdit] = useState(false);
   const [bulkBusy, setBulkBusy] = useState(false);
 
-  const totalIn = sumMoney(filtered.filter(p => p.type === "cash_in").map(p => p.amount));
-  const totalOut = sumMoney(filtered.filter(p => p.type === "cash_out").map(p => p.amount));
+  // Reversed payments and their reversal rows stay in the table (audit trail) but are not money moved.
+  const { totalIn, totalOut, net: totalNet } = summarizePayments(filtered);
 
   const openModal = () => {
     setForm({ ...emptyForm(), accountId: pickDefaultAccountId(postable) });
@@ -298,7 +299,7 @@ export default function Payments() {
         {[
           { label: "Total Cash In", value: totalIn, color: "#10b981", bg: "#ecfdf5", icon: ArrowDownCircle },
           { label: "Total Cash Out", value: totalOut, color: "#ef4444", bg: "#fef2f2", icon: ArrowUpCircle },
-          { label: "Net Balance", value: totalIn - totalOut, color: "#4f46e5", bg: "#eef2ff", icon: ArrowDownCircle },
+          { label: "Net Balance", value: totalNet, color: "#4f46e5", bg: "#eef2ff", icon: ArrowDownCircle },
         ].map(({ label, value, color, bg, icon: Icon }) => (
           <div key={label} style={{ background: "white", borderRadius: 12, padding: 16, border: "1px solid var(--border)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <div>
