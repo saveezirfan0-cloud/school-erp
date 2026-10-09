@@ -54,6 +54,7 @@ export default function Payslips() {
   const [editing, setEditing] = useState(null); // payslip being edited (null = creating)
   const [filterMonth, setFilterMonth] = useState("");
   const [filterEmployee, setFilterEmployee] = useState("");
+  const [filterStatus, setFilterStatus] = useState("");
   const [recurringMonth, setRecurringMonth] = useState(MONTHS[new Date().getMonth()]);
   const [recurringYear, setRecurringYear] = useState(new Date().getFullYear());
 
@@ -107,7 +108,8 @@ export default function Payslips() {
   const filtered = payslips.filter(p => {
     const matchMonth = !filterMonth || p.month === filterMonth;
     const matchEmp = !filterEmployee || p.employeeName?.toLowerCase().includes(filterEmployee.toLowerCase());
-    return matchesBranch(p, activeBranch) && matchMonth && matchEmp;
+    const matchStatus = !filterStatus || (p.status === "paid" ? "paid" : "pending") === filterStatus;
+    return matchesBranch(p, activeBranch) && matchMonth && matchEmp && matchStatus;
   });
 
   // multi-select for bulk actions (this page shows all filtered rows,
@@ -309,8 +311,14 @@ export default function Payslips() {
           <option value="">All Months</option>
           {MONTHS.map(m => <option key={m}>{m}</option>)}
         </select>
-        {(filterMonth || filterEmployee) && (
-          <button onClick={() => { setFilterMonth(""); setFilterEmployee(""); }}
+        <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)} aria-label="Filter by status"
+          style={{ padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14, background: "white" }}>
+          <option value="">All Statuses</option>
+          <option value="pending">Pending</option>
+          <option value="paid">Paid</option>
+        </select>
+        {(filterMonth || filterEmployee || filterStatus) && (
+          <button onClick={() => { setFilterMonth(""); setFilterEmployee(""); setFilterStatus(""); }}
             style={{ padding: "8px 14px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13, color: "var(--text-muted)" }}>Clear</button>
         )}
       </div>
@@ -328,9 +336,18 @@ export default function Payslips() {
                   <div>
                     <div style={{ fontWeight: 600, fontSize: 15 }}>{p.employeeName}</div>
                     <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>{p.role} · {p.month} {p.year}</div>
+                    <span style={{ display: "inline-block", marginTop: 6, padding: "3px 9px", borderRadius: 20, fontSize: 11, fontWeight: 600, background: p.status === "paid" ? "#ecfdf5" : "#fffbeb", color: p.status === "paid" ? "#10b981" : "#f59e0b" }}>
+                      {p.status === "paid" ? "paid" : "pending"}
+                    </span>
                   </div>
                 </div>
                 <div style={{ display: "flex", gap: 6 }}>
+                  {p.status !== "paid" && (
+                    <button onClick={() => openPay(p)} title="Mark paid"
+                      style={{ border: "none", background: "#ecfdf5", color: "#10b981", padding: "7px 10px", borderRadius: 8, cursor: "pointer", fontSize: 12, fontWeight: 600 }}>
+                      Pay
+                    </button>
+                  )}
                   <button onClick={() => openPayslips([p])}
                     style={{ border: "none", background: "var(--primary-light)", color: "var(--primary)", padding: "7px 10px", borderRadius: 8, cursor: "pointer", display: "flex", alignItems: "center", gap: 4, fontSize: 12 }}>
                     <Eye size={13} /> View
