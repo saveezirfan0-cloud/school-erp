@@ -1,9 +1,10 @@
 import React, { useEffect, useState } from "react";
 import { useUser } from "../context/UserContext";
 import { db } from "../firebase";
-import { collection, addDoc, deleteDoc, doc, onSnapshot, serverTimestamp, updateDocs, deleteDocs } from "../firebase";
-import { payPayslip, reverseSourcePayments, pickDefaultAccountId, rememberAccountChoice, ERR } from "../utils/accounting";
-import { parsePositiveAmount, toMinor, fromMinor, sumMoney, subMoney, round2, todayLocal, formatMoney } from "../utils/money";
+import { collection, addDoc, deleteDoc, doc, getDoc, onSnapshot, serverTimestamp, updateDocs, deleteDocs } from "../firebase";
+import { payPayslip, patchDoc, reverseSourcePayments, pickDefaultAccountId, rememberAccountChoice, ERR } from "../utils/accounting";
+import { parsePositiveAmount, sumMoney, todayLocal, formatMoney } from "../utils/money";
+import { computePayslip, itemsFromPayslip } from "../utils/payslipItems";
 import { useAccounts } from "../utils/useAccounts";
 import { useSubmitLock } from "../utils/useSubmitLock";
 import { useBranch } from "../context/BranchContext";
@@ -21,18 +22,8 @@ import { Plus, Printer, X, RefreshCw, Eye, Trash2, Pencil, Banknote } from "luci
 import SearchableSelect from "../components/UI/SearchableSelect";
 
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
-const empty = { employeeId: "", month: "", year: new Date().getFullYear(), basicSalary: "", allowances: "", deductions: "", notes: "" };
-
-// Net pay in exact paisa maths. Returns NaN unless basic > 0, allowances and
-// deductions are >= 0 (blank = 0) and the result is > 0.
-function computeNetPay(basic, allowances, deductions) {
-  const b = toMinor(basic);
-  const a = allowances === "" || allowances === null || allowances === undefined ? 0 : toMinor(allowances);
-  const d = deductions === "" || deductions === null || deductions === undefined ? 0 : toMinor(deductions);
-  if (![b, a, d].every(Number.isFinite) || b <= 0 || a < 0 || d < 0) return NaN;
-  const net = b + a - d;
-  return net > 0 ? fromMinor(net) : NaN;
-}
+const empty = { employeeId: "", month: "", year: new Date().getFullYear(), basicSalary: "", items: [], notes: "" };
+const newItem = (type) => ({ type, label: "", amount: "" });
 
 function useIsMobile() {
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
@@ -60,6 +51,7 @@ export default function Payslips() {
   const [viewDocs, setViewDocs] = useState(null); // payslip documents open in the viewer
   const [showRecurring, setShowRecurring] = useState(false);
   const [form, setForm] = useState(empty);
+  const [editing, setEditing] = useState(null); // payslip being edited (null = creating)
   const [filterMonth, setFilterMonth] = useState("");
   const [filterEmployee, setFilterEmployee] = useState("");
   const [recurringMonth, setRecurringMonth] = useState(MONTHS[new Date().getMonth()]);
@@ -83,6 +75,16 @@ export default function Payslips() {
     setPayAccount(pickDefaultAccountId(postable));
     setPayDate(todayLocal()); // never reuse a date left over from an earlier open
   };
+
+  const openCreate = () => { setEditing(null); setForm(empty); setShowModal(true); };
+  const openEdit = (p) => {
+    setEditing(p);
+    setForm({ employeeId: p.employeeId, month: p.month, year: p.year, basicSalary: p.basicSalary, items: itemsFromPayslip(p), notes: p.notes || "" });
+    setShowModal(true);
+  };
+  const closeModal = () => { setShowModal(false); setEditing(null); };
+  const setItem = (i, patch) => setForm(f => ({ ...f, items: f.items.map((it, k) => (k === i ? { ...it, ...patch } : it)) }));
+  const draft = computePayslip(form.basicSalary, form.items);
 
   // Mark a payslip paid: one idempotent helper re-reads the payslip and the
   // ledger, posts the cash_out once, and stamps the payslip. Double clicks,
@@ -186,31 +188,43 @@ export default function Payslips() {
       const emp = employees.find(e => e.id === form.employeeId);
       if (!emp) return toast.error("Please select an employee");
       if (!form.month) return toast.error("Select the month");
-      const netPay = computeNetPay(form.basicSalary, form.allowances, form.deductions);
-      if (!Number.isFinite(netPay)) return toast.error("Basic salary must be above zero, allowances and deductions cannot be negative, and net pay must be above zero");
-      if (payslips.some(p => p.employeeId === emp.id && p.month === form.month && Number(p.year) === Number(form.year))) {
+      const calc = computePayslip(form.basicSalary, form.items);
+      if (!calc.ok) return toast.error(calc.error);
+      if (payslips.some(p => p.id !== editing?.id && p.employeeId === emp.id && p.month === form.month && Number(p.year) === Number(form.year))) {
         return toast.error(`${emp.name} already has a payslip for ${form.month} ${form.year}`);
       }
+      const money = {
+        basicSalary: calc.basicSalary, allowances: calc.allowances, deductions: calc.deductions,
+        lineItems: calc.lineItems, netPay: calc.netPay, amount: calc.netPay,
+      };
       try {
-        await addDoc(collection(db, "payslips"), {
-          ...form,
-          basicSalary: round2(form.basicSalary),
-          allowances: round2(form.allowances || 0),
-          deductions: round2(form.deductions || 0),
-          employeeName: emp?.name,
-          role: emp?.role,
-          branchId: emp?.branchId || "",
-          netPay,
-          amount: netPay,
-          status: "pending",
-          createdAt: serverTimestamp()
-        });
-        toast.success("Payslip created");
-        logActivity("created", "Payslips", `Payslip ${emp?.name} — ${form.month} ${form.year} · Rs. ${formatMoney(netPay)}`);
-        setShowModal(false);
+        if (editing) {
+          // Re-read first: it may have been paid (or removed) since this list loaded.
+          const snap = await getDoc(doc(db, "payslips", editing.id));
+          if (!snap.exists()) return toast.error("This payslip no longer exists");
+          if (snap.data().status === "paid") { closeModal(); return toast.error("This payslip was paid meanwhile and is now locked. Delete it (reverses the payment) and regenerate to change it."); }
+          await patchDoc("payslips", editing.id, {
+            ...money, month: form.month, year: Number(form.year), notes: form.notes || "", updatedAt: serverTimestamp(),
+          });
+          toast.success("Payslip updated");
+          logActivity("updated", "Payslips", `Payslip ${emp.name} — ${form.month} ${form.year} · Rs. ${formatMoney(calc.netPay)}`);
+        } else {
+          await addDoc(collection(db, "payslips"), {
+            employeeId: emp.id, month: form.month, year: form.year, notes: form.notes || "",
+            ...money,
+            employeeName: emp.name,
+            role: emp.role,
+            branchId: emp.branchId || "",
+            status: "pending",
+            createdAt: serverTimestamp()
+          });
+          toast.success("Payslip created");
+          logActivity("created", "Payslips", `Payslip ${emp.name} — ${form.month} ${form.year} · Rs. ${formatMoney(calc.netPay)}`);
+        }
+        closeModal();
         setForm(empty);
       } catch (err) {
-        toast.error(err?.message || "Could not create the payslip");
+        toast.error(err?.message || (editing ? "Could not update the payslip" : "Could not create the payslip"));
       }
     });
   };
@@ -279,7 +293,7 @@ export default function Payslips() {
             style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: "white", fontSize: 13 }}>
             <RefreshCw size={14} /> {!isMobile && "Recurring"}
           </button>
-          <button onClick={() => setShowModal(true)}
+          <button onClick={openCreate}
             style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 18px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600 }}>
             <Plus size={16} /> Generate Payslip
           </button>
@@ -321,6 +335,10 @@ export default function Payslips() {
                     style={{ border: "none", background: "var(--primary-light)", color: "var(--primary)", padding: "7px 10px", borderRadius: 8, cursor: "pointer", display: "flex", alignItems: "center", gap: 4, fontSize: 12 }}>
                     <Eye size={13} /> View
                   </button>
+                  {p.status !== "paid" && can("canEditPayslips") && <button onClick={() => openEdit(p)} title="Edit"
+                    style={{ border: "none", background: "var(--primary-light)", color: "var(--primary)", padding: "7px 9px", borderRadius: 8, cursor: "pointer" }}>
+                    <Pencil size={13} />
+                  </button>}
                   {can("canDeletePayslips") && <button onClick={() => handleDelete(p)} title="Delete"
                     style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "7px 9px", borderRadius: 8, cursor: "pointer" }}>
                     <Trash2 size={13} />
@@ -383,6 +401,10 @@ export default function Payslips() {
                           style={{ border: "none", background: "var(--primary-light)", color: "var(--primary)", padding: "6px 10px", borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", gap: 4, fontSize: 12 }}>
                           <Eye size={13} /> View
                         </button>
+                        {p.status !== "paid" && can("canEditPayslips") && <button onClick={() => openEdit(p)} title="Edit payslip"
+                          style={{ border: "none", background: "var(--primary-light)", color: "var(--primary)", padding: "6px 9px", borderRadius: 6, cursor: "pointer" }}>
+                          <Pencil size={13} />
+                        </button>}
                         {can("canDeletePayslips") && <button onClick={() => handleDelete(p)} title="Delete payslip"
                           style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "6px 9px", borderRadius: 6, cursor: "pointer" }}>
                           <Trash2 size={13} />
@@ -504,28 +526,34 @@ export default function Payslips() {
         </div>
       )}
 
-      {/* Generate Modal */}
+      {/* Generate / edit modal */}
       {showModal && (
         <div style={modalStyle}>
-          <div style={{ background: "white", borderRadius: isMobile ? "20px 20px 0 0" : 16, padding: isMobile ? "24px 20px" : 32, width: "100%", maxWidth: 500, maxHeight: "90vh", overflow: "auto" }}>
+          <div style={{ background: "white", borderRadius: isMobile ? "20px 20px 0 0" : 16, padding: isMobile ? "24px 20px" : 32, width: "100%", maxWidth: 560, maxHeight: "90vh", overflow: "auto" }}>
             <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 24 }}>
-              <h3 style={{ fontSize: 17, fontWeight: 700 }}>Generate Payslip</h3>
-              <button onClick={() => setShowModal(false)} style={{ border: "none", background: "none", cursor: "pointer" }}><X size={20} /></button>
+              <h3 style={{ fontSize: 17, fontWeight: 700 }}>{editing ? "Edit Payslip" : "Generate Payslip"}</h3>
+              <button onClick={closeModal} style={{ border: "none", background: "none", cursor: "pointer" }}><X size={20} /></button>
             </div>
             <form onSubmit={handleSubmit}>
               <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 16 }}>
                 <div style={{ gridColumn: isMobile ? "1" : "span 2" }}>
                   <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 6 }}>Employee</label>
-                  <SearchableSelect
-                    value={form.employeeId}
-                    onChange={(val) => {
-                      const emp = employees.find(em => em.id === val);
-                      setForm(p => ({ ...p, employeeId: val, basicSalary: emp?.salary || "" }));
-                    }}
-                    options={employees.map(emp => ({ value: emp.id, label: emp.name, sublabel: emp.role || "" }))}
-                    placeholder="Search employee..."
-                    rememberKey="payslips.employee"
-                  />
+                  {editing ? (
+                    <div style={{ padding: "9px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14, background: "#f8fafc" }}>
+                      {editing.employeeName} <span style={{ color: "var(--text-muted)" }}>· {editing.role}</span>
+                    </div>
+                  ) : (
+                    <SearchableSelect
+                      value={form.employeeId}
+                      onChange={(val) => {
+                        const emp = employees.find(em => em.id === val);
+                        setForm(p => ({ ...p, employeeId: val, basicSalary: emp?.salary || "" }));
+                      }}
+                      options={employees.map(emp => ({ value: emp.id, label: emp.name, sublabel: emp.role || "" }))}
+                      placeholder="Search employee..."
+                      rememberKey="payslips.employee"
+                    />
+                  )}
                 </div>
                 <div>
                   <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 6 }}>Month</label>
@@ -540,26 +568,43 @@ export default function Payslips() {
                   <input type="number" value={form.year} onChange={e => setForm(p => ({ ...p, year: e.target.value }))}
                     style={{ width: "100%", padding: "9px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14, boxSizing: "border-box" }} />
                 </div>
-                <div>
+                <div style={{ gridColumn: isMobile ? "1" : "span 2" }}>
                   <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 6 }}>Basic Salary (Rs.)</label>
                   <input type="number" min="0.01" step="0.01" value={form.basicSalary} onChange={e => setForm(p => ({ ...p, basicSalary: e.target.value }))} required
                     style={{ width: "100%", padding: "9px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14, boxSizing: "border-box" }} />
                 </div>
-                <div>
-                  <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 6 }}>Allowances (Rs.)</label>
-                  <input type="number" min="0" step="0.01" value={form.allowances} onChange={e => setForm(p => ({ ...p, allowances: e.target.value }))} placeholder="0"
-                    style={{ width: "100%", padding: "9px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14, boxSizing: "border-box" }} />
-                </div>
-                <div>
-                  <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 6 }}>Deductions (Rs.)</label>
-                  <input type="number" min="0" step="0.01" value={form.deductions} onChange={e => setForm(p => ({ ...p, deductions: e.target.value }))} placeholder="0"
-                    style={{ width: "100%", padding: "9px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14, boxSizing: "border-box" }} />
-                </div>
-                <div>
-                  <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 6 }}>Net Pay</label>
-                  <div style={{ padding: "9px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14, fontWeight: 700, color: "var(--primary)", background: "#f8fafc" }}>
-                    Rs. {formatMoney(subMoney(sumMoney([form.basicSalary, form.allowances]), form.deductions || 0))}
+
+                {/* Line items: named earnings / deductions */}
+                <div style={{ gridColumn: isMobile ? "1" : "span 2" }}>
+                  <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 6 }}>Allowances &amp; deductions</label>
+                  {form.items.map((it, i) => (
+                    <div key={i} style={{ display: "grid", gridTemplateColumns: isMobile ? "92px 1fr 90px 32px" : "110px 1fr 130px 32px", gap: 8, marginBottom: 8, alignItems: "center" }}>
+                      <select value={it.type} onChange={e => setItem(i, { type: e.target.value })} aria-label="Line type"
+                        style={{ padding: "9px 6px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 13, color: it.type === "deduction" ? "#ef4444" : "#10b981", background: "white" }}>
+                        <option value="earning">+ Earning</option>
+                        <option value="deduction">− Deduction</option>
+                      </select>
+                      <input value={it.label} onChange={e => setItem(i, { label: e.target.value })} placeholder="e.g. Transport, Tax" aria-label="Line name"
+                        style={{ padding: "9px 10px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14, minWidth: 0 }} />
+                      <input type="number" min="0" step="0.01" value={it.amount} onChange={e => setItem(i, { amount: e.target.value })} placeholder="0" aria-label="Line amount"
+                        style={{ padding: "9px 10px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14, minWidth: 0 }} />
+                      <button type="button" title="Remove line" onClick={() => setForm(f => ({ ...f, items: f.items.filter((_, k) => k !== i) }))}
+                        style={{ border: "none", background: "none", cursor: "pointer", color: "var(--text-muted)" }}><X size={16} /></button>
+                    </div>
+                  ))}
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    <button type="button" onClick={() => setForm(f => ({ ...f, items: [...f.items, newItem("earning")] }))}
+                      style={{ padding: "6px 12px", border: "1px dashed #10b981", color: "#10b981", background: "white", borderRadius: 8, cursor: "pointer", fontSize: 13 }}>+ Add allowance</button>
+                    <button type="button" onClick={() => setForm(f => ({ ...f, items: [...f.items, newItem("deduction")] }))}
+                      style={{ padding: "6px 12px", border: "1px dashed #ef4444", color: "#ef4444", background: "white", borderRadius: 8, cursor: "pointer", fontSize: 13 }}>− Add deduction</button>
                   </div>
+                </div>
+
+                <div style={{ gridColumn: isMobile ? "1" : "span 2", padding: "10px 14px", background: "#f8fafc", borderRadius: 10, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                  <span style={{ fontSize: 13, color: "var(--text-muted)" }}>
+                    {draft.ok ? <>Allowances +Rs. {formatMoney(draft.allowances)} · Deductions −Rs. {formatMoney(draft.deductions)}</> : <span style={{ color: "#ef4444" }}>{draft.error}</span>}
+                  </span>
+                  <span style={{ fontSize: 15, fontWeight: 700, color: "var(--primary)" }}>Net Pay: Rs. {draft.ok ? formatMoney(draft.netPay) : "—"}</span>
                 </div>
                 <div style={{ gridColumn: isMobile ? "1" : "span 2" }}>
                   <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 6 }}>Notes</label>
@@ -568,8 +613,8 @@ export default function Payslips() {
                 </div>
               </div>
               <div style={{ display: "flex", gap: 10, marginTop: 24 }}>
-                <button type="button" onClick={() => setShowModal(false)} style={{ flex: 1, padding: "11px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer" }}>Cancel</button>
-                <button type="submit" disabled={saving} style={{ flex: 2, padding: "11px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: saving ? "not-allowed" : "pointer", opacity: saving ? 0.7 : 1, fontWeight: 600 }}>{saving ? "Saving..." : "Generate"}</button>
+                <button type="button" onClick={closeModal} style={{ flex: 1, padding: "11px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer" }}>Cancel</button>
+                <button type="submit" disabled={saving} style={{ flex: 2, padding: "11px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: saving ? "not-allowed" : "pointer", opacity: saving ? 0.7 : 1, fontWeight: 600 }}>{saving ? "Saving..." : editing ? "Save Changes" : "Generate"}</button>
               </div>
             </form>
           </div>

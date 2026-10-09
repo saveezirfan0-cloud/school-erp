@@ -166,8 +166,13 @@ export function buildPayslipDoc(p, { branchName } = {}) {
       head: ["Description", "Amount"],
       rows: [
         ["Basic Salary", money(p.basicSalary)],
-        ["Allowances", `+ ${money(p.allowances)}`],
-        ["Deductions", `- ${money(p.deductions)}`],
+        // Itemised payslips list each line; older ones show the flat totals.
+        ...(Array.isArray(p.lineItems) && p.lineItems.length
+          ? p.lineItems.map((i) => [i.label, `${i.type === "deduction" ? "-" : "+"} ${money(i.amount)}`])
+          : [
+              ["Allowances", `+ ${money(p.allowances)}`],
+              ["Deductions", `- ${money(p.deductions)}`],
+            ]),
       ],
       align: ["left", "right"],
     },
