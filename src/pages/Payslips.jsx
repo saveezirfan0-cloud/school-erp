@@ -112,6 +112,11 @@ export default function Payslips() {
     return matchesBranch(p, activeBranch) && matchMonth && matchEmp && matchStatus;
   });
 
+  const paidRows = filtered.filter(p => p.status === "paid");
+  const pendingRows = filtered.filter(p => p.status !== "paid");
+  const totalPaid = sumMoney(paidRows.map(p => p.netPay));
+  const totalPending = sumMoney(pendingRows.map(p => p.netPay));
+
   // multi-select for bulk actions (this page shows all filtered rows,
   // no pagination, so the header checkbox covers the whole list)
   const bulk = useBulkSelect(payslips.map(p => p.id), activeBranch);
@@ -299,6 +304,20 @@ export default function Payslips() {
             style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 18px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600 }}>
             <Plus size={16} /> Generate Payslip
           </button>
+        </div>
+      </div>
+
+      {/* Totals (follow the filters below) */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12, marginBottom: 16 }}>
+        <div style={{ background: "#ecfdf5", border: "1px solid #a7f3d0", borderRadius: 10, padding: "12px 16px" }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: "#047857", textTransform: "uppercase", letterSpacing: 0.4 }}>Total Paid</div>
+          <div style={{ fontSize: 20, fontWeight: 700, color: "#065f46", marginTop: 2 }}>Rs. {formatMoney(totalPaid)}</div>
+          <div style={{ fontSize: 12, color: "#047857" }}>{paidRows.length} payslip{paidRows.length === 1 ? "" : "s"}</div>
+        </div>
+        <div style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 10, padding: "12px 16px" }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: "#b45309", textTransform: "uppercase", letterSpacing: 0.4 }}>Total Pending</div>
+          <div style={{ fontSize: 20, fontWeight: 700, color: "#92400e", marginTop: 2 }}>Rs. {formatMoney(totalPending)}</div>
+          <div style={{ fontSize: 12, color: "#b45309" }}>{pendingRows.length} payslip{pendingRows.length === 1 ? "" : "s"}</div>
         </div>
       </div>
 
