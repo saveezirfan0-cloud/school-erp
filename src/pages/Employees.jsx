@@ -17,8 +17,13 @@ import toast from "react-hot-toast";
 import { Plus, Trash2, X, Edit2, CalendarCheck, LayoutGrid, List, Users } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import RollCallModal from "../components/Profile/RollCallModal";
+import { isLeftEmployee, leftEmployeeFields, STATUS_FILTER_OPTIONS, matchesStatusFilter } from "../utils/employeeStatus";
 
-const empty = { name: "", role: "", phone: "", email: "", branchId: "", salary: "", joinDate: "", recurringPayslip: false };
+const empty = { name: "", role: "", phone: "", email: "", branchId: "", salary: "", joinDate: "", recurringPayslip: false, status: "active", leftDate: "" };
+
+const LeftTag = () => (
+  <span style={{ marginLeft: 6, padding: "1px 7px", borderRadius: 20, fontSize: 10, background: "#fef2f2", color: "#ef4444", fontWeight: 600, verticalAlign: "middle" }}>Left</span>
+);
 
 function useIsMobile() {
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
@@ -49,6 +54,7 @@ export default function Employees() {
   const [form, setForm] = useState(empty);
   const [editing, setEditing] = useState(null);
   const [filterRole, setFilterRole] = useState("");
+  const [filterStatus, setFilterStatus] = useState("");
   const [search, setSearch] = useState("");
   const [sortField, setSortField] = useState("");
   const [sortDir, setSortDir] = useState("asc");
@@ -64,7 +70,8 @@ export default function Employees() {
     activeBranch,
     search,
     searchFields: ["name", "role", "phone", "email"],
-    filters: { role: filterRole },
+    filters: { role: filterRole, status: filterStatus },
+    filterFns: { status: matchesStatusFilter },
     sortBy: sortField,
     sortDir,
     page,
@@ -72,7 +79,7 @@ export default function Employees() {
   });
 
   const roles = [...new Set(employees.map(e => e.role).filter(Boolean))];
-  const active = !!(search || filterRole || sortField);
+  const active = !!(search || filterRole || filterStatus || sortField);
 
   // multi-select for bulk actions
   const bulk = useBulkSelect(employees.map(e => e.id), activeBranch);
@@ -120,7 +127,7 @@ export default function Employees() {
     } finally { setBulkBusy(false); }
   };
 
-  React.useEffect(() => { setPage(1); }, [search, filterRole, pageSize, activeBranch]);
+  React.useEffect(() => { setPage(1); }, [search, filterRole, filterStatus, pageSize, activeBranch]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -174,6 +181,7 @@ export default function Employees() {
         searchPlaceholder="Search name, role, phone, email..."
         filters={[
           { key: "role", value: filterRole, onChange: setFilterRole, placeholder: "All Roles", options: roles.map(r => ({ value: r, label: r })) },
+          { key: "status", value: filterStatus, onChange: setFilterStatus, placeholder: "All Statuses", options: STATUS_FILTER_OPTIONS },
         ]}
         sort={{
           field: sortField, dir: sortDir,
@@ -186,7 +194,7 @@ export default function Employees() {
           ],
         }}
         active={active}
-        onClear={() => { setSearch(""); setFilterRole(""); setSortField(""); setSortDir("asc"); }}
+        onClear={() => { setSearch(""); setFilterRole(""); setFilterStatus(""); setSortField(""); setSortDir("asc"); }}
         rightSlot={
           <div style={{ display: "flex", border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden", background: "white" }} role="group" aria-label="View">
             {[["cards", "Card view", LayoutGrid], ["list", "List view", List]].map(([k, label, Icon]) => (
@@ -221,7 +229,7 @@ export default function Employees() {
                       <RowCheckbox checked={bulk.isSelected(emp.id)} onChange={() => bulk.toggle(emp.id)} label={`Select ${emp.name}`} />
                     </td>
                     <td style={{ padding: "9px 14px", fontSize: 14, fontWeight: 600, color: "var(--primary)", whiteSpace: "nowrap" }}>
-                      {emp.name}{emp.historical === true && <HistoricalTag />}
+                      {emp.name}{emp.historical === true && <HistoricalTag />}{isLeftEmployee(emp) && <LeftTag />}
                       {emp.recurringPayslip && <span style={{ marginLeft: 6, padding: "1px 7px", borderRadius: 20, fontSize: 10, background: "#ecfdf5", color: "#10b981", fontWeight: 600, verticalAlign: "middle" }}>Auto payslip</span>}
                     </td>
                     <td style={{ padding: "9px 14px", fontSize: 13, color: "var(--text-muted)", whiteSpace: "nowrap" }}>{emp.role || "—"}</td>
@@ -258,7 +266,7 @@ export default function Employees() {
               </div>
             </div>
             <div style={{ marginTop: 12 }}>
-              <div style={{ fontWeight: 600, fontSize: 15, color: "var(--primary)" }}>{emp.name}{emp.historical === true && <HistoricalTag />}</div>
+              <div style={{ fontWeight: 600, fontSize: 15, color: "var(--primary)" }}>{emp.name}{emp.historical === true && <HistoricalTag />}{isLeftEmployee(emp) && <LeftTag />}</div>
               <div style={{ color: "var(--text-muted)", fontSize: 13, marginTop: 2 }}>{emp.role}</div>
               <div style={{ color: "var(--text-muted)", fontSize: 13 }}>{emp.phone}</div>
               <div style={{ marginTop: 10, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -282,7 +290,7 @@ export default function Employees() {
         <RollCallModal
           subjectType="employee" noun="employees"
           scopeLabel={filterRole ? filterRole : "all roles in the current list"}
-          people={filtered.map((e) => ({ id: e.id, name: e.name, sub: e.role, branchId: e.branchId }))}
+          people={filtered.filter((e) => !isLeftEmployee(e)).map((e) => ({ id: e.id, name: e.name, sub: e.role, branchId: e.branchId }))}
           onClose={() => setShowRollCall(false)}
         />
       )}
@@ -356,8 +364,15 @@ export default function Employees() {
                     {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
                   </select>
                 </div>
+                <div style={{ gridColumn: isMobile ? "1" : "span 2", display: "flex", alignItems: "center", gap: 10, padding: 12, border: "1px solid var(--border)", borderRadius: 8, background: isLeftEmployee(form) ? "#fef2f2" : "#f8fafc" }}>
+                  <input type="checkbox" id="employeeLeft" checked={isLeftEmployee(form)} onChange={e => setForm(p => ({ ...p, ...leftEmployeeFields(e.target.checked) }))} style={{ width: 18, height: 18 }} />
+                  <div>
+                    <label htmlFor="employeeLeft" style={{ fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Employee has left / inactive</label>
+                    <div style={{ fontSize: 11, color: "var(--text-muted)" }}>Keeps their records, stops new payslips{form.leftDate ? ` · left ${form.leftDate}` : ""}</div>
+                  </div>
+                </div>
                 <div style={{ gridColumn: isMobile ? "1" : "span 2", display: "flex", alignItems: "center", gap: 10, padding: 12, border: "1px solid var(--border)", borderRadius: 8, background: form.recurringPayslip ? "#f0fdf4" : "#f8fafc" }}>
-                  <input type="checkbox" id="recurringPayslip" checked={form.recurringPayslip || false} onChange={e => setForm(p => ({ ...p, recurringPayslip: e.target.checked }))} style={{ width: 18, height: 18 }} />
+                  <input type="checkbox" id="recurringPayslip" checked={form.recurringPayslip || false} disabled={isLeftEmployee(form)} onChange={e => setForm(p => ({ ...p, recurringPayslip: e.target.checked }))} style={{ width: 18, height: 18 }} />
                   <div>
                     <label htmlFor="recurringPayslip" style={{ fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Auto-generate monthly payslip</label>
                     <div style={{ fontSize: 11, color: "var(--text-muted)" }}>Payslip auto-created each month</div>

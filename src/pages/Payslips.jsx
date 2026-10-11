@@ -20,6 +20,7 @@ import { buildPayslipDoc } from "../utils/documents";
 import toast from "react-hot-toast";
 import { Plus, Printer, X, RefreshCw, Eye, Trash2, Pencil, Banknote } from "lucide-react";
 import SearchableSelect from "../components/UI/SearchableSelect";
+import { isLeftEmployee } from "../utils/employeeStatus";
 
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 const empty = { employeeId: "", month: "", year: new Date().getFullYear(), basicSalary: "", items: [], notes: "" };
@@ -237,7 +238,7 @@ export default function Payslips() {
   };
 
   const handleGenerateRecurring = () => runSave(async () => {
-    const recurringEmps = employees.filter(e => e.recurringPayslip);
+    const recurringEmps = employees.filter(e => e.recurringPayslip && !isLeftEmployee(e));
     if (recurringEmps.length === 0) return toast.error("No employees have recurring payslips enabled");
     const existing = payslips.filter(p => p.month === recurringMonth && Number(p.year) === Number(recurringYear));
     const existingIds = new Set(existing.map(p => p.employeeId));
@@ -538,7 +539,7 @@ export default function Payslips() {
               <button onClick={() => setShowRecurring(false)} style={{ border: "none", background: "none", cursor: "pointer" }}><X size={20} /></button>
             </div>
             <div style={{ padding: 14, background: "#f8fafc", borderRadius: 10, marginBottom: 20, fontSize: 13, color: "var(--text-muted)" }}>
-              Will generate payslips for <strong style={{ color: "#10b981" }}>{employees.filter(e => e.recurringPayslip).length} employees</strong> with recurring payslip enabled. Existing payslips for the selected month are skipped.
+              Will generate payslips for <strong style={{ color: "#10b981" }}>{employees.filter(e => e.recurringPayslip && !isLeftEmployee(e)).length} employees</strong> with recurring payslip enabled. Existing payslips for the selected month are skipped.
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 24 }}>
               <div>

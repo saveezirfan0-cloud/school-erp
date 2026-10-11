@@ -10,6 +10,7 @@ import ProfileShell, { Notice, cardStyle, cardHeadStyle } from "../components/Pr
 import DetailsCard from "../components/Profile/DetailsCard";
 import AttendanceTab, { summarize } from "../components/Profile/AttendanceTab";
 import NotesTab from "../components/Profile/NotesTab";
+import { isLeftEmployee } from "../utils/employeeStatus";
 import { User, Briefcase, CalendarCheck, Banknote, StickyNote, Wallet, TrendingUp } from "lucide-react";
 
 const money = (n) => `Rs. ${Number(n || 0).toLocaleString()}`;
@@ -84,6 +85,8 @@ export default function EmployeeProfile() {
     { key: "qualification", label: "Qualification" },
     { key: "salary", label: "Monthly salary (Rs.)", type: "number", format: (v) => money(v) },
     { key: "recurringPayslip", label: "Auto monthly payslip", type: "boolean" },
+    { key: "status", label: "Status", type: "select", options: [{ value: "active", label: "Active" }, { value: "left", label: "Left / inactive" }], format: (v) => (v === "left" ? "Left / inactive" : "Active") },
+    { key: "leftDate", label: "Date left", type: "date", format: (v) => (v ? formatDate(v) : "—") },
   ];
 
   return (
@@ -97,6 +100,7 @@ export default function EmployeeProfile() {
       </>}
       badges={[
         { label: branchName },
+        ...(isLeftEmployee(emp) ? [{ label: "Left", bg: "#fef2f2", color: "#ef4444" }] : []),
         emp.recurringPayslip ? { label: "Auto payslip", bg: "#ecfdf5", color: "#10b981" } : { label: "Manual payslip" },
       ]}
       stats={[

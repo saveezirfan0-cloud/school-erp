@@ -17,6 +17,7 @@ import toast from "react-hot-toast";
 import { Plus, Users, Edit2, Trash2, X, Receipt, CalendarCheck, GraduationCap } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { isLeftStudent, leftStatusFields } from "../utils/studentStatus";
+import { STATUS_FILTER_OPTIONS, matchesStatusFilter } from "../utils/employeeStatus";
 import { useUser } from "../context/UserContext";
 import RollCallModal from "../components/Profile/RollCallModal";
 
@@ -52,6 +53,7 @@ export default function Students() {
   const [search, setSearch] = useState("");
   // Multi-select class filter (Hifz, Class 1, ...). Remembered between visits.
   const [filterGrades, setFilterGrades] = usePersistentState("students.filterGrades", []);
+  const [filterStatus, setFilterStatus] = usePersistentState("students.filterStatus", "");
   const [sortField, setSortField] = useState("");
   const [sortDir, setSortDir] = useState("asc");
   const [page, setPage] = useState(1);
@@ -65,7 +67,8 @@ export default function Students() {
     activeBranch,
     search,
     searchFields: ["name", "studentId", "grade", "parentName", "parentPhone", "email"],
-    filters: { grade: filterGrades },
+    filters: { grade: filterGrades, status: filterStatus },
+    filterFns: { status: matchesStatusFilter },
     sortBy: sortField,
     sortDir,
     page,
@@ -74,7 +77,7 @@ export default function Students() {
 
   // Include any remembered selection that no longer matches a student, so it stays visible and removable.
   const grades = [...new Set([...rows.map((s) => s.grade).filter(Boolean), ...filterGrades])].sort();
-  const active = !!(search || filterGrades.length || sortField);
+  const active = !!(search || filterGrades.length || filterStatus || sortField);
 
   // multi-select for bulk actions
   const bulk = useBulkSelect(rows.map((s) => s.id), activeBranch);
@@ -83,9 +86,9 @@ export default function Students() {
   const [showBulkAdd, setShowBulkAdd] = useState(false);
   const [bulkBusy, setBulkBusy] = useState(false);
 
-  React.useEffect(() => { setPage(1); }, [search, filterGrades, pageSize, activeBranch]);
+  React.useEffect(() => { setPage(1); }, [search, filterGrades, filterStatus, pageSize, activeBranch]);
 
-  const clearAll = () => { setSearch(""); setFilterGrades([]); setSortField(""); setSortDir("asc"); };
+  const clearAll = () => { setSearch(""); setFilterGrades([]); setFilterStatus(""); setSortField(""); setSortDir("asc"); };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -182,6 +185,7 @@ export default function Students() {
         searchPlaceholder="Search name, ID, class, parent, phone..."
         filters={[
           { key: "grade", multi: true, value: filterGrades, onChange: setFilterGrades, placeholder: "All Classes", options: grades.map((g) => ({ value: g, label: g })) },
+          { key: "status", value: filterStatus, onChange: setFilterStatus, placeholder: "All Statuses", options: STATUS_FILTER_OPTIONS },
         ]}
         sort={{
           field: sortField, dir: sortDir,
@@ -293,7 +297,7 @@ export default function Students() {
         <RollCallModal
           subjectType="student" noun="students"
           scopeLabel={filterGrades.length ? filterGrades.join(", ") : "all classes in the current list"}
-          people={filtered.map((s) => ({ id: s.id, name: s.name, sub: [s.studentId, s.grade].filter(Boolean).join(" • "), branchId: s.branchId }))}
+          people={filtered.filter((s) => !isLeftStudent(s)).map((s) => ({ id: s.id, name: s.name, sub: [s.studentId, s.grade].filter(Boolean).join(" • "), branchId: s.branchId }))}
           onClose={() => setShowRollCall(false)}
         />
       )}
@@ -376,7 +380,7 @@ export default function Students() {
                   <input type="checkbox" id="studentLeft" checked={isLeftStudent(form)} onChange={(e) => setForm((p) => ({ ...p, ...leftStatusFields(e.target.checked) }))} style={{ width: 18, height: 18 }} />
                   <div>
                     <label htmlFor="studentLeft" style={{ fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Student has left</label>
-                    <div style={{ fontSize: 11, color: "var(--text-muted)" }}>Keeps their records, stops new fee invoices</div>
+                    <div style={{ fontSize: 11, color: "var(--text-muted)" }}>Keeps their records, stops new fee invoices{form.leftDate ? ` · left ${form.leftDate}` : ""}</div>
                   </div>
                 </div>
                 <div style={{ display: "flex", alignItems: "center", gap: 10, padding: 12, border: "1px solid var(--border)", borderRadius: 8, background: form.recurringFee ? "#f0fdf4" : "#f8fafc" }}>

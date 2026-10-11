@@ -7,6 +7,7 @@ import { useDocument, useRelated } from "../hooks/useProfileData";
 import { logActivity } from "../utils/auditLog";
 import { formatDate, localISODate, durationSince } from "../utils/dates";
 import { summarizeInvoices, isLivePayment } from "../utils/fees";
+import { isLeftStudent } from "../utils/studentStatus";
 import ProfileShell, { Notice, cardStyle, cardHeadStyle } from "../components/Profile/ProfileShell";
 import DetailsCard from "../components/Profile/DetailsCard";
 import AttendanceTab, { summarize } from "../components/Profile/AttendanceTab";
@@ -106,6 +107,7 @@ export default function StudentProfile() {
       </>}
       badges={[
         { label: branchName },
+        ...(isLeftStudent(student) ? [{ label: "Left", bg: "#fef2f2", color: "#ef4444" }] : []),
         student.recurringFee ? { label: "Auto fees", bg: "#ecfdf5", color: "#10b981" } : { label: "Manual fees" },
       ]}
       stats={[
