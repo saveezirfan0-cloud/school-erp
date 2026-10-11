@@ -92,8 +92,13 @@ export default function Payments() {
   const [showBulkEdit, setShowBulkEdit] = useState(false);
   const [bulkBusy, setBulkBusy] = useState(false);
 
-  const totalIn = sumMoney(filtered.filter(p => p.type === "cash_in").map(p => p.amount));
-  const totalOut = sumMoney(filtered.filter(p => p.type === "cash_out").map(p => p.amount));
+  // The summary cards count live money only. A reversed payment and its
+  // reversal entry cancel each other out, so neither belongs in the totals:
+  // counting both would inflate Cash In and Cash Out by the same amount, and
+  // counting only one side would skew the net.
+  const liveRows = filtered.filter(p => !p.reversed && !isReversalRow(p));
+  const totalIn = sumMoney(liveRows.filter(p => p.type === "cash_in").map(p => p.amount));
+  const totalOut = sumMoney(liveRows.filter(p => p.type === "cash_out").map(p => p.amount));
 
   const openModal = () => {
     setForm({ ...emptyForm(), accountId: pickDefaultAccountId(postable) });
