@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from "react";
 import { db, addDoc, collection, serverTimestamp } from "../../firebase";
 import { runBulk, bulkResultMessage } from "../../utils/bulk";
 import { logActivity } from "../../utils/auditLog";
+import { nextClassNo } from "../../utils/classNo";
 import toast from "react-hot-toast";
 import { X, Plus, Trash2, Copy, Wand2, ArrowDownToLine } from "lucide-react";
 
@@ -10,7 +11,7 @@ const MAX_ROWS = 200;
 // Order matters: it is the column order used for pasting from a spreadsheet.
 const COLUMNS = [
   { key: "name", label: "Full Name *", width: 170 },
-  { key: "studentId", label: "Student ID *", width: 110 },
+  { key: "studentId", label: "Reg No. *", width: 110 },
   { key: "grade", label: "Grade / Class", width: 110, fill: true },
   { key: "parentName", label: "Parent Name", width: 150 },
   { key: "parentPhone", label: "Parent Phone", width: 140 },
@@ -68,7 +69,7 @@ function makeIdGenerator(existingIds, usedIds) {
 const baseInput = { width: "100%", padding: "7px 8px", border: "1px solid var(--border)", borderRadius: 6, fontSize: 13, boxSizing: "border-box" };
 const ghostBtn = { display: "flex", alignItems: "center", gap: 5, padding: "9px 12px", border: "1px solid var(--border)", borderRadius: 8, background: "white", cursor: "pointer", fontSize: 13 };
 
-export default function BulkAddStudentsModal({ branches, activeBranch, existingIds, onClose, onDone }) {
+export default function BulkAddStudentsModal({ branches, activeBranch, existingIds, students = [], onClose, onDone }) {
   const defaultBranch = activeBranch && activeBranch !== "all" && activeBranch !== "main" ? activeBranch : "";
   const [branchId, setBranchId] = useState(defaultBranch);
   const [rowCount, setRowCount] = useState(5);
@@ -134,7 +135,7 @@ export default function BulkAddStudentsModal({ branches, activeBranch, existingI
     if (!count) { toast.error("Enter a name first — IDs are only generated for rows that have a name"); return; }
     setRows(updated);
     setErrors({});
-    toast.success(`Filled ${count} Student ID${count === 1 ? "" : "s"}`);
+    toast.success(`Filled ${count} Reg No${count === 1 ? "" : "s"}.`);
   };
 
   // Paste multi-cell data copied from Excel / Google Sheets: fills the grid
@@ -187,9 +188,9 @@ export default function BulkAddStudentsModal({ branches, activeBranch, existingI
       const id = r.studentId.trim().toLowerCase();
       const fail = (field, msg) => { if (!errs[r._key]) errs[r._key] = { field, msg }; };
       if (!r.name.trim()) fail("name", "Name is required");
-      if (!id) fail("studentId", "Student ID is required (use Auto-fill IDs to generate one)");
-      else if (taken.has(id)) fail("studentId", `Student ID "${r.studentId.trim()}" already exists`);
-      else if (seen.has(id)) fail("studentId", `Student ID "${r.studentId.trim()}" is used twice in this list`);
+      if (!id) fail("studentId", "Reg No. is required (use Auto-fill IDs to generate one)");
+      else if (taken.has(id)) fail("studentId", `Reg No. "${r.studentId.trim()}" already exists`);
+      else if (seen.has(id)) fail("studentId", `Reg No. "${r.studentId.trim()}" is used twice in this list`);
       if (id) seen.add(id);
       if (r.monthlyFee !== "" && (isNaN(Number(r.monthlyFee)) || Number(r.monthlyFee) < 0)) fail("monthlyFee", "Invalid monthly fee");
       if (r.email.trim() && !EMAIL_RE.test(r.email.trim())) fail("email", "Invalid email address");
@@ -212,12 +213,22 @@ export default function BulkAddStudentsModal({ branches, activeBranch, existingI
       return;
     }
 
+    // Each new student gets the next free number in their class, in list order.
+    const nextNo = {};
+    const classNos = new Map(filled.map((r) => {
+      const grade = r.grade.trim();
+      if (!grade) return [r._key, ""];
+      if (nextNo[grade] == null) nextNo[grade] = Number(nextClassNo(students, grade, branchId));
+      return [r._key, String(nextNo[grade]++)];
+    }));
+
     setBusy(true);
     try {
       const { ok, failed } = await runBulk(filled, (r) => {
         const { _key, ...data } = r;
         return addDoc(collection(db, "students"), {
           ...data,
+          classNo: classNos.get(_key),
           name: data.name.trim(),
           studentId: data.studentId.trim(),
           parentName: data.parentName.trim(),

@@ -84,9 +84,10 @@ export default function StudentProfile() {
     { key: "address", label: "Address", type: "textarea", full: true },
   ];
   const admissionFields = [
-    { key: "studentId", label: "Student ID", required: true },
+    { key: "studentId", label: "Reg No.", required: true },
     { key: "admissionDate", label: "Admission date", type: "date", format: (v) => (v ? formatDate(v) : "—") },
     { key: "grade", label: "Grade / class" },
+    { key: "classNo", label: "Class No.", type: "number" },
     { key: "branchId", label: "Branch", type: "select", options: branchOptions },
     { key: "dob", label: "Date of birth", type: "date", format: (v) => (v ? formatDate(v) : "—") },
     { key: "gender", label: "Gender", type: "select", options: [{ value: "", label: "—" }, { value: "Male", label: "Male" }, { value: "Female", label: "Female" }] },
@@ -125,6 +126,22 @@ export default function StudentProfile() {
             <strong>{durationSince(student.admissionDate)}</strong>
             {!student.admissionDate && <span style={{ color: "var(--text-muted)" }}> — set an admission date above</span>}
           </div>
+          {Array.isArray(student.transferHistory) && student.transferHistory.length > 0 && (
+            <div style={{ ...cardStyle, marginTop: 16 }}>
+              <div style={cardHeadStyle}>Transfer history</div>
+              {[...student.transferHistory].reverse().map((t, i) => {
+                const place = (grade, branchId, classNo) => [grade || "—", classNo && `#${classNo}`, branchId !== undefined && (branches.find((b) => b.id === branchId)?.name || "Main Office")].filter(Boolean).join(" · ");
+                const branchMoved = (t.fromBranchId || "") !== (t.toBranchId || "");
+                return (
+                  <div key={i} style={{ padding: "10px 16px", borderTop: i ? "1px solid var(--border)" : undefined, fontSize: 13 }}>
+                    <span style={{ color: "var(--text-muted)" }}>{t.date ? formatDate(t.date) : "—"}: </span>
+                    {place(t.fromGrade, branchMoved ? t.fromBranchId : undefined, t.fromClassNo)} → <strong>{place(t.toGrade, branchMoved ? t.toBranchId : undefined, t.toClassNo)}</strong>
+                    {t.note && <span style={{ color: "var(--text-muted)" }}> — {t.note}</span>}
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </>
       )}
 
