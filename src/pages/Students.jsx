@@ -14,13 +14,15 @@ import { bulkResultMessage } from "../utils/bulk";
 import { logActivity } from "../utils/auditLog";
 import ExportMenu from "../components/UI/ExportMenu";
 import toast from "react-hot-toast";
-import { Plus, Users, Edit2, Trash2, X, Receipt, CalendarCheck, GraduationCap } from "lucide-react";
+import { Plus, Users, Edit2, Trash2, X, Receipt, CalendarCheck, GraduationCap, ArrowRightLeft } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { isLeftStudent, leftStatusFields } from "../utils/studentStatus";
 import { useUser } from "../context/UserContext";
 import RollCallModal from "../components/Profile/RollCallModal";
+import TransferStudentsModal from "../components/UI/TransferStudentsModal";
+import { nextClassNo, classNoHolder, planNumbering } from "../utils/classNo";
 
-const emptyStudent = { name: "", studentId: "", grade: "", parentName: "", parentPhone: "", email: "", branchId: "", monthlyFee: "", address: "", dob: "", recurringFee: false };
+const emptyStudent = { name: "", studentId: "", classNo: "", grade: "", parentName: "", parentPhone: "", email: "", branchId: "", monthlyFee: "", address: "", dob: "", recurringFee: false };
 
 // Invoices copy the student's branch when they are created. When a student
 // moves branch, carry their invoices along so branch-scoped fees/dashboards
@@ -60,13 +62,19 @@ export default function Students() {
   const [showModal, setShowModal] = useState(false);
   const [form, setForm] = useState(emptyStudent);
   const [editing, setEditing] = useState(null);
+  const [transferring, setTransferring] = useState(null); // students being transferred
+
+  // Viewing one class shows each student's number in that class (and lists
+  // them in that order unless another sort is picked); across classes only
+  // the school-wide Reg No. is shown.
+  const singleClass = filterGrades.length === 1 ? filterGrades[0] : null;
 
   const { rows, filtered, paged, total, pageCount, page: safePage } = useCollection("students", {
     activeBranch,
     search,
     searchFields: ["name", "studentId", "grade", "parentName", "parentPhone", "email"],
     filters: { grade: filterGrades },
-    sortBy: sortField,
+    sortBy: sortField || (singleClass ? "classNo" : ""),
     sortDir,
     page,
     pageSize,
@@ -89,15 +97,24 @@ export default function Students() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    const before = editing ? rows.find((r) => r.id === editing) : null;
+    const data = { ...form, classNo: String(form.classNo ?? "").trim() };
+    const movedClass = before && ((before.grade || "") !== (data.grade || "") || (before.branchId || "") !== (data.branchId || ""));
+    // A new student, or one moved to another class without a new number typed
+    // in, gets the next free number in their class.
+    if (data.grade && (!data.classNo || (movedClass && data.classNo === String(before.classNo ?? "").trim()))) {
+      data.classNo = nextClassNo(rows, data.grade, data.branchId, { excludeIds: editing ? [editing] : [] });
+    }
+    const holder = classNoHolder(rows, data.grade, data.branchId, data.classNo, editing);
+    if (holder && !window.confirm(`Class No. ${data.classNo} in ${data.grade} is already ${studentName(holder)}'s. Save anyway?`)) return;
     try {
       if (editing) {
-        const before = rows.find((r) => r.id === editing);
-        await updateDoc(doc(db, "students", editing), { ...form, updatedAt: serverTimestamp() });
-        if (before && (before.branchId || "") !== (form.branchId || "")) await syncInvoiceBranch([editing], form.branchId);
+        await updateDoc(doc(db, "students", editing), { ...data, updatedAt: serverTimestamp() });
+        if (before && (before.branchId || "") !== (data.branchId || "")) await syncInvoiceBranch([editing], data.branchId);
         toast.success("Student updated");
         logActivity("updated", "Students", `${form.name || "Unnamed"}${form.studentId ? ` (${form.studentId})` : ""}`);
       } else {
-        await addDoc(collection(db, "students"), { ...form, createdAt: serverTimestamp() });
+        await addDoc(collection(db, "students"), { ...data, createdAt: serverTimestamp() });
         toast.success("Student added");
         logActivity("created", "Students", `${form.name || "Unnamed"}${form.studentId ? ` (${form.studentId})` : ""}`);
       }
@@ -146,12 +163,59 @@ export default function Students() {
     } finally { setBulkBusy(false); }
   };
 
+  // Write a transfer planned by TransferStudentsModal: new class, branch and
+  // class number, plus a line in the student's transfer history.
+  const handleTransfer = async (moves, { date, note }) => {
+    setBulkBusy(true);
+    try {
+      for (const m of moves) {
+        const s = m.student;
+        const entry = { date, fromGrade: s.grade || "", toGrade: m.grade, fromBranchId: s.branchId || "", toBranchId: m.branchId, fromClassNo: s.classNo || "", toClassNo: m.classNo, ...(note ? { note } : {}) };
+        await updateDoc(doc(db, "students", s.id), {
+          grade: m.grade, branchId: m.branchId, classNo: m.classNo,
+          transferHistory: [...(Array.isArray(s.transferHistory) ? s.transferHistory : []), entry],
+          updatedAt: serverTimestamp(),
+        });
+      }
+      const branchMoves = {};
+      moves.filter((m) => (m.student.branchId || "") !== m.branchId).forEach((m) => { (branchMoves[m.branchId] ||= []).push(m.student.id); });
+      for (const [branchId, ids] of Object.entries(branchMoves)) await syncInvoiceBranch(ids, branchId);
+      const n = moves.length;
+      toast.success(`${n} student${n === 1 ? "" : "s"} transferred to ${moves[0].grade}`);
+      logActivity("updated", "Students", n === 1
+        ? `${studentName(moves[0].student)}${moves[0].student.studentId ? ` (${moves[0].student.studentId})` : ""}: transferred to ${moves[0].grade}`
+        : `${n} students (bulk): transferred to ${moves[0].grade}`);
+      setTransferring(null);
+      bulk.clear();
+    } catch (err) {
+      toast.error(err?.message || "Transfer failed");
+    } finally { setBulkBusy(false); }
+  };
+
+  // One-click numbering for students in the viewed class who have no class number yet.
+  const unnumbered = singleClass ? filtered.filter((s) => !String(s.classNo ?? "").trim()) : [];
+  const handleAssignNumbers = async () => {
+    const plan = planNumbering(rows, unnumbered);
+    if (!plan.length) return;
+    if (!window.confirm(`Give ${plan.length} student${plan.length === 1 ? "" : "s"} in ${singleClass} a class number (alphabetically, after the highest number already used)?`)) return;
+    setBulkBusy(true);
+    try {
+      for (const p of plan) await updateDoc(doc(db, "students", p.student.id), { classNo: p.classNo, updatedAt: serverTimestamp() });
+      toast.success(`Class numbers assigned to ${plan.length} student${plan.length === 1 ? "" : "s"}`);
+      logActivity("updated", "Students", `${plan.length} students (bulk): class numbers assigned in ${singleClass}`);
+    } catch (err) {
+      toast.error(err?.message || "Could not assign class numbers");
+    } finally { setBulkBusy(false); }
+  };
+
   const branchLabel = (s) => branches.find((b) => b.id === s.branchId)?.name || "Main";
+  const numberHeaders = singleClass ? ["Reg No.", "Class No."] : ["Reg No."];
+  const numberCells = (s) => (singleClass ? [s.studentId, s.classNo] : [s.studentId]);
   const getExportData = () => ({
-    headers: ["ID", "Name", "Grade", "Parent", "Phone", "Fee", "Branch"],
-    rows: filtered.map((s) => [s.studentId, s.name, s.grade, s.parentName, s.parentPhone, Number(s.monthlyFee || 0), branchLabel(s)]),
-    pdfHeaders: ["ID", "Name", "Grade", "Parent", "Phone", "Fee", "Branch"],
-    pdfRows: filtered.map((s) => [s.studentId, s.name, s.grade, s.parentName, s.parentPhone, `Rs. ${Number(s.monthlyFee || 0).toLocaleString()}`, branchLabel(s)]),
+    headers: [...numberHeaders, "Name", "Grade", "Parent", "Phone", "Fee", "Branch"],
+    rows: filtered.map((s) => [...numberCells(s), s.name, s.grade, s.parentName, s.parentPhone, Number(s.monthlyFee || 0), branchLabel(s)]),
+    pdfHeaders: [...numberHeaders, "Name", "Grade", "Parent", "Phone", "Fee", "Branch"],
+    pdfRows: filtered.map((s) => [...numberCells(s), s.name, s.grade, s.parentName, s.parentPhone, `Rs. ${Number(s.monthlyFee || 0).toLocaleString()}`, branchLabel(s)]),
   });
 
   return (
@@ -179,7 +243,7 @@ export default function Students() {
       <ListToolbar
         search={search}
         onSearch={setSearch}
-        searchPlaceholder="Search name, ID, class, parent, phone..."
+        searchPlaceholder="Search name, Reg No., class, parent, phone..."
         filters={[
           { key: "grade", multi: true, value: filterGrades, onChange: setFilterGrades, placeholder: "All Classes", options: grades.map((g) => ({ value: g, label: g })) },
         ]}
@@ -189,7 +253,8 @@ export default function Students() {
           onToggleDir: () => setSortDir((d) => (d === "asc" ? "desc" : "asc")),
           options: [
             { value: "name", label: "Name" },
-            { value: "studentId", label: "Student ID" },
+            { value: "studentId", label: "Reg No." },
+            { value: "classNo", label: "Class No." },
             { value: "grade", label: "Grade" },
             { value: "monthlyFee", label: "Monthly Fee" },
           ],
@@ -197,6 +262,16 @@ export default function Students() {
         active={active}
         onClear={clearAll}
       />
+
+      {unnumbered.length > 0 && can("canEditStudents") && (
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", padding: "10px 14px", marginBottom: 12, background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 10, fontSize: 13 }}>
+          <span>{unnumbered.length} student{unnumbered.length === 1 ? "" : "s"} in {singleClass} {unnumbered.length === 1 ? "has" : "have"} no class number yet.</span>
+          <button onClick={handleAssignNumbers} disabled={bulkBusy}
+            style={{ padding: "6px 12px", border: "1px solid #d97706", color: "#b45309", background: "white", borderRadius: 8, cursor: "pointer", fontWeight: 600, fontSize: 12 }}>
+            Assign class numbers
+          </button>
+        </div>
+      )}
 
       {isMobile ? (
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -210,12 +285,16 @@ export default function Students() {
                   </div>
                   <div>
                     <div style={{ fontWeight: 600, fontSize: 15 }}>{studentName(s)}</div>
-                    <div style={{ fontSize: 12, color: "var(--text-muted)", fontFamily: "monospace" }}>{s.studentId}</div>
+                    <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                      {s.studentId && <span>Reg No. <span style={{ fontFamily: "monospace" }}>{s.studentId}</span></span>}
+                      {singleClass && s.classNo && <span>{s.studentId ? " • " : ""}Class No. <strong>{s.classNo}</strong></span>}
+                    </div>
                   </div>
                 </div>
                 <div style={{ display: "flex", gap: 6 }} onClick={(e) => e.stopPropagation()}>
                   <button onClick={() => navigate(`/students/${s.id}/ledger`)} title="Ledger" style={{ border: "none", background: "#eff6ff", color: "#2563eb", padding: "7px 9px", borderRadius: 8, cursor: "pointer" }}><Receipt size={14} /></button>
                   {canSeeAcademics && <button onClick={() => navigate(`/students/${s.id}/academics`)} title="Academics" aria-label="Academics" style={{ border: "none", background: "#ecfdf5", color: "#059669", padding: "7px 9px", borderRadius: 8, cursor: "pointer" }}><GraduationCap size={14} /></button>}
+                  {can("canEditStudents") && <button onClick={() => setTransferring([s])} title="Transfer" aria-label="Transfer" style={{ border: "none", background: "#f5f3ff", color: "#7c3aed", padding: "7px 9px", borderRadius: 8, cursor: "pointer" }}><ArrowRightLeft size={14} /></button>}
                   <button onClick={() => { setForm(s); setEditing(s.id); setShowModal(true); }} style={{ border: "none", background: "var(--primary-light)", color: "var(--primary)", padding: "7px 9px", borderRadius: 8, cursor: "pointer" }}><Edit2 size={14} /></button>
                   {can("canDeleteStudents") && <button onClick={() => handleDelete(s)} style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "7px 9px", borderRadius: 8, cursor: "pointer" }}><Trash2 size={14} /></button>}
                 </div>
@@ -243,7 +322,7 @@ export default function Students() {
                   <th style={{ padding: "11px 6px 11px 14px", width: 34 }}>
                     <HeaderCheckbox checked={bulk.pageChecked(pagedIds)} indeterminate={bulk.pageIndeterminate(pagedIds)} onChange={() => bulk.togglePage(pagedIds)} />
                   </th>
-                  {["ID", "Name", "Grade", "Parent", "Phone", "Fee", "Branch", "Auto", "Actions"].map((h) => (
+                  {[...numberHeaders, "Name", "Grade", "Parent", "Phone", "Fee", "Branch", "Auto", "Actions"].map((h) => (
                     <th key={h} style={{ padding: "11px 14px", textAlign: "left", fontSize: 11, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", whiteSpace: "nowrap" }}>{h}</th>
                   ))}
                 </tr>
@@ -256,6 +335,7 @@ export default function Students() {
                       <RowCheckbox checked={bulk.isSelected(s.id)} onChange={() => bulk.toggle(s.id)} label={`Select ${studentName(s)}`} />
                     </td>
                     <td style={{ padding: "11px 14px", fontSize: 12, fontFamily: "monospace" }}>{s.studentId}</td>
+                    {singleClass && <td style={{ padding: "11px 14px", fontSize: 13, fontWeight: 600 }}>{s.classNo}</td>}
                     <td style={{ padding: "11px 14px", fontSize: 14, fontWeight: 500, whiteSpace: "nowrap", color: "var(--primary)" }}>{studentName(s)}{isLeftStudent(s) && <span style={{ marginLeft: 8, padding: "2px 8px", borderRadius: 20, fontSize: 11, background: "#fef2f2", color: "#ef4444", fontWeight: 600 }}>Left</span>}</td>
                     <td style={{ padding: "11px 14px", fontSize: 13 }}>{s.grade}</td>
                     <td style={{ padding: "11px 14px", fontSize: 13, whiteSpace: "nowrap" }}>{s.parentName}</td>
@@ -271,6 +351,7 @@ export default function Students() {
                       <div style={{ display: "flex", gap: 6 }}>
                         <button onClick={() => navigate(`/students/${s.id}/ledger`)} title="Ledger" style={{ border: "none", background: "#eff6ff", color: "#2563eb", padding: "6px 9px", borderRadius: 6, cursor: "pointer" }}><Receipt size={13} /></button>
                         {canSeeAcademics && <button onClick={() => navigate(`/students/${s.id}/academics`)} title="Academics" aria-label="Academics" style={{ border: "none", background: "#ecfdf5", color: "#059669", padding: "6px 9px", borderRadius: 6, cursor: "pointer" }}><GraduationCap size={13} /></button>}
+                        {can("canEditStudents") && <button onClick={() => setTransferring([s])} title="Transfer" aria-label="Transfer" style={{ border: "none", background: "#f5f3ff", color: "#7c3aed", padding: "6px 9px", borderRadius: 6, cursor: "pointer" }}><ArrowRightLeft size={13} /></button>}
                         <button onClick={() => { setForm(s); setEditing(s.id); setShowModal(true); }} style={{ border: "none", background: "var(--primary-light)", color: "var(--primary)", padding: "6px 9px", borderRadius: 6, cursor: "pointer" }}><Edit2 size={13} /></button>
                         {can("canDeleteStudents") && <button onClick={() => handleDelete(s)} style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "6px 9px", borderRadius: 6, cursor: "pointer" }}><Trash2 size={13} /></button>}
                       </div>
@@ -308,15 +389,29 @@ export default function Students() {
         onClear={bulk.clear}
         actions={[
           { label: "Edit", icon: Edit2, onClick: () => setShowBulkEdit(true) },
+          ...(can("canEditStudents") ? [{ label: "Transfer", icon: ArrowRightLeft, onClick: () => setTransferring(rows.filter((s) => bulk.isSelected(s.id))) }] : []),
           ...(can("canDeleteStudents") ? [{ label: "Delete", icon: Trash2, variant: "danger", onClick: handleBulkDelete }] : []),
         ]}
       />
+
+      {transferring && (
+        <TransferStudentsModal
+          students={transferring}
+          allStudents={rows}
+          branches={branches}
+          grades={[...new Set(rows.map((s) => s.grade).filter(Boolean))].sort()}
+          busy={bulkBusy}
+          onApply={handleTransfer}
+          onClose={() => setTransferring(null)}
+        />
+      )}
 
       {showBulkAdd && (
         <BulkAddStudentsModal
           branches={branches}
           activeBranch={activeBranch}
           existingIds={rows.map((s) => (s.studentId || "").trim().toLowerCase()).filter(Boolean)}
+          students={rows}
           onClose={() => setShowBulkAdd(false)}
           onDone={({ keepOpen } = {}) => { if (!keepOpen) setShowBulkAdd(false); }}
         />
@@ -330,7 +425,7 @@ export default function Students() {
           onClose={() => setShowBulkEdit(false)}
           onApply={handleBulkEditApply}
           fields={[
-            { key: "grade", label: "Grade / Class", type: "text", placeholder: "e.g. Grade 5" },
+            { key: "grade", label: "Grade / Class", type: "text", placeholder: "e.g. Grade 5", hint: "Keeps each student's class number. Use Transfer to move students and renumber them in the new class." },
             { key: "branchId", label: "Branch", type: "select", options: [{ value: "main", label: "Main Office" }, ...branches.map((b) => ({ value: b.id, label: b.name }))] },
             { key: "monthlyFee", label: "Monthly Fee (Rs.)", type: "number", placeholder: "e.g. 5000", hint: "Applies to future invoices only — existing invoices keep their amounts." },
             { key: "recurringFee", label: "Auto-recurring fee", type: "boolean" },
@@ -349,18 +444,19 @@ export default function Students() {
               <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 14 }}>
                 {[
                   { label: "Full Name", key: "name" },
-                  { label: "Student ID", key: "studentId" },
+                  { label: "Reg No.", key: "studentId" },
                   { label: "Grade / Class", key: "grade" },
+                  { label: "Class No.", key: "classNo", type: "number", placeholder: form.grade ? `Auto: ${nextClassNo(rows, form.grade, form.branchId, { excludeIds: editing ? [editing] : [] })}` : "Set a class first" },
                   { label: "Date of Birth", key: "dob", type: "date" },
                   { label: "Admission Date", key: "admissionDate", type: "date" },
                   { label: "Parent Name", key: "parentName" },
                   { label: "Parent Phone (+92...)", key: "parentPhone" },
                   { label: "Email", key: "email", type: "email" },
                   { label: "Monthly Fee (Rs.)", key: "monthlyFee", type: "number" },
-                ].map(({ label, key, type = "text", required }) => (
+                ].map(({ label, key, type = "text", required, placeholder }) => (
                   <div key={key}>
                     <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 5 }}>{label}</label>
-                    <input type={type} value={form[key] || ""} onChange={(e) => setForm((p) => ({ ...p, [key]: e.target.value }))} required={required}
+                    <input type={type} value={form[key] || ""} onChange={(e) => setForm((p) => ({ ...p, [key]: e.target.value }))} required={required} placeholder={placeholder}
                       style={{ width: "100%", padding: "10px 12px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14, boxSizing: "border-box" }} />
                   </div>
                 ))}
