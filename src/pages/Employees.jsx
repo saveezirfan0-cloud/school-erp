@@ -17,6 +17,7 @@ import toast from "react-hot-toast";
 import { Plus, Trash2, X, Edit2, CalendarCheck, LayoutGrid, List, Users } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import RollCallModal from "../components/Profile/RollCallModal";
+import { isLeftEmployee, employeeLeftFields } from "../utils/employeeStatus";
 
 const empty = { name: "", role: "", phone: "", email: "", branchId: "", salary: "", joinDate: "", recurringPayslip: false };
 
@@ -222,6 +223,7 @@ export default function Employees() {
                     </td>
                     <td style={{ padding: "9px 14px", fontSize: 14, fontWeight: 600, color: "var(--primary)", whiteSpace: "nowrap" }}>
                       {emp.name}{emp.historical === true && <HistoricalTag />}
+                      {isLeftEmployee(emp) && <span style={{ marginLeft: 6, padding: "1px 7px", borderRadius: 20, fontSize: 10, background: "#fef2f2", color: "#ef4444", fontWeight: 600, verticalAlign: "middle" }}>Left</span>}
                       {emp.recurringPayslip && <span style={{ marginLeft: 6, padding: "1px 7px", borderRadius: 20, fontSize: 10, background: "#ecfdf5", color: "#10b981", fontWeight: 600, verticalAlign: "middle" }}>Auto payslip</span>}
                     </td>
                     <td style={{ padding: "9px 14px", fontSize: 13, color: "var(--text-muted)", whiteSpace: "nowrap" }}>{emp.role || "—"}</td>
@@ -265,6 +267,7 @@ export default function Employees() {
                 <span style={{ fontSize: 12, color: "var(--text-muted)" }}>{branches.find(b => b.id === emp.branchId)?.name || "Main Office"}</span>
                 <span style={{ fontSize: 13, fontWeight: 600, color: "#10b981" }}>Rs. {Number(emp.salary || 0).toLocaleString()}/mo</span>
               </div>
+              {isLeftEmployee(emp) && <span style={{ display: "inline-block", marginTop: 8, marginRight: 6, padding: "2px 8px", borderRadius: 20, fontSize: 11, background: "#fef2f2", color: "#ef4444", fontWeight: 600 }}>Left</span>}
               {emp.recurringPayslip && <span style={{ display: "inline-block", marginTop: 8, padding: "2px 8px", borderRadius: 20, fontSize: 11, background: "#ecfdf5", color: "#10b981", fontWeight: 600 }}>Auto payslip</span>}
             </div>
           </div>
@@ -355,6 +358,13 @@ export default function Employees() {
                     <option value="">Main Office</option>
                     {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
                   </select>
+                </div>
+                <div style={{ gridColumn: isMobile ? "1" : "span 2", display: "flex", alignItems: "center", gap: 10, padding: 12, border: "1px solid var(--border)", borderRadius: 8, background: isLeftEmployee(form) ? "#fef2f2" : "#f8fafc" }}>
+                  <input type="checkbox" id="employeeLeft" checked={isLeftEmployee(form)} onChange={e => setForm(p => ({ ...p, ...employeeLeftFields(e.target.checked) }))} style={{ width: 18, height: 18 }} />
+                  <div>
+                    <label htmlFor="employeeLeft" style={{ fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Employee has left</label>
+                    <div style={{ fontSize: 11, color: "var(--text-muted)" }}>Keeps their records, stops auto payslips</div>
+                  </div>
                 </div>
                 <div style={{ gridColumn: isMobile ? "1" : "span 2", display: "flex", alignItems: "center", gap: 10, padding: 12, border: "1px solid var(--border)", borderRadius: 8, background: form.recurringPayslip ? "#f0fdf4" : "#f8fafc" }}>
                   <input type="checkbox" id="recurringPayslip" checked={form.recurringPayslip || false} onChange={e => setForm(p => ({ ...p, recurringPayslip: e.target.checked }))} style={{ width: 18, height: 18 }} />
