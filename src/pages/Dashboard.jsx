@@ -17,7 +17,7 @@ import { isLedgerIncome } from "../utils/ledgerIncome";
 import DateRangeFilter from "../components/UI/DateRangeFilter";
 import DetailModal from "../components/UI/DetailModal";
 import { Users, Receipt, TrendingDown, TrendingUp, UserCheck, Building2, FileText, AlertTriangle, Clock, Wallet } from "lucide-react";
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line } from "recharts";
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, AreaChart, Area, CartesianGrid, Legend, ReferenceLine } from "recharts";
 import AcademicsWidget from "../components/AcademicsWidget";
 
 const PERIOD_KEY = "dashboardPeriod";
@@ -158,6 +158,15 @@ export default function Dashboard() {
       const i = idx.get(bucketKey(unit, r.date));
       if (i == null) return;
       if (r.signed >= 0) rows[i].income += r.signed; else rows[i].expenses -= r.signed;
+    });
+    // Running net cash position across the period, for the cash flow trend.
+    let running = 0;
+    rows.forEach(r => {
+      r.income = round2(r.income);
+      r.expenses = round2(r.expenses);
+      r.net = round2(r.income - r.expenses);
+      running = round2(running + r.net);
+      r.balance = running;
     });
     return { chartData: rows, chartUnit: unit };
   }, [entries, range]);
@@ -453,15 +462,17 @@ export default function Dashboard() {
         <div style={{ background: "white", borderRadius: 12, padding: "20px 16px", border: "1px solid var(--border)" }}>
           <h3 style={{ fontSize: 14, fontWeight: 600 }}>Income vs Expenses</h3>
           <p style={{ fontSize: 11, color: "var(--text-muted)", margin: "2px 0 12px" }}>Click a {chartUnit === "day" ? "day" : "month"} to see the entries behind it</p>
-          <div style={{ overflowX: "auto" }}>
+          <div style={{ overflowX: "auto", overflowY: "hidden" }}>
             <div style={{ minWidth: 300 }}>
-              <ResponsiveContainer width="100%" height={220}>
-                <BarChart data={chartData} margin={{ left: -10 }} onClick={openBucket} style={{ cursor: "pointer" }}>
-                  <XAxis dataKey="label" tick={{ fontSize: 11 }} />
-                  <YAxis tick={{ fontSize: 11 }} tickFormatter={axisFmt} />
-                  <Tooltip formatter={v => rs(v)} />
-                  <Bar dataKey="income" fill="#7a2535" name="Income" radius={[3,3,0,0]} />
-                  <Bar dataKey="expenses" fill="#ef4444" name="Expenses" radius={[3,3,0,0]} />
+              <ResponsiveContainer width="100%" height={240}>
+                <BarChart data={chartData} margin={{ top: 10, right: 8, left: -10, bottom: 0 }} barGap={1} onClick={openBucket} style={{ cursor: "pointer" }}>
+                  <CartesianGrid vertical={false} stroke="#eef2f7" />
+                  <XAxis dataKey="label" tick={{ fontSize: 11 }} tickLine={false} minTickGap={12} />
+                  <YAxis tick={{ fontSize: 11 }} tickFormatter={axisFmt} axisLine={false} tickLine={false} />
+                  <Tooltip formatter={v => rs(v)} cursor={{ fill: "rgba(148,163,184,0.12)" }} />
+                  <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: 12 }} />
+                  <Bar dataKey="income" fill="#10b981" name="Income" radius={[3,3,0,0]} maxBarSize={18} />
+                  <Bar dataKey="expenses" fill="#ef4444" name="Expenses" radius={[3,3,0,0]} maxBarSize={18} />
                 </BarChart>
               </ResponsiveContainer>
             </div>
@@ -469,17 +480,34 @@ export default function Dashboard() {
         </div>
         <div style={{ background: "white", borderRadius: 12, padding: "20px 16px", border: "1px solid var(--border)" }}>
           <h3 style={{ fontSize: 14, fontWeight: 600 }}>Cash Flow Trend</h3>
-          <p style={{ fontSize: 11, color: "var(--text-muted)", margin: "2px 0 12px" }}>Click a {chartUnit === "day" ? "day" : "month"} to see the entries behind it</p>
-          <div style={{ overflowX: "auto" }}>
+          <p style={{ fontSize: 11, color: "var(--text-muted)", margin: "2px 0 12px" }}>Running net cash (income minus expenses) · click a {chartUnit === "day" ? "day" : "month"} to see the entries behind it</p>
+          <div style={{ overflowX: "auto", overflowY: "hidden" }}>
             <div style={{ minWidth: 300 }}>
-              <ResponsiveContainer width="100%" height={220}>
-                <LineChart data={chartData} margin={{ left: -10 }} onClick={openBucket} style={{ cursor: "pointer" }}>
-                  <XAxis dataKey="label" tick={{ fontSize: 11 }} />
-                  <YAxis tick={{ fontSize: 11 }} tickFormatter={axisFmt} />
-                  <Tooltip formatter={v => rs(v)} />
-                  <Line type="monotone" dataKey="income" stroke="#7a2535" strokeWidth={2} name="Income" dot={{ r: 3 }} />
-                  <Line type="monotone" dataKey="expenses" stroke="#ef4444" strokeWidth={2} name="Expenses" dot={{ r: 3 }} />
-                </LineChart>
+              <ResponsiveContainer width="100%" height={240}>
+                <AreaChart data={chartData} margin={{ top: 10, right: 8, left: -10, bottom: 0 }} onClick={openBucket} style={{ cursor: "pointer" }}>
+                  <defs>
+                    <linearGradient id="cashFlowFill" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor="#7a2535" stopOpacity={0.25} />
+                      <stop offset="100%" stopColor="#7a2535" stopOpacity={0.02} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid vertical={false} stroke="#eef2f7" />
+                  <XAxis dataKey="label" tick={{ fontSize: 11 }} tickLine={false} minTickGap={12} />
+                  <YAxis tick={{ fontSize: 11 }} tickFormatter={axisFmt} axisLine={false} tickLine={false} />
+                  <Tooltip content={({ active, payload, label }) => {
+                    const row = active && payload && payload[0] && payload[0].payload;
+                    if (!row) return null;
+                    return (
+                      <div style={{ background: "white", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px", fontSize: 12 }}>
+                        <div style={{ fontWeight: 600, marginBottom: 4 }}>{label}</div>
+                        <div>Running net: <b style={{ color: row.balance >= 0 ? "#10b981" : "#ef4444" }}>{row.balance < 0 ? "-" : ""}{rs(Math.abs(row.balance))}</b></div>
+                        <div style={{ color: "var(--text-muted)" }}>{chartUnit === "day" ? "This day" : "This month"}: {rs(row.income)} in · {rs(row.expenses)} out</div>
+                      </div>
+                    );
+                  }} />
+                  <ReferenceLine y={0} stroke="#94a3b8" strokeDasharray="3 3" />
+                  <Area type="linear" dataKey="balance" stroke="#7a2535" strokeWidth={2} fill="url(#cashFlowFill)" name="Running net" dot={false} activeDot={{ r: 4 }} />
+                </AreaChart>
               </ResponsiveContainer>
             </div>
           </div>
