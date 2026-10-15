@@ -14,6 +14,8 @@ import {
   inRange, isLive, num, round2, todayLocal, toYmd,
 } from "../utils/reporting";
 import { isLedgerIncome } from "../utils/ledgerIncome";
+import { isLeftStudent } from "../utils/studentStatus";
+import { isLeftEmployee } from "../utils/employeeStatus";
 import DateRangeFilter from "../components/UI/DateRangeFilter";
 import DetailModal from "../components/UI/DetailModal";
 import { Users, Receipt, TrendingDown, TrendingUp, UserCheck, Building2, FileText, AlertTriangle, Clock, Wallet } from "lucide-react";
@@ -107,8 +109,10 @@ export default function Dashboard() {
       })),
     ].filter(e => inRange(e._on, range));
     return {
-      students: base.students.filter(inScope),
-      employees: base.employees.filter(inScope),
+      // Headcount = people still on the roll. Anyone marked "left" is kept in
+      // `base` (their invoices / payslips still count) but not counted here.
+      students: base.students.filter(r => inScope(r) && !isLeftStudent(r)),
+      employees: base.employees.filter(r => inScope(r) && !isLeftEmployee(r)),
       invoices,
       collected: invoices.filter(i => i._f.paid > 0 && inRange(i._paidOn, range)),
       outstanding,
@@ -129,8 +133,8 @@ export default function Dashboard() {
     return {
       id: k || "main",
       name: k ? branches.find(b => b.id === k)?.name || "Unknown branch" : "Main Office",
-      students: base.students.filter(r => r._branch === k).length,
-      employees: base.employees.filter(r => r._branch === k).length,
+      students: base.students.filter(r => r._branch === k && !isLeftStudent(r)).length,
+      employees: base.employees.filter(r => r._branch === k && !isLeftEmployee(r)).length,
       collected: p.collected,
       otherIncome: o,
       pending: p.outstanding,
@@ -178,8 +182,8 @@ export default function Dashboard() {
   const asOfNote = "balance as of today, all billing periods";
 
   const cards = [
-    { key: "students", label: "Total Students", value: scope.students.length, icon: Users, color: "#7a2535", bg: "#f5eaec", hint: "Current headcount" },
-    { key: "employees", label: "Employees", value: scope.employees.length, icon: UserCheck, color: "#2a8c7a", bg: "#e6f4f1", hint: "Current headcount" },
+    { key: "students", label: "Total Students", value: scope.students.length, icon: Users, color: "#7a2535", bg: "#f5eaec", hint: "Current headcount, excludes left" },
+    { key: "employees", label: "Employees", value: scope.employees.length, icon: UserCheck, color: "#2a8c7a", bg: "#e6f4f1", hint: "Current headcount, excludes left" },
     { key: "collected", label: "Fees Collected", value: rs(collected), icon: TrendingUp, color: "#10b981", bg: "#ecfdf5", hint: "Cash recorded in period" },
     { key: "otherIncome", label: "Other Income", value: rs(otherInc), icon: Wallet, color: "#0ea5e9", bg: "#f0f9ff", hint: "Ledger receipts not on an invoice" },
     { key: "pending", label: "Pending Fees", value: rs(pendingAmt), icon: Receipt, color: "#f59e0b", bg: "#fffbeb", hint: "Balance as of today" },
