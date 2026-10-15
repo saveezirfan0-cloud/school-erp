@@ -10,8 +10,15 @@ import { MemoryRouter } from "react-router-dom";
 
 const mockCan = { canExport: true, canViewReports: true };
 const mockTables = {
-  students: [{ id: "s1", name: "Ali", branchId: "" }, { id: "s2", name: "Sara", branchId: "b1" }],
-  employees: [],
+  students: [
+    { id: "s1", name: "Ali", branchId: "" }, { id: "s2", name: "Sara", branchId: "b1", status: "active" },
+    // left the school: not in the headcount, but her fees still count
+    { id: "s3", name: "Hina", branchId: "b1", status: "left", leftDate: "2026-09-30" },
+  ],
+  employees: [
+    { id: "t1", name: "Usman", role: "Teacher", branchId: "" },
+    { id: "t2", name: "Ayesha", role: "Teacher", branchId: "b1", status: "left", leftDate: "2026-09-30" },
+  ],
   invoices: [
     { id: "A", studentId: "s1", studentName: "Ali", amount: 5000, status: "paid", paidAmount: 5000, paidDate: "2026-10-01", month: "October", year: 2026 },
     { id: "B", studentId: "s2", studentName: "Sara", amount: 5000, status: "paid", paidAmount: 3000, concessionAmount: 2000, paidDate: "2026-10-02", month: "October", year: 2026 },
@@ -121,4 +128,23 @@ test("clicking a chart day opens the entries behind that day", async () => {
   expect(dialog.textContent).toContain("2 records");
   expect(dialog.textContent).not.toContain("Donation");
   await act(async () => { root.unmount(); });
+});
+
+test("headcount skips students and employees marked as left", async () => {
+  const { el, root } = await mount();
+  expect(tile(el, "Total Students").textContent).toMatch(/Total Students\s*2/);
+  expect(tile(el, "Employees").textContent).toMatch(/Employees\s*1/);
+
+  await act(async () => { tile(el, "Total Students").dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+  let dialog = el.querySelector('[role="dialog"]');
+  expect(dialog.textContent).toContain("Sara");
+  expect(dialog.textContent).not.toContain("Hina");
+  await act(async () => { root.unmount(); });
+
+  const second = await mount();
+  await act(async () => { tile(second.el, "Employees").dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+  dialog = second.el.querySelector('[role="dialog"]');
+  expect(dialog.textContent).toContain("Usman");
+  expect(dialog.textContent).not.toContain("Ayesha");
+  await act(async () => { second.root.unmount(); });
 });
