@@ -60,6 +60,10 @@ export default function Payslips() {
   const [recurringYear, setRecurringYear] = useState(new Date().getFullYear());
 
   const branchName = (p) => branches?.find(b => b.id === p.branchId)?.name || "";
+  // Employees of the branch being viewed: the generators and the picker only
+  // offer these, so a branch-scoped user never creates payslips for another branch.
+  const branchEmployees = employees.filter(e => matchesBranch(e, activeBranch));
+  const recurringEmployees = branchEmployees.filter(e => e.recurringPayslip && !isLeftEmployee(e));
   const openPayslips = (items) => setViewDocs(items.map(p => buildPayslipDoc(p, { branchName: branchName(p) })));
 
   useEffect(() => {
@@ -238,8 +242,8 @@ export default function Payslips() {
   };
 
   const handleGenerateRecurring = () => runSave(async () => {
-    const recurringEmps = employees.filter(e => e.recurringPayslip && !isLeftEmployee(e));
-    if (recurringEmps.length === 0) return toast.error("No employees have recurring payslips enabled");
+    const recurringEmps = recurringEmployees;
+    if (recurringEmps.length === 0) return toast.error(activeBranch === "all" ? "No employees have recurring payslips enabled" : "No employees in this branch have recurring payslips enabled");
     const existing = payslips.filter(p => p.month === recurringMonth && Number(p.year) === Number(recurringYear));
     const existingIds = new Set(existing.map(p => p.employeeId));
     let count = 0, noSalary = 0;
@@ -539,7 +543,7 @@ export default function Payslips() {
               <button onClick={() => setShowRecurring(false)} style={{ border: "none", background: "none", cursor: "pointer" }}><X size={20} /></button>
             </div>
             <div style={{ padding: 14, background: "#f8fafc", borderRadius: 10, marginBottom: 20, fontSize: 13, color: "var(--text-muted)" }}>
-              Will generate payslips for <strong style={{ color: "#10b981" }}>{employees.filter(e => e.recurringPayslip && !isLeftEmployee(e)).length} employees</strong> with recurring payslip enabled. Existing payslips for the selected month are skipped.
+              Will generate payslips for <strong style={{ color: "#10b981" }}>{recurringEmployees.length} employees</strong>{activeBranch !== "all" && <> in <strong>{activeBranch === "main" ? "Main Office" : (branches?.find(b => b.id === activeBranch)?.name || "this branch")}</strong></>} with recurring payslip enabled. Existing payslips for the selected month are skipped.
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 24 }}>
               <div>
@@ -586,7 +590,7 @@ export default function Payslips() {
                         const emp = employees.find(em => em.id === val);
                         setForm(p => ({ ...p, employeeId: val, basicSalary: emp?.salary || "" }));
                       }}
-                      options={employees.map(emp => ({ value: emp.id, label: emp.name, sublabel: emp.role || "" }))}
+                      options={branchEmployees.map(emp => ({ value: emp.id, label: emp.name, sublabel: emp.role || "" }))}
                       placeholder="Search employee..."
                       rememberKey="payslips.employee"
                     />
