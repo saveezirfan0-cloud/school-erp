@@ -7,6 +7,7 @@ import { MessageCircle, CheckCircle, AlertCircle, Link2, Send } from "lucide-rea
 
 export default function Settings() {
   const quickPayLink = window.location.origin + "/quick-payment";
+  const stockCheckoutLink = window.location.origin + "/stock-checkout";
 
   // WhatsApp config is provided via build-time env vars (set in Vercel).
   // We can read whether they're present, but not edit them from here.
@@ -18,7 +19,7 @@ export default function Settings() {
 
   const [testPhone, setTestPhone] = useState("");
   const [sending, setSending] = useState(false);
-  const { can } = useUser();
+  const { can, canAny } = useUser();
   const [newPass, setNewPass] = useState("");
   const [savingPass, setSavingPass] = useState(false);
 
@@ -115,6 +116,22 @@ export default function Settings() {
         <div style={{ display: "flex", gap: 8 }}>
           <input readOnly value={quickPayLink} style={{ ...input, flex: 1, background: "#f8fafc" }} />
           <button onClick={() => { navigator.clipboard.writeText(quickPayLink); toast.success("Copied"); }}
+            style={{ padding: "9px 16px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600 }}>Copy</button>
+        </div>
+      </div>
+      )}
+
+      {/* Take Out Stock link (for whoever takes items from the storage unit) */}
+      {canAny("canEditInventory", "canApproveInventory") && (
+      <div style={card}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+          <Link2 size={18} style={{ color: "var(--primary)" }} />
+          <h3 style={{ fontWeight: 600 }}>Take Out Stock Link</h3>
+        </div>
+        <p style={{ color: "var(--text-muted)", fontSize: 14, marginBottom: 12 }}>Staff use this page to record items they take from the storage unit (item, quantity, reason, destination). Each entry waits for an admin to approve it on the Storage page before stock is deducted. They must be signed in.</p>
+        <div style={{ display: "flex", gap: 8 }}>
+          <input readOnly value={stockCheckoutLink} style={{ ...input, flex: 1, background: "#f8fafc" }} />
+          <button onClick={() => { navigator.clipboard.writeText(stockCheckoutLink); toast.success("Copied"); }}
             style={{ padding: "9px 16px", background: "var(--primary)", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 600 }}>Copy</button>
         </div>
       </div>

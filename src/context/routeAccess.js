@@ -15,6 +15,7 @@ export const HOME_CANDIDATES = [
   { to: "/attendance", permission: "canViewAttendance" },
   { to: "/exams", permission: "canViewExams" },
   { to: "/subjects", permission: "canViewLearning" },
+  { to: "/storage", permission: "canViewInventory" },
   { to: "/reports", permission: "canViewReports" },
   { to: "/chart-of-accounts", permission: "canViewAccounting" },
   { to: "/bank-cash", permission: "canViewAccounting" },

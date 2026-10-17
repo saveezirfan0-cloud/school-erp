@@ -64,7 +64,8 @@ a time, reading the result grid after each:
 | 11 | `0011_ledger_guards.sql` | **ENFORCING** | Posted money cannot be edited/relabelled outside the RPCs. **Only after the app uses the 0009 RPCs.** |
 | 12 | `0012_storage_receipts.sql` | **ENFORCING** | Storage policies for `receipts`. **Only together with the `storage.js` path change.** |
 | 13 | `0013_academic_tables.sql` | safe, can run any time after `0008` | Same permissions for attendance / subjects / exams / marks / assignments / submissions / materials, in the fast form; references, value checks, audit of exams and marks. Skips tables that do not exist yet. Re-run it after `lms.sql` or `attendance.sql`. |
-| 14 | `0020_validate_constraints.sql` | later | `VALIDATE` the NOT VALID checks once the data is clean. Re-runnable. |
+| 14 | `0014_inventory.sql` | safe (new tables), can run any time after `0008` | Storage unit, stock checkout approvals and reception sales: `inventory_items`, `inventory_movements`, `reception_sales`; permissions `canViewInventory` / `canEditInventory` / `canApproveInventory` (branch managers and fee collectors get view + edit, only admins approve). A checkout is `pending` until an approver ticks it; stock is computed from approved movements only and an approval that would take stock below zero is refused. Needed by the Storage, Reception Inventory and Take Out Stock pages. |
+| 15 | `0020_validate_constraints.sql` | later | `VALIDATE` the NOT VALID checks once the data is clean. Re-runnable. |
 | - | `optional/9000_drop_users_pin.sql` | optional, irreversible | Drops `users.pin`. Not in the default order. |
 
 `0011` and `0012` are last on purpose: they can wait, and nothing else depends on them.
@@ -77,7 +78,7 @@ the ones that can break today's screens if applied early.
 ```
 1 schema.sql   2 accounting.sql   3 trash.sql   4 security.sql   5 realtime.sql
 6 attendance.sql   7 lms.sql          (academic module; lms.sql needs attendance.sql first)
-then migrations/0001 ... 0013 in order, then 0020 (optional on an empty database)
+then migrations/0001 ... 0014 in order, then 0020 (optional on an empty database)
 ```
 `schema.sql` enables RLS and creates **no** policies, so a half-finished setup is closed, not
 open. Then bootstrap the first admin (section 8).
@@ -297,6 +298,7 @@ first, and remember that rolling back a security file re-opens what it closed.
 * **0011** `drop trigger trg_payments_immutable on public.payments; drop trigger trg_invoices_money_guard on public.invoices; drop trigger trg_payslips_money_guard on public.payslips; drop trigger trg_expenses_money_guard on public.expenses;`
 * **0010** `alter publication supabase_realtime add table public.users, public.audit_log;`
 * **0012** `drop policy receipts_insert on storage.objects;` (and `receipts_select`, `receipts_delete`); `update storage.buckets set file_size_limit=null, allowed_mime_types=null where id='receipts';`
+* **0014**: `drop table public.reception_sales, public.inventory_movements, public.inventory_items cascade;` (deletes all inventory data) and re-run `0002` to restore `builtin_role_perms()` without the inventory keys.
 * **0013** policies: re-run `supabase/lms.sql` (original policy set); `drop trigger trg_ref_* / trg_restrict_* / trg_exams_history / trg_exam_results_history` on the academic tables; drop the `attendance_*_chk`, `exam_results_marks_chk`, `exams_total_chk`, `submissions_status_chk` constraints; `alter table ... replica identity full`.
 * **0020** nothing to undo.
 * **9000** `alter table public.users add column pin text;` and restore from `migration_backup` (see the file header).

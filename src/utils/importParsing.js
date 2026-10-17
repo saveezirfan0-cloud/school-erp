@@ -785,3 +785,35 @@ export async function readSpreadsheetFile(file) {
   return matrixToTable(matrix, 1);
 }
 
+
+/**
+ * Read EVERY sheet of an .xlsx into [{ name, rows }], rows being arrays of
+ * plain cell values (dates stay Date objects). Same safety checks as
+ * readSpreadsheetFile. Used by the Storage workbook import.
+ */
+export async function readWorkbookSheets(file) {
+  const headBuf = new Uint8Array(await file.slice(0, 4).arrayBuffer());
+  const problem = checkUploadMeta({ name: file.name, size: file.size, head: headBuf });
+  if (problem) throw new Error(problem);
+  if (!/\.xlsx$/i.test(file.name)) throw new Error("Choose the .xlsx workbook.");
+
+  const buffer = await file.arrayBuffer();
+  const unz = zipUncompressedSize(buffer);
+  if (unz === null) throw new Error("This .xlsx file is damaged or not a spreadsheet.");
+  if (unz > MAX_UNCOMPRESSED_BYTES) throw new Error("This spreadsheet expands to an unreasonable size and was rejected.");
+
+  const ExcelJS = (await import("exceljs/dist/exceljs.min.js")).default;
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(buffer);
+  return wb.worksheets.map((ws) => {
+    const rows = [];
+    ws.eachRow({ includeEmpty: true }, (row) => {
+      if (rows.length > MAX_ROWS + 2) throw new Error(`Too many rows in "${ws.name}" (limit ${MAX_ROWS}).`);
+      const cols = Math.min(row.cellCount, MAX_COLUMNS + 1);
+      const line = [];
+      for (let c = 1; c <= cols; c++) line.push(excelValue(row.getCell(c).value));
+      rows.push(line);
+    });
+    return { name: ws.name, rows };
+  });
+}
