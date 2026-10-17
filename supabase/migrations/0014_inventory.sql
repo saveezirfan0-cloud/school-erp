@@ -110,7 +110,7 @@ create table if not exists public.inventory_movements (
   constraint inventory_movements_direction_chk check (direction in ('in', 'out')),
   constraint inventory_movements_quantity_chk  check (quantity > 0),
   constraint inventory_movements_status_chk    check (status in ('pending', 'approved', 'rejected')),
-  constraint inventory_movements_date_iso      check (date ~ '^\d{4}-\d{2}-\d{2}$')
+  constraint inventory_movements_date_iso      check (date ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
 );
 
 create table if not exists public.reception_sales (
@@ -129,7 +129,7 @@ create table if not exists public.reception_sales (
   constraint reception_sales_buyer_chk    check (btrim(buyer_name) <> ''),
   constraint reception_sales_quantity_chk check (quantity > 0),
   constraint reception_sales_amount_chk   check (coalesce(amount, 0) >= 0 and coalesce(unit_price, 0) >= 0),
-  constraint reception_sales_date_iso     check (date ~ '^\d{4}-\d{2}-\d{2}$')
+  constraint reception_sales_date_iso     check (date ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
 );
 
 create index if not exists inventory_movements_item_idx   on public.inventory_movements (item_id);
