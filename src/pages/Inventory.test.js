@@ -99,29 +99,66 @@ test("storage: staff without the approve permission see no approve tick", async 
   await act(async () => { root.unmount(); });
 });
 
-test("take out stock: files a pending request with destination and reason", async () => {
+// The item dropdown's trigger on one line (the box showing the placeholder).
+const trigger = (line) => [...line.querySelectorAll("span")].find((sp) => sp.textContent.includes("Choose or search")).parentElement;
+// Open line `n`'s item dropdown and pick the option whose label contains `text`.
+async function pickItem(el, n, text) {
+  const line = el.querySelectorAll('[data-testid="checkout-line"]')[n];
+  if (!line.querySelector('input[placeholder="Choose or search item…"]')) await click(trigger(line)); // open unless already open
+  const opt = [...line.querySelectorAll("div")].find((d) => d.children.length === 0 && d.textContent.startsWith(text));
+  await click(opt.parentElement.parentElement);
+}
+const submit = async (el) => { await act(async () => { el.querySelector("form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); }); };
+
+test("take out stock: the item dropdown lists every item without typing", async () => {
+  Object.assign(mockCan, { canEditInventory: true });
+  const { el, root } = await mount(<StockCheckout />);
+  const line = el.querySelector('[data-testid="checkout-line"]');
+  await click(trigger(line));
+  expect(line.textContent).toContain("Diary (ITM001)");
+  expect(line.textContent).toContain("Monogram (ITM002)");
+  expect(line.textContent).toContain("10 free to take"); // 16 in storage - 6 waiting
+  await act(async () => { root.unmount(); });
+});
+
+test("take out stock: one line, too many is refused; nothing is saved", async () => {
   Object.assign(mockCan, { canEditInventory: true });
   const { el, root } = await mount(<StockCheckout />, "/stock-checkout?to=Reception");
-  await setValue(el.querySelector('input[placeholder^="Type item"]'), "dia");
-  await click([...el.querySelectorAll("button")].find((b) => b.textContent.includes("Diary")));
-  // 16 in storage, 6 already requested: 10 free
+  await pickItem(el, 0, "Diary");
   expect(el.textContent).toContain("free to take: 10");
-  await setValue(el.querySelector('input[type="number"]'), "11");
+  await setValue(el.querySelector('input[aria-label="Quantity for line 1"]'), "11");
   await setValue(el.querySelector('input[placeholder^="e.g."]'), "Reception sale");
   expect(el.querySelector("select").value).toBe("Reception");
-  await act(async () => { el.querySelector("form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); });
-  expect(mockWrites.addDoc).not.toHaveBeenCalled();
+  await submit(el);
+  expect(mockWrites.addDocs).not.toHaveBeenCalled();
   expect(mockToast.error.mock.calls[0][0]).toMatch(/Only 10 Diary/);
+  await act(async () => { root.unmount(); });
+});
 
-  await setValue(el.querySelector('input[type="number"]'), "3");
-  await act(async () => { el.querySelector("form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); });
-  expect(mockWrites.addDoc).toHaveBeenCalledTimes(1);
-  expect(mockWrites.addDoc.mock.calls[0][1]).toMatchObject({
-    itemId: "i1", direction: "out", quantity: 3, destination: "Reception", reason: "Reception sale",
-    person: "Morning Staff", status: "pending",
-  });
-  expect(el.textContent).toContain("Request sent");
-  expect(el.textContent).toContain("deducted from storage once it is approved");
+test("take out stock: several items in one go are filed together as pending", async () => {
+  Object.assign(mockCan, { canEditInventory: true });
+  const { el, root } = await mount(<StockCheckout />, "/stock-checkout?to=Reception");
+  await pickItem(el, 0, "Diary");
+  await setValue(el.querySelector('input[aria-label="Quantity for line 1"]'), "3");
+  await click([...el.querySelectorAll("button")].find((b) => b.textContent.includes("Add another item")));
+  // an item already on a line is not offered again
+  const line2 = el.querySelectorAll('[data-testid="checkout-line"]')[1];
+  await click(trigger(line2));
+  expect(line2.textContent).not.toContain("Diary (ITM001)");
+  await pickItem(el, 1, "Monogram");
+  await setValue(el.querySelector('input[aria-label="Quantity for line 2"]'), "2");
+  await setValue(el.querySelector('input[placeholder^="e.g."]'), "Reception sale");
+  expect([...el.querySelectorAll("button")].some((b) => b.textContent === "Send for Approval (2 items)")).toBe(true);
+  await submit(el);
+  expect(mockWrites.addDocs).toHaveBeenCalledTimes(1);
+  const [name, rows] = mockWrites.addDocs.mock.calls[0];
+  expect(name).toBe("inventoryMovements");
+  expect(rows).toHaveLength(2);
+  expect(rows[0]).toMatchObject({ itemId: "i1", quantity: 3, direction: "out", destination: "Reception", reason: "Reception sale", person: "Morning Staff", status: "pending" });
+  expect(rows[1]).toMatchObject({ itemId: "i2", quantity: 2, status: "pending" });
+  expect(el.textContent).toContain("2 requests sent");
+  expect(el.textContent).toContain("3 × Diary");
+  expect(el.textContent).toContain("2 × Monogram");
   await act(async () => { root.unmount(); });
 });
 
