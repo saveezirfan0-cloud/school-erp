@@ -4,6 +4,7 @@ import {
   BarChart2, Landmark, BookMarked, ShieldCheck, MessageCircle,
   Upload, Trash2, History, KeyRound,
   CalendarCheck, ClipboardList, GraduationCap, BookOpenCheck, FolderOpen, Library,
+  Package, ShoppingBag, PackageMinus,
 } from "lucide-react";
 import { DELETE_PERMISSIONS } from "../context/routeAccess";
 
@@ -22,6 +23,10 @@ export const MENU_ITEMS = {
   subjects:        { to: "/subjects",           label: "Subjects",          icon: Library,         perm: "canViewLearning", keywords: "courses classes curriculum" },
   homework:        { to: "/homework",           label: "Homework",          icon: BookOpenCheck,     perm: "canViewLearning", keywords: "assignments tasks" },
   materials:       { to: "/materials",          label: "Learning Materials",icon: FolderOpen,      perm: "canViewLearning", keywords: "lessons resources files notes" },
+  storage:         { to: "/storage",           label: "Storage",           icon: Package,         perm: "canViewInventory", keywords: "inventory stock store items approve checkout" },
+  receptionInventory: { to: "/reception-inventory", label: "Reception Inventory", icon: ShoppingBag, perm: "canViewInventory", keywords: "stock sales sold buyer paid unpaid diary" },
+  // Opens the full-screen form (like Quick Fee Payment), outside the layout.
+  stockCheckout:   { to: "/stock-checkout",    label: "Take Out Stock",    icon: PackageMinus,    anyPerm: ["canEditInventory", "canApproveInventory"], keywords: "checkout take item request inventory storage" },
   payments:        { to: "/payments",          label: "Payments",          icon: CreditCard,      perm: "canViewPayments", keywords: "receipts income cash received" },
   expenses:        { to: "/expenses",          label: "Expenses",          icon: TrendingDown,    perm: "canViewExpenses", keywords: "spending costs bills" },
   payslips:        { to: "/payslips",          label: "Payslips",          icon: FileText,        perm: "canViewPayslips", keywords: "salary payroll wages" },
@@ -48,6 +53,7 @@ export const DEFAULT_SECTIONS = [
   { id: "people",     label: "People",          items: ["students", "employees"] },
   { id: "academics",  label: "Academics",       items: ["attendance", "exams", "reportCards", "subjects", "homework", "materials"] },
   { id: "billing",    label: "Fees & Payments", items: ["fees", "payments", "expenses", "payslips"] },
+  { id: "inventory",  label: "Inventory",       items: ["storage", "receptionInventory", "stockCheckout"] },
   { id: "accounting", label: "Accounting",      items: ["chartOfAccounts", "bankCash", "journals"] },
   { id: "insights",   label: "Reports & Logs",  items: ["reports", "feeAging", "collections", "reminderLogs", "activityLog"] },
   { id: "admin",      label: "Administration",  items: ["branches", "users", "access", "import"] },

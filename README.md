@@ -42,7 +42,7 @@ The optional WhatsApp variables are listed in `.env.example` with a warning.
    `supabase/budgets.sql` budgets table + RLS (only for Reports -> Budget vs Actual; the rest of Reports works without it).
    It uses the `has_perm` / `branch_visible` helpers from `security.sql`, so run it after step 4.
 7. `supabase/lms.sql` academic tables and teacher permissions (needs step 6; see *Academics / LMS* below)
-8. `supabase/migrations/0001` to `0013`, in number order (hardening: policies, keys, audit triggers,
+8. `supabase/migrations/0001` to `0014`, in number order (hardening: policies, keys, audit triggers,
    money functions, storage, academic tables). Then create your first admin (see the runbook).
 
 **Existing database** (steps 1 to 7 already applied): do **not** re-run them. Take a backup first, then
@@ -72,6 +72,23 @@ user profile). Like `budgets.sql`, it relies on `has_perm` / `branch_visible`, s
 - Create a `receipts` storage bucket for receipt uploads (the app limits uploads to JPG, PNG, WebP or PDF up to 5 MB; public for now;
   `supabase/migrations/0012_storage_receipts.sql` creates it if missing and adds size,
   type and branch-folder rules; making it private with signed URLs is an optional later step)
+
+## Inventory (Storage, Reception Inventory, Take Out Stock)
+Needs `supabase/migrations/0014_inventory.sql`.
+- **Storage** (`/storage`): every item in the storage unit with opening stock, stock in / out,
+  current stock, value and Available / Low / Out of Stock, plus the In-Out log. Admins add items,
+  record stock in and **Import** the inventory workbook (`Current Stock Status` and
+  `Daily In-Out Log` sheets; importing twice adds nothing twice).
+- **Take Out Stock** (`/stock-checkout`, a full-screen page like Quick Payment; link in Settings):
+  whoever takes an item records the item, quantity, reason, destination (Reception, Office,
+  a branch, Student, Staff or other) and who took it. The entry is **pending**: nothing is
+  deducted until an admin ticks **Approve** on the Storage page (or rejects it). The database
+  enforces this, and refuses an approval when storage does not hold enough.
+- **Reception Inventory** (`/reception-inventory`): stock left at reception (approved transfers
+  to Reception minus sales), and each sale with buyer name, item, date of buying and a
+  Paid / Unpaid tick. Sales are not posted to the accounting books.
+- Permissions: `canViewInventory`, `canEditInventory` (take out stock, record sales) and
+  `canApproveInventory` (approve, manage items; admin only by default).
 
 ## Exports & printable documents
 - Every list page (Fees, Payments, Expenses, Students, Employees,

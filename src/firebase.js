@@ -48,6 +48,10 @@ const TABLE_MAP = {
   assignments: "assignments",
   submissions: "submissions",
   materials: "materials",
+  // Inventory (supabase/migrations/0014_inventory.sql)
+  inventoryItems: "inventory_items",
+  inventoryMovements: "inventory_movements",
+  receptionSales: "reception_sales",
 };
 
 // Real (non-jsonb) columns per table. Anything not in this list
@@ -74,6 +78,9 @@ const COLUMNS = {
   assignments: ["id", "title", "description", "subject_id", "grade", "assigned_date", "due_date", "max_marks", "attachment_url", "branch_id", "created_at", "updated_at"],
   submissions: ["id", "assignment_id", "student_id", "status", "submitted_date", "marks", "feedback", "attachment_url", "branch_id", "created_at", "updated_at"],
   materials: ["id", "title", "description", "kind", "url", "subject_id", "grade", "branch_id", "created_at", "updated_at"],
+  inventory_items: ["id", "code", "name", "unit_price", "opening_stock", "reception_opening", "low_stock_level", "created_at", "updated_at"],
+  inventory_movements: ["id", "item_id", "direction", "quantity", "date", "destination", "person", "reason", "slip_no", "status", "requested_by", "reviewed_by", "reviewed_at", "created_at", "updated_at"],
+  reception_sales: ["id", "item_id", "buyer_name", "quantity", "unit_price", "amount", "date", "paid", "paid_date", "created_at", "updated_at"],
 };
 
 const SERVER_TS = "__SERVER_TIMESTAMP__";
@@ -507,6 +514,19 @@ export async function upsertDocs(name, rows, onConflict) {
   const { error } = await supabase.from(table).upsert(rows.map((r) => encode(table, r, { forInsert: true })), { onConflict: conflict });
   if (error) throw error;
   return rows.length;
+}
+
+// Insert many new rows in ONE request (so one statement: all rows or none)
+// and return them decoded, in the order given, with their new ids.
+export async function addDocs(name, rows) {
+  const table = TABLE_MAP[name] || name;
+  if (!rows || rows.length === 0) return [];
+  const { data, error } = await supabase
+    .from(table)
+    .insert(rows.map((r) => encode(table, r, { forInsert: true })))
+    .select();
+  if (error) throw error;
+  return (data || []).map(decode);
 }
 
 // A payment's auto-posted fee/salary journal (extra.source "payment",

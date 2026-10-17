@@ -22,6 +22,9 @@ const EmployeeProfile = lazy(() => import("./pages/EmployeeProfile"));
 const Fees = lazy(() => import("./pages/Fees"));
 const Expenses = lazy(() => import("./pages/Expenses"));
 const QuickPayment = lazy(() => import("./pages/QuickPayment"));
+const StockCheckout = lazy(() => import("./pages/StockCheckout"));
+const Storage = lazy(() => import("./pages/Storage"));
+const ReceptionInventory = lazy(() => import("./pages/ReceptionInventory"));
 const Branches = lazy(() => import("./pages/Branches"));
 const Settings = lazy(() => import("./pages/Settings"));
 const ChartOfAccounts = lazy(() => import("./pages/ChartOfAccounts"));
@@ -114,6 +117,12 @@ export default function App() {
                   <QuickPayment />
                 </PrivateRoute>
               } />
+              {/* Full-screen like Quick Payment: files a stock checkout request */}
+              <Route path="/stock-checkout" element={
+                <PrivateRoute anyOf={["canEditInventory", "canApproveInventory"]}>
+                  <StockCheckout />
+                </PrivateRoute>
+              } />
               <Route path="/unauthorized" element={<Unauthorized />} />
 
               {/* Protected routes */}
@@ -195,6 +204,16 @@ export default function App() {
                 <Route path="expenses" element={
                   <PrivateRoute permission="canViewExpenses">
                     <Expenses />
+                  </PrivateRoute>
+                } />
+                <Route path="storage" element={
+                  <PrivateRoute permission="canViewInventory">
+                    <Storage />
+                  </PrivateRoute>
+                } />
+                <Route path="reception-inventory" element={
+                  <PrivateRoute permission="canViewInventory">
+                    <ReceptionInventory />
                   </PrivateRoute>
                 } />
                 <Route path="branches" element={

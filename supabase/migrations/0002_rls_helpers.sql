@@ -39,7 +39,8 @@ select public._mig_log('0002', '_start', 'info');
 
 -- Built-in permission matrix: mirror of UserContext PERMISSIONS and of the
 -- has_perm() in security.sql / lms.sql (incl. the 'teacher' role and the
--- attendance / exams / learning permissions). IMMUTABLE so Postgres can fold it.
+-- attendance / exams / learning permissions, and the inventory keys from 0014).
+-- IMMUTABLE so Postgres can fold it.
 create or replace function public.builtin_role_perms(r text)
 returns jsonb language sql immutable parallel safe set search_path = public, pg_temp as $$
   select case r
@@ -50,7 +51,8 @@ returns jsonb language sql immutable parallel safe set search_path = public, pg_
       "canEditPayments":true,"canViewPayslips":true,
       "canViewAttendance":true,"canEditAttendance":true,
       "canViewExams":true,"canEditExams":true,
-      "canViewLearning":true,"canEditLearning":true
+      "canViewLearning":true,"canEditLearning":true,
+      "canViewInventory":true,"canEditInventory":true
     }'::jsonb
     when 'accountant' then '{
       "canViewDashboard":true,"canViewFees":true,"canEditFees":true,
@@ -60,7 +62,8 @@ returns jsonb language sql immutable parallel safe set search_path = public, pg_
       "canViewAllBranches":true
     }'::jsonb
     when 'fee_collector' then '{
-      "canViewStudents":true,"canViewFees":true,"canEditFees":true
+      "canViewStudents":true,"canViewFees":true,"canEditFees":true,
+      "canViewInventory":true,"canEditInventory":true
     }'::jsonb
     when 'teacher' then '{
       "canViewStudents":true,

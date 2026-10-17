@@ -15,6 +15,9 @@ export const NUMERIC_COLUMNS = {
   accounts: ["balance"],
   journals: ["amount"],
   budgets: ["amount"],
+  inventory_items: ["unit_price", "opening_stock", "reception_opening", "low_stock_level"],
+  inventory_movements: ["quantity"],
+  reception_sales: ["quantity", "unit_price", "amount"],
 };
 
 export function coerceColumn(table, column, value) {
