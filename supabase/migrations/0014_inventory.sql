@@ -22,8 +22,10 @@
 --   canEditInventory     submit checkouts / stock-in requests, record reception sales
 --   canApproveInventory  approve or reject movements, manage the item list
 --   Admin has all three. branch_manager and fee_collector get view + edit.
---   builtin_role_perms() is re-created here with those keys (same body as
---   0002 plus the inventory keys; 0002 was updated to match).
+--   inventory_perm() resolves them exactly like the app does (admin, then the
+--   per-user override from Access Control, then the role default, then
+--   has_perm() for custom roles), so it works the same whether or not
+--   0001-0013 have been applied.
 --
 -- Database rules (trigger trg_inventory_movement_guard)
 --   * only an approver may create a movement that is not 'pending', change a
@@ -34,52 +36,42 @@
 --     the storage unit does not hold enough; the item row is locked so two
 --     approvals at once cannot both pass.
 --
--- Depends on : 0001 (_mig_log), 0002 (has_perm), 0006 (trg_check_ref,
---              trg_restrict_delete), 0008 (capture_history)
+-- Depends on : the baseline scripts only (schema.sql, security.sql: users,
+--              custom_roles, set_updated_at, has_perm). Self-contained: it
+--              does NOT need migrations 0001-0013 and can run before or after
+--              them. If 0008 is present its row_history audit is attached.
 -- Idempotent : yes
 -- Data change: none (new tables only)
 -- Rollback   : drop table public.reception_sales, public.inventory_movements,
---              public.inventory_items cascade; re-run 0002 for builtin_role_perms.
+--              public.inventory_items cascade; drop function public.inventory_perm(text),
+--              public.inventory_stock(uuid, uuid), public.inventory_movement_guard().
 -- ============================================================
 begin;
-select public._mig_log('0014', '_start', 'info');
-
--- ---------- built-in role defaults, now with the inventory keys ----------
-create or replace function public.builtin_role_perms(r text)
-returns jsonb language sql immutable parallel safe set search_path = public, pg_temp as $$
-  select case r
-    when 'branch_manager' then '{
-      "canViewDashboard":true,"canViewStudents":true,"canEditStudents":true,
-      "canViewEmployees":true,"canViewFees":true,"canEditFees":true,
-      "canViewExpenses":true,"canEditExpenses":true,"canViewPayments":true,
-      "canEditPayments":true,"canViewPayslips":true,
-      "canViewAttendance":true,"canEditAttendance":true,
-      "canViewExams":true,"canEditExams":true,
-      "canViewLearning":true,"canEditLearning":true,
-      "canViewInventory":true,"canEditInventory":true
-    }'::jsonb
-    when 'accountant' then '{
-      "canViewDashboard":true,"canViewFees":true,"canEditFees":true,
-      "canViewExpenses":true,"canEditExpenses":true,"canViewPayments":true,
-      "canEditPayments":true,"canViewPayslips":true,"canEditPayslips":true,
-      "canViewAccounting":true,"canEditAccounting":true,"canViewReports":true,
-      "canViewAllBranches":true
-    }'::jsonb
-    when 'fee_collector' then '{
-      "canViewStudents":true,"canViewFees":true,"canEditFees":true,
-      "canViewInventory":true,"canEditInventory":true
-    }'::jsonb
-    when 'teacher' then '{
-      "canViewStudents":true,
-      "canViewAttendance":true,"canEditAttendance":true,
-      "canViewExams":true,"canEditExams":true,
-      "canViewLearning":true,"canEditLearning":true
-    }'::jsonb
-    else '{}'::jsonb
-  end
-$$;
-revoke all on function public.builtin_role_perms(text) from public, anon;
-grant execute on function public.builtin_role_perms(text) to authenticated;
+-- ---------- permission helper ----------
+create or replace function public.inventory_perm(perm text)
+returns boolean language plpgsql stable security definer set search_path = public, pg_temp as $$
+declare
+  r  text;
+  ov jsonb;
+begin
+  if auth.uid() is null then return false; end if;
+  select u.role, u.extra -> 'pagePermissions' into r, ov from public.users u where u.id = auth.uid();
+  if r is null or r = 'none' then return false; end if;
+  if r = 'admin' then return true; end if;
+  -- per-user override set by an admin in Access Control
+  if jsonb_typeof(ov) = 'object' and ov ? perm then
+    return coalesce((ov -> perm) = 'true'::jsonb, false);
+  end if;
+  -- built-in defaults (mirror of UserContext PERMISSIONS)
+  if r in ('branch_manager', 'fee_collector') and perm in ('canViewInventory', 'canEditInventory') then
+    return true;
+  end if;
+  if r in ('branch_manager', 'fee_collector', 'accountant', 'teacher') then return false; end if;
+  -- custom roles
+  return public.has_perm(perm);
+end $$;
+revoke all on function public.inventory_perm(text) from public, anon;
+grant execute on function public.inventory_perm(text) to authenticated;
 
 -- ---------- tables ----------
 create table if not exists public.inventory_items (
@@ -100,7 +92,7 @@ create table if not exists public.inventory_items (
 
 create table if not exists public.inventory_movements (
   id           uuid primary key default gen_random_uuid(),
-  item_id      text not null,
+  item_id      uuid not null references public.inventory_items (id) on delete restrict,
   direction    text not null,
   quantity     numeric not null,
   date         text not null,
@@ -123,7 +115,7 @@ create table if not exists public.inventory_movements (
 
 create table if not exists public.reception_sales (
   id          uuid primary key default gen_random_uuid(),
-  item_id     text not null,
+  item_id     uuid not null references public.inventory_items (id) on delete restrict,
   buyer_name  text not null,
   quantity    numeric not null,
   unit_price  numeric,
@@ -160,16 +152,16 @@ end $$;
 -- Called from the BEFORE ROW guard it sees the rows already written by the
 -- same statement, so a bulk approve (one UPDATE over several ids) or a bulk
 -- import is checked row by row (policy_matrix.sql section 14 tests this).
-create or replace function public.inventory_stock(p_item_id text, p_exclude uuid default null)
+create or replace function public.inventory_stock(p_item_id uuid, p_exclude uuid default null)
 returns numeric language sql volatile security definer set search_path = public, pg_temp as $$
-  select coalesce((select i.opening_stock from public.inventory_items i where i.id::text = p_item_id), 0)
+  select coalesce((select i.opening_stock from public.inventory_items i where i.id = p_item_id), 0)
        + coalesce((select sum(case m.direction when 'in' then m.quantity else -m.quantity end)
                      from public.inventory_movements m
                     where m.item_id = p_item_id and m.status = 'approved'
                       and (p_exclude is null or m.id <> p_exclude)), 0)
 $$;
-revoke all on function public.inventory_stock(text, uuid) from public, anon;
-grant execute on function public.inventory_stock(text, uuid) to authenticated;
+revoke all on function public.inventory_stock(uuid, uuid) from public, anon;
+grant execute on function public.inventory_stock(uuid, uuid) to authenticated;
 
 -- ---------- approval guard ----------
 create or replace function public.inventory_movement_guard()
@@ -183,7 +175,7 @@ declare
 begin
   -- SQL editor / service role / imports: trusted, like the other guards.
   if auth.uid() is null then return new; end if;
-  approver := public.has_perm('canApproveInventory');
+  approver := public.inventory_perm('canApproveInventory');
 
   if tg_op = 'INSERT' then
     new.requested_by := auth.uid();
@@ -224,7 +216,7 @@ begin
                   else 0 end;
 
   if tg_op = 'UPDATE' and old.item_id is distinct from new.item_id and eff_old > 0 then
-    perform 1 from public.inventory_items where id::text = old.item_id for update;
+    perform 1 from public.inventory_items where id = old.item_id for update;
     have := public.inventory_stock(old.item_id, old.id);
     if have < 0 then
       raise exception 'not enough stock left of the original item to move this entry'
@@ -236,7 +228,7 @@ begin
   end if;
 
   if eff_new < eff_old then
-    select name into item_label from public.inventory_items where id::text = new.item_id for update;
+    select name into item_label from public.inventory_items where id = new.item_id for update;
     have := public.inventory_stock(new.item_id, new.id);
     if have + eff_new < 0 then
       raise exception 'not enough stock: % has % in storage, this needs %',
@@ -252,36 +244,16 @@ drop trigger if exists trg_inventory_movement_guard on public.inventory_movement
 create trigger trg_inventory_movement_guard before insert or update on public.inventory_movements
   for each row execute function public.inventory_movement_guard();
 
--- ---------- references ----------
-do $$
-declare r record;
-begin
-  for r in select * from (values
-      ('inventory_movements', 'item_id'),
-      ('reception_sales',     'item_id')
-    ) as v(tbl, col)
-  loop
-    execute format('drop trigger if exists trg_ref_%1$s_%2$s on public.%1$I', r.tbl, r.col);
-    execute format('create trigger trg_ref_%1$s_%2$s before insert or update of %2$I on public.%1$I
-                      for each row execute function public.trg_check_ref(%2$L, %3$L, %4$L, %5$L)',
-                   r.tbl, r.col, 'inventory_items', 'id', 'any');
-    execute format('drop trigger if exists trg_restrict_inventory_items_%1$s_%2$s on public.inventory_items', r.tbl, r.col);
-    execute format('create trigger trg_restrict_inventory_items_%1$s_%2$s before delete on public.inventory_items
-                      for each row execute function public.trg_restrict_delete(%1$L, %2$L, %3$L, '''')',
-                   r.tbl, r.col, 'id');
-  end loop;
-end $$;
-
 -- ---------- row-level security ----------
 do $$
 declare
   t text;
   p record;
   can_read constant text :=
-    $s$((select public.has_perm('canViewInventory')) or (select public.has_perm('canEditInventory')) or (select public.has_perm('canApproveInventory')))$s$;
+    $s$((select public.inventory_perm('canViewInventory')) or (select public.inventory_perm('canEditInventory')) or (select public.inventory_perm('canApproveInventory')))$s$;
   can_edit constant text :=
-    $s$((select public.has_perm('canEditInventory')) or (select public.has_perm('canApproveInventory')))$s$;
-  can_approve constant text := $s$(select public.has_perm('canApproveInventory'))$s$;
+    $s$((select public.inventory_perm('canEditInventory')) or (select public.inventory_perm('canApproveInventory')))$s$;
+  can_approve constant text := $s$(select public.inventory_perm('canApproveInventory'))$s$;
 begin
   foreach t in array array['inventory_items','inventory_movements','reception_sales'] loop
     execute format('alter table public.%I enable row level security', t);
@@ -294,9 +266,9 @@ begin
   end loop;
 
   -- the item list (and opening stock) is the approver's
-  create policy inventory_items_insert on public.inventory_items for insert to authenticated with check ((select public.has_perm('canApproveInventory')));
-  create policy inventory_items_update on public.inventory_items for update to authenticated using ((select public.has_perm('canApproveInventory'))) with check ((select public.has_perm('canApproveInventory')));
-  create policy inventory_items_delete on public.inventory_items for delete to authenticated using ((select public.has_perm('canApproveInventory')));
+  create policy inventory_items_insert on public.inventory_items for insert to authenticated with check ((select public.inventory_perm('canApproveInventory')));
+  create policy inventory_items_update on public.inventory_items for update to authenticated using ((select public.inventory_perm('canApproveInventory'))) with check ((select public.inventory_perm('canApproveInventory')));
+  create policy inventory_items_delete on public.inventory_items for delete to authenticated using ((select public.inventory_perm('canApproveInventory')));
 
   -- movements: staff write pending rows (the guard trigger enforces the status
   -- rules); an approved movement can only be deleted by an approver
@@ -308,12 +280,14 @@ begin
   execute format('create policy reception_sales_update on public.reception_sales for update to authenticated using (%1$s) with check (%1$s)', can_edit);
   execute format('create policy reception_sales_delete on public.reception_sales for delete to authenticated using (%s)', can_edit);
 
-  -- ---------- audit ----------
-  foreach t in array array['inventory_items','inventory_movements','reception_sales'] loop
-    execute format('drop trigger if exists trg_%1$s_history on public.%1$I', t);
-    execute format('create trigger trg_%1$s_history after insert or update or delete on public.%1$I
-                      for each row execute function public.capture_history()', t);
-  end loop;
+  -- ---------- audit (row_history from 0008, when it is installed) ----------
+  if to_regprocedure('public.capture_history()') is not null then
+    foreach t in array array['inventory_items','inventory_movements','reception_sales'] loop
+      execute format('drop trigger if exists trg_%1$s_history on public.%1$I', t);
+      execute format('create trigger trg_%1$s_history after insert or update or delete on public.%1$I
+                        for each row execute function public.capture_history()', t);
+    end loop;
+  end if;
 
   -- ---------- realtime ----------
   if exists (select 1 from pg_publication where pubname = 'supabase_realtime') then
@@ -324,15 +298,13 @@ begin
       end if;
     end loop;
   else
-    perform public._mig_log('0014', 'realtime', 'skipped', 'publication supabase_realtime not found');
+    raise notice 'publication supabase_realtime not found; inventory tables not published';
   end if;
 end $$;
 
-select public._mig_log('0014', '_done', 'applied');
 commit;
 
-select migration, step, status, detail
-from public.migration_log
-where migration = '0014'
-  and at >= (select max(at) from public.migration_log where migration = '0014' and step = '_start')
-order by id;
+-- Check: should list the three inventory tables
+select tablename, rowsecurity from pg_tables
+where schemaname = 'public' and tablename in ('inventory_items', 'inventory_movements', 'reception_sales')
+order by 1;

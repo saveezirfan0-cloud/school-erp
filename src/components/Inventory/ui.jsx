@@ -63,7 +63,7 @@ export function friendlyError(err, fallback = "Something went wrong") {
   if (err?.code === "42501" || /row-level security|permission denied|only an approver/i.test(msg)) {
     return /only an approver/i.test(msg) ? "Only an admin can approve or change a reviewed entry." : "You do not have permission to do that.";
   }
-  if (err?.code === "23503" && /still referenced/i.test(msg)) return "This item has stock entries or sales, so it cannot be deleted.";
+  if (err?.code === "23503" && /still referenced|update or delete on table/i.test(msg)) return "This item has stock entries or sales, so it cannot be deleted.";
   if (err?.code === "23503") return "That item no longer exists. Reload the page and pick it again.";
   if (err?.code === "PGRST205" || /schema cache|relation "?public\.(inventory|reception)/i.test(msg)) return "The inventory tables are missing. An admin must run supabase/migrations/0014_inventory.sql.";
   return msg || fallback;
