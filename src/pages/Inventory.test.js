@@ -167,8 +167,33 @@ test("reception: stock left counts approved transfers only, and the Paid tick ma
   const { el, root } = await mount(<ReceptionInventory />);
   // received 4 (approved) - sold 1 = 3 left; the pending 6 is "coming"
   const diary = [...el.querySelectorAll("tr")].find((r) => r.textContent.startsWith("Diary"));
-  expect([...diary.querySelectorAll("td")].map((td) => td.textContent)).toEqual(["Diary ITM001", "4", "1", "3", "6", "16"]);
+  expect([...diary.querySelectorAll("td")].map((td) => td.textContent)).toEqual(["Diary ITM001", "4", "1", "3", "6", "16", ""]);
+  // staff can edit a sale (labelled button) but not correct the stock count
+  expect([...row(el, "Ali").querySelectorAll("button")].some((b) => b.textContent.trim() === "Edit")).toBe(true);
   await click(el.querySelector('input[aria-label="Tick when paid"]'));
   expect(mockWrites.updateDoc).toHaveBeenCalledWith({ name: "receptionSales", id: "s1" }, expect.objectContaining({ paid: true }));
+  await act(async () => { root.unmount(); });
+});
+
+test("reception: an admin can correct the stock left; it is saved as the reception opening", async () => {
+  Object.assign(mockCan, { canViewInventory: true, canEditInventory: true, canApproveInventory: true });
+  const { el, root } = await mount(<ReceptionInventory />);
+  const diary = () => [...el.querySelectorAll("tr")].find((r) => r.textContent.startsWith("Diary"));
+  await click([...diary().querySelectorAll("button")].find((b) => b.textContent.trim() === "Edit"));
+  const dialog = el.querySelector('[role="dialog"]');
+  expect(dialog.textContent).toContain("Stock left now: 3");
+  const input = dialog.querySelector('input[type="number"]');
+  const save = () => act(async () => { dialog.querySelector("form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); });
+
+  // 4 came from storage and 1 was sold, so it cannot go below 3
+  await setValue(input, "2");
+  await save();
+  expect(mockWrites.updateDoc).not.toHaveBeenCalled();
+  expect(mockToast.error.mock.calls[0][0]).toMatch(/Can't go below 3/);
+
+  // 5 on the shelf: opening = 5 - 4 received + 1 sold = 2
+  await setValue(input, "5");
+  await save();
+  expect(mockWrites.updateDoc).toHaveBeenCalledWith({ name: "inventoryItems", id: "i1" }, { receptionOpening: 2 });
   await act(async () => { root.unmount(); });
 });
