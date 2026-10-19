@@ -8,21 +8,27 @@ import { todayLocal, isIsoDate, formatMoney, round2, sumMoney } from "../utils/m
 import { useSubmitLock } from "../utils/useSubmitLock";
 import { logActivity } from "../utils/auditLog";
 import ExportMenu from "../components/UI/ExportMenu";
+import SearchableSelect from "../components/UI/SearchableSelect";
 import { Modal, Field, StatCard, Pill, inputStyle, btn, th, td, friendlyError } from "../components/Inventory/ui";
 import toast from "react-hot-toast";
 import { Plus, PackageMinus, Pencil, Trash2, Search } from "lucide-react";
+
+const editBtn = { display: "inline-flex", alignItems: "center", gap: 4, border: "none", background: "#f1f5f9", color: "#334155", padding: "5px 10px", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 600 };
 
 const emptySale = () => ({ itemId: "", buyerName: "", quantity: "1", unitPrice: "", date: todayLocal(), paid: false });
 
 export default function ReceptionInventory() {
   const { can } = useUser();
   const canEdit = can("canEditInventory") || can("canApproveInventory");
+  // Correcting the count at reception changes stock directly, so it is the approver's.
+  const canAdjust = can("canApproveInventory");
   const { items, movements, sales, summary, itemById, loading, error } = useInventory();
 
   const [search, setSearch] = useState("");
   const [paidFilter, setPaidFilter] = useState("");
   const [showAllItems, setShowAllItems] = useState(false);
   const [saleModal, setSaleModal] = useState(null);
+  const [stockModal, setStockModal] = useState(null); // { itemId, left }
   const { busy, run } = useSubmitLock();
 
   const itemName = useCallback((row) => itemById.get(row.itemId)?.name || row.itemName || "(deleted item)", [itemById]);
@@ -107,6 +113,31 @@ export default function ReceptionInventory() {
     });
   };
 
+  // The count at reception is opening + approved transfers - sold, so a
+  // corrected count is stored as the item's reception opening stock.
+  const saveStock = (e) => {
+    e.preventDefault();
+    run(async () => {
+      const item = itemById.get(stockModal.itemId);
+      const s = summary.get(stockModal.itemId);
+      if (!item || !s) return toast.error("Item not found");
+      const target = String(stockModal.left).trim() === "0" ? { ok: true, value: 0 } : parseQuantity(stockModal.left);
+      if (!target.ok) return toast.error(target.error === "Quantity must be more than 0" ? "Enter 0 or more" : target.error);
+      const opening = target.value - s.receptionIn + s.sold;
+      if (opening < 0) {
+        return toast.error(`Can't go below ${s.receptionIn - s.sold}: ${s.receptionIn} came from storage and ${s.sold} were sold. Record the missing ones as a sale (or fix a sale) instead.`, { duration: 10000 });
+      }
+      try {
+        await updateDoc(doc(db, "inventoryItems", item.id), { receptionOpening: opening });
+        toast.success(`${item.name}: stock left at reception is now ${target.value}`);
+        logActivity("adjusted", "Reception Inventory", `${item.name}: stock left at reception ${s.receptionLeft} → ${target.value}`);
+        setStockModal(null);
+      } catch (err) {
+        toast.error(friendlyError(err, "Could not save"));
+      }
+    });
+  };
+
   const removeSale = (sale) => {
     if (!window.confirm(`Delete the sale to ${sale.buyerName} (${sale.quantity} × ${itemName(sale)})? The items go back to reception stock.`)) return;
     run(async () => {
@@ -179,7 +210,7 @@ export default function ReceptionInventory() {
         <div style={{ overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 560 }}>
             <thead><tr style={{ background: "#f8fafc" }}>
-              {["Item", "Received", "Sold", "Stock Left", "Coming (waiting approval)", "In storage"].map((h) => <th key={h} style={th}>{h}</th>)}
+              {["Item", "Received", "Sold", "Stock Left", "Coming (waiting approval)", "In storage", ""].map((h) => <th key={h} style={th}>{h}</th>)}
             </tr></thead>
             <tbody>
               {stockRows.map((it) => {
@@ -192,6 +223,12 @@ export default function ReceptionInventory() {
                     <td style={{ ...td, fontWeight: 700, fontSize: 15, color: s.receptionLeft <= 0 ? "#b91c1c" : undefined }}>{s.receptionLeft}</td>
                     <td style={{ ...td, color: "#b45309" }}>{incoming.get(it.id) || "—"}</td>
                     <td style={{ ...td, color: "var(--text-muted)" }}>{s.current}</td>
+                    <td style={{ ...td, textAlign: "right" }}>
+                      {canAdjust && (
+                        <button title="Correct the stock left at reception" onClick={() => setStockModal({ itemId: it.id, left: String(s.receptionLeft) })}
+                          style={editBtn}><Pencil size={13} /> Edit</button>
+                      )}
+                    </td>
                   </tr>
                 );
               })}
@@ -230,7 +267,7 @@ export default function ReceptionInventory() {
                   <td style={{ ...td, textAlign: "right", whiteSpace: "nowrap" }}>
                     {canEdit && <>
                       <button title="Edit sale" onClick={() => setSaleModal({ id: s.id, itemId: s.itemId, buyerName: s.buyerName || "", quantity: String(s.quantity ?? ""), unitPrice: String(s.unitPrice ?? ""), date: s.date, paid: !!s.paid })}
-                        style={{ border: "none", background: "#f1f5f9", color: "#475569", padding: "5px 8px", borderRadius: 6, cursor: "pointer", marginRight: 5 }}><Pencil size={13} /></button>
+                        style={{ ...editBtn, marginRight: 5 }}><Pencil size={13} /> Edit</button>
                       <button title="Delete sale" onClick={() => removeSale(s)}
                         style={{ border: "none", background: "#fef2f2", color: "var(--danger)", padding: "5px 8px", borderRadius: 6, cursor: "pointer" }}><Trash2 size={13} /></button>
                     </>}
@@ -247,13 +284,17 @@ export default function ReceptionInventory() {
       {saleModal && (
         <Modal title={saleModal.id ? "Edit sale" : "Record sale"} onClose={() => setSaleModal(null)}>
           <form onSubmit={saveSale}>
-            <Field label="Item *" hint={saleItem ? `Stock left at reception: ${summary.get(saleItem.id)?.receptionLeft ?? 0}` : undefined}>
-              <select value={saleModal.itemId} required style={inputStyle}
-                onChange={(e) => { const it = itemById.get(e.target.value); setSaleModal((p) => ({ ...p, itemId: e.target.value, unitPrice: it && Number(it.unitPrice) ? String(it.unitPrice) : p.unitPrice })); }}>
-                <option value="">Choose item</option>
-                {items.map((i) => <option key={i.id} value={i.id}>{i.name}{i.code ? ` (${i.code})` : ""} · {summary.get(i.id)?.receptionLeft ?? 0} left</option>)}
-              </select>
-            </Field>
+            {/* not a <label>: a label would forward clicks into the dropdown's search box */}
+            <div style={{ marginBottom: 14 }}>
+              <span style={{ display: "block", fontSize: 13, fontWeight: 600, marginBottom: 5, color: "#374151" }}>Item *</span>
+              <SearchableSelect
+                value={saleModal.itemId}
+                onChange={(v) => { const it = itemById.get(v); setSaleModal((p) => ({ ...p, itemId: v, unitPrice: it && Number(it.unitPrice) ? String(it.unitPrice) : p.unitPrice })); }}
+                options={items.map((i) => ({ value: i.id, label: i.code ? `${i.name} (${i.code})` : i.name, sublabel: `${summary.get(i.id)?.receptionLeft ?? 0} left at reception` }))}
+                placeholder="Choose or search item…"
+              />
+              {saleItem && <span style={{ display: "block", fontSize: 12, color: "var(--text-muted)", marginTop: 4 }}>Stock left at reception: {summary.get(saleItem.id)?.receptionLeft ?? 0}</span>}
+            </div>
             <Field label="Buyer's name *"><input value={saleModal.buyerName} onChange={(e) => setSaleModal((p) => ({ ...p, buyerName: e.target.value }))} required placeholder="Student or parent name" style={inputStyle} /></Field>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
               <Field label="Quantity *"><input type="number" min="1" step="1" value={saleModal.quantity} onChange={(e) => setSaleModal((p) => ({ ...p, quantity: e.target.value }))} required style={inputStyle} /></Field>
@@ -269,6 +310,26 @@ export default function ReceptionInventory() {
           </form>
         </Modal>
       )}
+
+      {stockModal && (() => {
+        const it = itemById.get(stockModal.itemId);
+        const s = summary.get(stockModal.itemId);
+        if (!it || !s) return null;
+        return (
+          <Modal title={`Edit stock at reception: ${it.name}`} onClose={() => setStockModal(null)}>
+            <form onSubmit={saveStock}>
+              <p style={{ fontSize: 13.5, color: "var(--text-muted)", marginBottom: 14, lineHeight: 1.6 }}>
+                Received from storage: <strong>{s.receptionOpening + s.receptionIn}</strong> · Sold: <strong>{s.sold}</strong> · Stock left now: <strong>{s.receptionLeft}</strong>
+              </p>
+              <Field label="Stock left at reception *" hint="Enter what is actually on the reception shelf. Storage stock is not changed.">
+                <input type="number" min="0" step="1" value={stockModal.left} autoFocus required
+                  onChange={(e) => setStockModal((p) => ({ ...p, left: e.target.value }))} style={inputStyle} />
+              </Field>
+              <button type="submit" disabled={busy} style={{ ...btn(), width: "100%", justifyContent: "center", padding: 12 }}>{busy ? "Saving…" : "Save"}</button>
+            </form>
+          </Modal>
+        );
+      })()}
     </div>
   );
 }
